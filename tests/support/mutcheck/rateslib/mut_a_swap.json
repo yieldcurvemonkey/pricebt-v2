@@ -1,0 +1,83 @@
+{
+ "file": "src/pricebt/contrib/rateslib/swap.py",
+ "tests": [
+  "tests/test_rl_swap.py",
+  "tests/test_ladder.py"
+ ],
+ "mutations": [
+  {
+   "name": "gamma-bump-2bp",
+   "find": "_H_BP = 1.0",
+   "replace": "_H_BP = 2.0"
+  },
+  {
+   "name": "gamma-normalisation",
+   "find": "- 2.0 * base.npv(self._active)) / _H_BP ** 2",
+   "replace": "- 2.0 * base.npv(self._active)) / _H_BP"
+  },
+  {
+   "name": "dv01-started-branch-flipped",
+   "find": "        if self._started:\n            return float(sum(",
+   "replace": "        if not self._started:\n            return float(sum("
+  },
+  {
+   "name": "cash-window-closed-right",
+   "find": "w = w[(w[\"Payment\"] >= t0) & (w[\"Payment\"] < t1)]",
+   "replace": "w = w[(w[\"Payment\"] >= t0) & (w[\"Payment\"] <= t1)]"
+  },
+  {
+   "name": "has-payment-open-left",
+   "find": "any(t0 <= p < t1 for p in self._pay_dates)",
+   "replace": "any(t0 < p <= t1 for p in self._pay_dates)"
+  },
+  {
+   "name": "sign-dropped",
+   "find": "notional=self.sign * self.notional)",
+   "replace": "notional=self.notional)"
+  },
+  {
+   "name": "matured-inclusive",
+   "find": "return self.last_payment < pricer.reference_date",
+   "replace": "return self.last_payment <= pricer.reference_date"
+  },
+  {
+   "name": "started-inclusive",
+   "find": "started = self.effective < ref",
+   "replace": "started = self.effective <= ref"
+  },
+  {
+   "name": "par-spread-unit",
+   "find": "float(extras.get(\"par_spread_bp\", 0.0)) / 100.0",
+   "replace": "float(extras.get(\"par_spread_bp\", 0.0)) / 10.0"
+  },
+  {
+   "name": "spot-lag-plus-one",
+   "find": "spot = cal.add_bus_days(ref, conv.spot_lag_days, True)",
+   "replace": "spot = cal.add_bus_days(ref, conv.spot_lag_days + 1, True)"
+  },
+  {
+   "name": "direction-ignored",
+   "find": "sign=int(terms[\"direction\"]), notional=float(terms[\"notional\"])",
+   "replace": "sign=1, notional=float(terms[\"notional\"])"
+  },
+  {
+   "name": "gamma-bound-to-zero-rate-gamma",
+   "find": "\"gamma\": _bind(\"gamma\", tenors=list(DEFAULT_TENORS)),",
+   "replace": "\"gamma\": _bind(\"gamma_zero\"),"
+  },
+  {
+   "name": "fixings-guard-off",
+   "find": "C.check_fixings(fx[fx.index >= pd.Timestamp(C.to_dt(self.effective))], self.effective, ref, pricer.calendar(self.conv.calendar))",
+   "replace": "pass"
+  },
+  {
+   "name": "ladder-sum-tenors-ignored",
+   "find": "return float(sum(self.delta_ladder(ctx=ctx, tenors=tenors).values()))",
+   "replace": "return float(sum(self.delta_ladder(ctx=ctx).values()))"
+  }
+ ],
+ "pytest_args": [
+  "-k",
+  "not hedge and not config_driven and not vector_measures and not parquet and not variance"
+ ]
+}

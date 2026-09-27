@@ -1,0 +1,10 @@
+# NEGATIVE CONTROL 1: the `rate` binding forgot `scale: 0.01` (zeta's PAR_BP is in BASIS POINTS, pricebt's `rate` is PERCENT). Everything else is the shipped wiring.
+# Expected tie-out verdict: L2.rate EXCEEDS (402.5 against 4.025: max_rel 0.99), and the baseline layers that read `rate` (L3.tay_delta, tay_convexity, tay_unexplained) with it; L0, L1, L4 stay exact.
+instruments:
+  usd_sofr_ois:
+    factory: "zeta_adapter:swap"
+    bind:
+      rate: {target: {method: rate}, kwargs: {ctx: "@ctx"}}   # the shipped binding has `scale: 0.01` here
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}

@@ -1,0 +1,8 @@
+# Stack overlay (spec X1, D3): the QuantLib adapter for a config with the swap instrument `usd_sofr_ois` and the pricer role `primary`.
+# It sets ONLY instruments.<name>.factory / .bind and market.pricers.<role>.wrap; the shared `conventions` block stays the base's.
+#   pricebt run configs/suite/s1_swap_carry_eod.yaml --stack configs/adapters/quantlib_swap.yaml
+instruments:
+  usd_sofr_ois: {factory: "pricebt.contrib.quantlib:swap"}
+market:
+  pricers:
+    primary: {wrap: "pricebt.contrib.quantlib:wrap"}

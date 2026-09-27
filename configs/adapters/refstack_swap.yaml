@@ -1,0 +1,8 @@
+# Stack overlay (spec X1, D3): the dependency-free reference stack (numpy only) for a config with the swap instrument `usd_sofr_ois` and the pricer role
+# `primary`. The suite bases already name it as their default; this overlay makes the choice explicit next to the other stacks.
+#   pricebt run configs/suite/s1_swap_carry_eod.yaml --stack configs/adapters/refstack_swap.yaml
+instruments:
+  usd_sofr_ois: {factory: "pricebt.testing.refstack:swap"}
+market:
+  pricers:
+    primary: {wrap: "pricebt.testing.refstack:wrap"}

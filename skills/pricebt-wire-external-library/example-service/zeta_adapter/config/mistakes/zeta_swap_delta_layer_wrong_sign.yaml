@@ -1,0 +1,10 @@
+# NEGATIVE CONTROL 5: the `delta` layer bound with a sign it must not have (zeta is HOLDER-signed already: a layer needs no sign here, unlike a receiver's-view library that needs sign -1 on all four).
+# Expected tie-out verdict: L3.delta EXCEEDS (and L3.unexplained with it: the engine's residual absorbs the wrong layer); L2 and L1 stay exact.
+instruments:
+  usd_sofr_ois:
+    factory: "zeta_adapter:swap"
+    bind:
+      delta: {target: {method: delta}, kwargs: {ctx: "@ctx"}, sign: -1.0}   # the shipped binding has no sign
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}

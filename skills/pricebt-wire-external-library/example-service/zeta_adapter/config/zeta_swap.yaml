@@ -1,0 +1,9 @@
+# Stack overlay: the zeta adapter for a base config with the swap instrument `usd_sofr_ois` and the pricer role `primary`.
+# An overlay may set ONLY instruments.<name>.factory, instruments.<name>.bind and market.pricers.<role>.wrap (config/stacks.py rejects anything else, naming the path).
+# It cannot set `registry`: the BASE config must list `zeta_adapter` under registry.allow (see zeta_tieout_base.yaml, next to this file), otherwise both dotted paths below fail with CFG-ALLOW.
+# No `bind:` here: the Kit's own default block (zeta_adapter.swap.SWAP_BIND) is the binding: every unit and sign conversion is a visible `scale` / `sign` line in it.
+instruments:
+  usd_sofr_ois: {factory: "zeta_adapter:swap"}
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}

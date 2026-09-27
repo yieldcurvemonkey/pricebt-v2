@@ -1,0 +1,28 @@
+extends: _ust_base.yaml
+doc: >
+  Shared base of the EOD US Treasury suite configs (s05, s06, ctrl_s10b, ctrl_s12b). Not a runnable strategy on its own.
+  REAL EOD clean prices of the Treasury price panel with the reference table (on-the-run aliases) and the published SOFR fixings (the GC-repo proxy),
+  read from data/fixtures by `support.ust_eod:UstEod`, which emits one quote-set snapshot per business day and imports no pricing library.
+  Calendar us_govt_bond = the Treasury business days of the panel (a copy of it rides in every snapshot as `us_govt`). Window 2018-05-01..2025-12-31.
+  See _ust_base.yaml for the instrument spec, the stacks and how to run.
+backtest:
+  tz: America/New_York
+  calendar: ../../data/fixtures/calendars/us_govt_bond.json
+  date_policy: close
+  grid: {from_mdp: ust, start: 2018-05-01, end: 2025-12-31}
+  initial_capital: 0
+  fill_lag: 0
+  on_error: raise
+  progress: {show: true}
+  attribution: {layers: [carry, roll, delta, convexity], cadence: eod}
+  measures: [dv01]
+market:
+  mdps:
+    ust:
+      type: "support.ust_eod:UstEod"
+      # partial_day_min_missing: days missing >= 10 CUSIPs quoted the day before and after are unavailable (5 days in 2023;
+      # on 2023-08-01/11-20/12-04 the on-the-run CT2/5/10/30 themselves are missing, so a position could not be marked)
+      kwargs: {window: [2018-04-01, 2026-02-27], fixings: auto, partial_day_min_missing: 10}
+      time: {mode: asof, max_staleness: 12h}
+  pricers:
+    ust: {mdp: ust, wrap: "pricebt.testing.refstack:wrap"}

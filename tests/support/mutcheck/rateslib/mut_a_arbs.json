@@ -1,0 +1,127 @@
+{
+ "file": "tools/arbs_live.py",
+ "tests": [
+  "tests/test_arbs_bridge.py"
+ ],
+ "pytest_args": [
+  "-k",
+  "not parity_check and not test_live_arbs"
+ ],
+ "mutations": [
+  {
+   "name": "popen-guard-off",
+   "find": "if \"excel\" in desc.lower():\n                h.block(\"process\", desc)",
+   "replace": "if False:\n                h.block(\"process\", desc)"
+  },
+  {
+   "name": "os-system-guard-off",
+   "find": "lambda cmd: h.block(\"process\", str(cmd)) if \"excel\" in str(cmd).lower() else real_system(cmd)",
+   "replace": "lambda cmd: real_system(cmd)"
+  },
+  {
+   "name": "write-guard-inverted",
+   "find": "any(c in mode for c in \"wax+\") and not write_ok(file):",
+   "replace": "any(c in mode for c in \"wax+\") and write_ok(file):"
+  },
+  {
+   "name": "supabase-flag-on",
+   "find": "os.environ[\"ARBS_SUPABASE_ENABLED\"] = \"0\"",
+   "replace": "os.environ[\"ARBS_SUPABASE_ENABLED\"] = \"1\""
+  },
+  {
+   "name": "disk-cache-not-redirected",
+   "find": "DiskCacheMixin.CACHE_ROOT = scratch / \"diskcache\"",
+   "replace": "DiskCacheMixin.CACHE_ROOT = paths.arbs_root"
+  },
+  {
+   "name": "fixings-not-patched",
+   "find": "    im._fetch_fixings = reader",
+   "replace": "    pass"
+  },
+  {
+   "name": "store-write-not-blocked",
+   "find": "CurveStore.write_day = lambda *a, **k: h.block(\"store_write\", \"CurveStore.write_day\")",
+   "replace": "CurveStore.write_day = CurveStore.write_day"
+  },
+  {
+   "name": "guard-flag-never-set",
+   "find": "h.arbs_patched = True",
+   "replace": "h.arbs_patched = False"
+  },
+  {
+   "name": "served-future-accepted",
+   "find": "    if stamp > t:\n        raise LookAheadError",
+   "replace": "    if False:\n        raise LookAheadError"
+  },
+  {
+   "name": "rebuilt-curve-accepted",
+   "find": "if meta.get(\"provenance\") and not allow_rebuilt:",
+   "replace": "if False:"
+  },
+  {
+   "name": "reference-date-unchecked",
+   "find": "if stamp.date() != want or ref != want:",
+   "replace": "if stamp.date() != want:"
+  },
+  {
+   "name": "minute-tolerance-inclusive",
+   "find": "elif t - stamp > pd.Timedelta(r.tolerance):",
+   "replace": "elif t - stamp >= pd.Timedelta(r.tolerance):"
+  },
+  {
+   "name": "naive-stamp-accepted",
+   "find": "return None if t.tzinfo is None else t",
+   "replace": "return t"
+  },
+  {
+   "name": "minute-not-floored",
+   "find": "t.floor(\"min\").to_pydatetime()",
+   "replace": "t.to_pydatetime()"
+  },
+  {
+   "name": "eod-date-in-stamp-zone",
+   "find": "t.tz_convert(NY).date() if r.kind",
+   "replace": "t.date() if r.kind"
+  },
+  {
+   "name": "par-in-decimals",
+   "find": "float(raw.fair_rate(raw.build_irswap(fwd=\"0D\", tenor=tenor, notional=1_000_000))) * 100.0",
+   "replace": "float(raw.fair_rate(raw.build_irswap(fwd=\"0D\", tenor=tenor, notional=1_000_000))) * 1.0"
+  },
+  {
+   "name": "fixed-rate-in-percent",
+   "find": "fixed_rate=fixed_rate_pct / 100.0",
+   "replace": "fixed_rate=fixed_rate_pct"
+  },
+  {
+   "name": "pv01-is-npv",
+   "find": "float(raw.npv(swap)), float(raw.pv01(swap))",
+   "replace": "float(raw.npv(swap)), float(raw.npv(swap))"
+  },
+  {
+   "name": "lookahead-not-an-error-row",
+   "find": "except (MarketDataUnavailable, StaleSnapshot, LookAheadError) as e:",
+   "replace": "except (MarketDataUnavailable, StaleSnapshot) as e:"
+  },
+  {
+   "name": "attempts-dropped",
+   "find": "result = {\"rows\": oracle_cases(cases), \"attempts\": h.attempts}",
+   "replace": "result = {\"rows\": oracle_cases(cases), \"attempts\": []}"
+  },
+  {
+   "name": "status-opt-in-inverted",
+   "find": "if os.environ.get(\"PRICEBT_LIVE_ARBS\") != \"1\":",
+   "replace": "if os.environ.get(\"PRICEBT_LIVE_ARBS\") == \"1\":"
+  },
+  {
+   "name": "inner-runs-without-guard",
+   "find": "if active_guard() is None or not active_guard().arbs_patched:",
+   "replace": "if False:"
+  },
+  {
+   "name": "request-shared",
+   "find": "    req = copy.deepcopy(dict(request))\n    ",
+   "replace": "    req = dict(request)\n    "
+  }
+ ]
+}

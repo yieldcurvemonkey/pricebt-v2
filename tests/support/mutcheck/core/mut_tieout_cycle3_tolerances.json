@@ -1,0 +1,88 @@
+{
+ "file": "src/pricebt/tieout/tolerances.py",
+ "tests": [
+  "tests/test_tieout_cycle3.py"
+ ],
+ "mutations": [
+  {
+   "name": "T2-explicit-does-not-remove-covered-declared-keys",
+   "find": "    return {**{k: v for k, v in declared.items() if not any(_covers(e, k) for e in explicit)}, **explicit}",
+   "replace": "    return {**declared, **explicit}"
+  },
+  {
+   "name": "T2-wildcard-covers-nothing",
+   "find": "(len(e) == 2 and e[0] == d[0] and (e[1] == \"*\" or e[1] == d[1]))",
+   "replace": "(len(e) == 2 and e[0] == d[0] and e[1] == d[1])"
+  },
+  {
+   "name": "T2-quantity-covers-nothing-but-itself",
+   "find": "(len(e) == 2 and e[0] == d[0] and (e[1] == \"*\" or e[1] == d[1]))",
+   "replace": "(len(e) == 2 and e[0] == d[0] and e[1] == \"*\")"
+  },
+  {
+   "name": "T2-tieout-block-not-a-mapping-accepted",
+   "find": "    if not isinstance(tie, Mapping):\n        raise ConfigError(\"tieout must be a mapping {tolerances: {...}}\", path=\"tieout\", code=\"CFG-TYPE\")\n    declared = tie.get(\"tolerances\")",
+   "replace": "    declared = tie.get(\"tolerances\") if isinstance(tie, Mapping) else None"
+  },
+  {
+   "name": "T3-unknown-level-accepted",
+   "find": "    if level not in (\"L1\", *_OPEN_LEVELS, \"L4\"):",
+   "replace": "    if False:"
+  },
+  {
+   "name": "T3-unknown-quantity-accepted",
+   "find": "        if level in QUANTITIES and quantity not in QUANTITIES[level]:",
+   "replace": "        if False:"
+  },
+  {
+   "name": "T3-L0-accepted",
+   "find": "    if level == \"L0\":",
+   "replace": "    if False:"
+  },
+  {
+   "name": "T3-nan-inf-accepted",
+   "find": "    if not math.isfinite(f) or f < 0.0 or (positive and f == 0.0):",
+   "replace": "    if f < 0.0 or (positive and f == 0.0):"
+  },
+  {
+   "name": "T3-negative-accepted",
+   "find": "    if not math.isfinite(f) or f < 0.0 or (positive and f == 0.0):",
+   "replace": "    if not math.isfinite(f) or (positive and f == 0.0):"
+  },
+  {
+   "name": "T3-bool-accepted-as-number",
+   "find": "    if isinstance(v, bool) or not isinstance(v, numbers.Real):\n        hint",
+   "replace": "    if not isinstance(v, numbers.Real):\n        hint"
+  },
+  {
+   "name": "T3-strict-not-boolean-accepted",
+   "find": "    for flag in (\"expected\", \"strict\"):",
+   "replace": "    for flag in (\"expected\",):"
+  },
+  {
+   "name": "T3-empty-reason-accepted",
+   "find": "    if \"reason\" in v and (not isinstance(reason, str) or not reason.strip()):",
+   "replace": "    if \"reason\" in v and not isinstance(reason, str):"
+  },
+  {
+   "name": "T3-constructor-not-validating",
+   "find": "        declared = dict(overrides or {})\n        validate_declaration(declared, \"tolerances\")\n",
+   "replace": "        declared = dict(overrides or {})\n"
+  },
+  {
+   "name": "per-unit-layer-does-not-fall-back-to-the-layer",
+   "find": "dict.fromkeys((quantity, quantity.split(\"/\")[0]))",
+   "replace": "dict.fromkeys((quantity,))"
+  },
+  {
+   "name": "TRADE-OFF-floor-unit-blank",
+   "find": "    return \"value\" + (\", per unit of position\" if per_unit else \"\")",
+   "replace": "    return \"\""
+  },
+  {
+   "name": "TRADE-OFF-ladder-bucket-unit-dropped",
+   "find": "(\", per bucket\" if \".\" in quantity else \"\")",
+   "replace": "\"\""
+  }
+ ]
+}

@@ -1,0 +1,12 @@
+{
+  "file": "src/pricebt/results/attribution.py",
+  "tests": ["tests/test_engine_baseline.py", "tests/test_results_attribution.py"],
+  "mutations": [
+    {"name": "baseline-counted-as-modelled", "find": "if n != \"unexplained\" and n not in BASELINE_LAYERS]", "replace": "if n != \"unexplained\"]"},
+    {"name": "baseline-transactions-sign", "find": "\"transactions\": -float(result.positions[\"tcost\"].sum()) if len(result.positions) else 0.0", "replace": "\"transactions\": float(result.positions[\"tcost\"].sum()) if len(result.positions) else 0.0"},
+    {"name": "baseline-interest-dropped", "find": "\"cash_interest\": _interest(result)}\n    out = pd.DataFrame({\"pnl\": pd.Series(rows)})\n    out.loc[\"total\"] = float(out[\"pnl\"].sum())\n    out[\"share\"] = out[\"pnl\"] / out.loc[\"total\", \"pnl\"] if out.loc[\"total\", \"pnl\"] != 0.0 else np.nan\n    out.index.name = \"layer\"\n    return out\n\n\ndef _by_component", "replace": "\"cash_interest\": 0.0}\n    out = pd.DataFrame({\"pnl\": pd.Series(rows)})\n    out.loc[\"total\"] = float(out[\"pnl\"].sum())\n    out[\"share\"] = out[\"pnl\"] / out.loc[\"total\", \"pnl\"] if out.loc[\"total\", \"pnl\"] != 0.0 else np.nan\n    out.index.name = \"layer\"\n    return out\n\n\ndef _by_component"},
+    {"name": "baseline-no-error-when-absent", "find": "    if not present:\n        raise ResultError(", "replace": "    if False:\n        raise ResultError("},
+    {"name": "baseline-groupby-mean", "find": "groupby(\"layer\")[\"pnl\"].sum().reindex(present)", "replace": "groupby(\"layer\")[\"pnl\"].mean().reindex(present)"},
+    {"name": "baseline-dispatch-missing", "find": "    if by == \"baseline\":\n        return _by_baseline(result)\n", "replace": ""}
+  ]
+}

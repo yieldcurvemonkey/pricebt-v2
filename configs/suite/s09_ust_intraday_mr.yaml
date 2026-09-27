@@ -1,0 +1,87 @@
+extends: _ust_base.yaml
+name: s09_ust_intraday_mr
+doc: >
+  Intraday mean reversion of the CT10 (91282CPZ8 on every session of the window) on REAL 1-minute yields. Signal chain: the `rate` measure (the yield,
+  percent) of a freshly built CT10 -> 30-minute rolling z-score of the yield against the PRIOR 30 minutes -> clipped to +/-10 (a flat,
+  forward-filled window has std 0 and gives +/-inf, which a barrier cannot compare). A HIGH yield (z > 2) BUYS the bond (the yield is
+  expected to fall back, the price to rise), a LOW yield (z < -2) SELLS it (quantity -1 of the long template); entries only when flat
+  and when the 30-minute yield std exceeds 0.3bp (so forward-filled stretches cannot trigger); exit when z crosses back through 0.
+  Flat by the end of the day: every entry carries trade_duration '0b@16:00' (same-day 16:00 ET exit; an entry at 16:00 is skipped).
+  The grid is the minute stamps inside the 09:00-16:00 ET session (flat forward-filled days dropped by the provider); 2026-02-17 is
+  excluded because the Feb-2026 10Y (91282CPZ8) only becomes CT10 on 02-18 and its predecessor has no quotes.
+  Bad ticks: the provider's cross-sectional outlier filter (outlier_bp 5) removes the 90bp CT10 spike of 2026-03-12 08:43-08:45 ET.
+  Financing: GC = last published SOFR, accrued on elapsed seconds; accrued interest and coupons are date-granular.
+  Cost 1/128 point per side (half of a typical 10Y on-the-run bid-offer).
+backtest:
+  tz: America/New_York
+  calendar: ../../data/fixtures/calendars/us_govt_bond.json
+  date_policy: close
+  session: {open: "09:00", close: "16:00"}
+  grid: {from_mdp: ust, start: 2026-02-18, end: 2026-03-13, session_only: true}
+  initial_capital: 0
+  fill_lag: 0
+  on_error: raise
+  progress: {show: true, desc: S9 INTRADAY UST MR}
+  attribution: {layers: [carry, roll, delta, convexity], cadence: each}
+  measures: [dv01]
+market:
+  mdps:
+    ust:
+      type: "support.ust_minute:UstMinute"
+      kwargs: {fixings: auto, outlier_bp: 5.0}
+      time: {mode: exact}
+  pricers:
+    ust: {mdp: ust, wrap: "pricebt.testing.refstack:wrap"}
+signals:
+  # ytm = the yield of a fresh CT10; z = clip(zscore(ytm, 30), -10, 10); ytm_sd = rolling_std(ytm, 30). Plain YAML derived signals with NAMED inputs.
+  ytm:
+    type: measure
+    template: {instrument: ust, name: ct10, terms: {side: buy, security: CT10, notional: 1e7}}
+    measure: rate
+  ytm_z: {type: derived, op: zscore, inputs: [ytm], window: 30}
+  z: {type: derived, op: clip, inputs: [ytm_z], lo: -10.0, hi: 10.0}
+  ytm_sd: {type: derived, op: rolling_std, inputs: [ytm], window: 30}
+strategy:
+  triggers:
+    - type: aggregate
+      aggregate_type: ALL_OF
+      triggers:
+        - {type: mkt, data_source: z, trigger_level: 2.0, direction: ABOVE, on_missing: skip}
+        - {type: mkt, data_source: ytm_sd, trigger_level: 0.003, direction: ABOVE, on_missing: skip}
+        - {type: trade_count, trade_count: 1, direction: BELOW}
+      actions:
+        - type: add_trade
+          name: buy_high_yield
+          priceables: {instrument: ust, name: ct10, terms: {side: buy, security: CT10, notional: 1e7, extras: {repo: {gc_rate: pricer}}}}
+          trade_duration: "0b@16:00"
+          on_past_exit: skip
+          tags: [mr_long]
+          transaction_cost: {type: scaled, scaling_type: notional, scaling_level: 7.8125e-5}
+    - type: aggregate
+      aggregate_type: ALL_OF
+      triggers:
+        - {type: mkt, data_source: z, trigger_level: -2.0, direction: BELOW, on_missing: skip}
+        - {type: mkt, data_source: ytm_sd, trigger_level: 0.003, direction: ABOVE, on_missing: skip}
+        - {type: trade_count, trade_count: 1, direction: BELOW}
+      actions:
+        - type: add_trade
+          name: sell_low_yield
+          priceables: {instrument: ust, name: ct10, terms: {side: buy, security: CT10, notional: 1e7, extras: {repo: {gc_rate: pricer}}}}
+          quantity: -1.0
+          trade_duration: "0b@16:00"
+          on_past_exit: skip
+          tags: [mr_short]
+          transaction_cost: {type: scaled, scaling_type: notional, scaling_level: 7.8125e-5}
+    - type: crossing
+      data_source: z
+      trigger_level: 0.0
+      direction: BELOW
+      on_missing: skip
+      actions: [{type: exit_trade, name: exit_long, tags: [mr_long], reason: z_reverted}]
+    - type: crossing
+      data_source: z
+      trigger_level: 0.0
+      direction: ABOVE
+      on_missing: skip
+      actions: [{type: exit_trade, name: exit_short, tags: [mr_short], reason: z_reverted}]
+outputs: {dir: ../../results_new/s09_ust_intraday_mr, tearsheet: true}

@@ -1,0 +1,20 @@
+extends: s08_swap_intraday_min.yaml
+name: s08b_swap_minute_hold_week
+doc: >
+  S8b (swap, minute-grid attribution check). One 10Y PAYER bought 2026-03-09 09:30 ET and held through 2026-03-13 16:00 on the REAL
+  1-minute curve session grid (09:30-16:00), layers at every point. Purpose: show that carry and roll are ~0 on every intraday interval
+  (the store curves carry a date-only reference date, so no time passes inside a session) and arrive as one lump on the first interval
+  after the reference-date flip (the first grid point of the next session), while delta/convexity explain the minute moves.
+backtest:
+  progress: {desc: S8b SWAP MINUTE HOLD}
+strategy:
+  triggers:
+    - type: date
+      dates: [2026-03-09 09:30:00]
+      actions:
+        - type: add_trade
+          name: hold_week
+          priceables: {instrument: usd_sofr_ois, name: pay10y, terms: {side: pay, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+          trade_duration: null
+          tags: [hold]
+outputs: {dir: ../../results_new/s08b_swap_minute_hold_week}

@@ -1,0 +1,8 @@
+# Stack overlay (spec X1, D3): the rateslib adapter for a config with the swap instrument `usd_sofr_ois` and the pricer role `primary`.
+# It sets ONLY instruments.<name>.factory / .bind and market.pricers.<role>.wrap; the adapter's kit ships the default bindings, so no `bind` is written.
+#   pricebt run configs/suite/s1_swap_carry_eod.yaml --stack configs/adapters/rateslib_swap.yaml
+instruments:
+  usd_sofr_ois: {factory: "pricebt.contrib.rateslib:swap"}
+market:
+  pricers:
+    primary: {wrap: "pricebt.contrib.rateslib:wrap"}

@@ -1,0 +1,83 @@
+{
+ "file": "tests/support/curves.py",
+ "tests": [
+  "tests/test_support_curves.py"
+ ],
+ "mutations": [
+  {
+   "name": "holiday-rows-served (trading_date rule off)",
+   "find": "        if rule == \"trading_date\":\n            return node0 == tdays",
+   "replace": "        if rule == \"trading_date\":\n            return np.ones(len(stamp), dtype=bool)"
+  },
+  {
+   "name": "freshness none serves nothing",
+   "find": "        if rule == \"none\":\n            return np.ones(len(stamp), dtype=bool)",
+   "replace": "        if rule == \"none\":\n            return node0 == tdays"
+  },
+  {
+   "name": "local_bd uses following instead of preceding",
+   "find": "cal.preceding(_EPOCH + dt.timedelta(days=int(u)))",
+   "replace": "cal.following(_EPOCH + dt.timedelta(days=int(u)))"
+  },
+  {
+   "name": "duplicate stamps not dropped at index time",
+   "find": "        keep[fi[dup]] = False",
+   "replace": "        pass"
+  },
+  {
+   "name": "duplicate stamps keep the FIRST row when reading",
+   "find": "        last[:-1] = ns[:-1] != ns[1:]",
+   "replace": "        last[1:] = ns[1:] != ns[:-1]"
+  },
+  {
+   "name": "DF anchor tolerance 1e-3",
+   "find": "abs(dfs[0] - 1.0) > 1e-12",
+   "replace": "abs(dfs[0] - 1.0) > 1e-3"
+  },
+  {
+   "name": "DF positivity check removed",
+   "find": "or (dfs <= 0).any() or",
+   "replace": "or"
+  },
+  {
+   "name": "DF finiteness check removed",
+   "find": "or not np.isfinite(dfs).all() or",
+   "replace": "or"
+  },
+  {
+   "name": "DF minimum node count removed",
+   "find": "len(dfs) < 2 or len(dates) != len(dfs) or",
+   "replace": ""
+  },
+  {
+   "name": "spline rows accepted",
+   "find": "        if knots is not None and len(knots) > 0:",
+   "replace": "        if False:"
+  },
+  {
+   "name": "unknown interpolation tag substituted",
+   "find": "TAGS = MappingProxyType({\"log_linear\": \"log_linear_df\"})",
+   "replace": "TAGS = MappingProxyType({\"log_linear\": \"log_linear_df\", \"flat_forward\": \"log_linear_df\"})"
+  },
+  {
+   "name": "missing interpolation tag not defaulted",
+   "find": "tag = str(row_tag or \"log_linear\")",
+   "replace": "tag = str(row_tag)"
+  },
+  {
+   "name": "fixings evaluated at a far-future stamp (no publication policy)",
+   "find": "self.fixings.at(stamp, node0)",
+   "replace": "self.fixings.at(pd.Timestamp.max.tz_localize(\"UTC\"), node0)"
+  },
+  {
+   "name": "minute rows delayed like end-of-day rows",
+   "find": "eod=self.profile.kind == \"eod\")",
+   "replace": "eod=True)"
+  },
+  {
+   "name": "curve request key not checked",
+   "find": "if request and request.get(\"curve\") not in (None, self.asset, self.curve_id):",
+   "replace": "if False:"
+  }
+ ]
+}

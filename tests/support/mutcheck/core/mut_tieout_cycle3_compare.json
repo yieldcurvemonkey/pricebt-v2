@@ -1,0 +1,63 @@
+{
+ "file": "src/pricebt/tieout/compare.py",
+ "tests": [
+  "tests/test_tieout_cycle3.py"
+ ],
+ "mutations": [
+  {
+   "name": "T1-union-of-measure-columns-reverted-to-intersection",
+   "find": "    for q in sorted(qa | qb):\n        first = len(c.rows)",
+   "replace": "    for q in sorted(qa & qb):\n        first = len(c.rows)"
+  },
+  {
+   "name": "T1-one-sided-column-skipped-again",
+   "find": "    for q in sorted(qa | qb):\n        first = len(c.rows)",
+   "replace": "    for q in sorted(qa | qb):\n        if q not in qa or q not in qb:\n            continue\n        first = len(c.rows)"
+  },
+  {
+   "name": "T1-missing-column-padded-with-zeros-not-nan",
+   "find": "ma.assign(**{f\"measure_{q}\": np.nan for q in qb - qa}), mb.assign(**{f\"measure_{q}\": np.nan for q in qa - qb})",
+   "replace": "ma.assign(**{f\"measure_{q}\": 0.0 for q in qb - qa}), mb.assign(**{f\"measure_{q}\": 0.0 for q in qa - qb})"
+  },
+  {
+   "name": "T6-ledger-size-tolerance-ignores-the-asset-class",
+   "find": "c.tol.for_(\"L1\", \"quantity\", classes.get(str(p), \"\"))",
+   "replace": "c.tol.for_(\"L1\", \"quantity\")"
+  },
+  {
+   "name": "T7-expected-flag-printed-from-the-row-status",
+   "find": "\"expected\": t.expected, \"reason\": t.reason, \"unit\": unit}",
+   "replace": "\"expected\": False, \"reason\": t.reason, \"unit\": unit}"
+  },
+  {
+   "name": "T8-any-role-explains",
+   "find": "        return roles is None or bool(got & roles)\n",
+   "replace": "        return True\n"
+  },
+  {
+   "name": "T8-portfolio-explained-by-any-role",
+   "find": "return min((t for t, got in self.explained_inputs.items() if every is None or got & every), default=None)",
+   "replace": "return min(self.explained_inputs, default=None)"
+  },
+  {
+   "name": "T8-roles-argument-ignored",
+   "find": "    known = {n: (roles or {}).get(n, v.get(\"roles\")) for n, v in ins.items()}",
+   "replace": "    known = {n: v.get(\"roles\") for n, v in ins.items()}"
+  },
+  {
+   "name": "T8-manifest-roles-ignored",
+   "find": "    known = {n: (roles or {}).get(n, v.get(\"roles\")) for n, v in ins.items()}",
+   "replace": "    known = {n: (roles or {}).get(n) for n, v in ins.items()}"
+  },
+  {
+   "name": "tolerances-used-lose-the-reason",
+   "find": "\"reason\": t.reason, \"unit\": unit}",
+   "replace": "\"reason\": \"\", \"unit\": unit}"
+  },
+  {
+   "name": "T8-no-position-fallback-lost",
+   "find": "every = None if not reads or any(r is None for r in reads) else",
+   "replace": "every = None if any(r is None for r in reads) else"
+  }
+ ]
+}

@@ -1,0 +1,83 @@
+{
+ "file": "src/pricebt/contrib/quantlib/wrap.py",
+ "tests": [
+  "tests/test_quantlib_wrap.py",
+  "tests/test_quantlib_globals.py",
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_tieout.py",
+  "tests/test_quantlib_bond.py",
+  "tests/test_quantlib_conventions.py"
+ ],
+ "mutations": [
+  {
+   "name": "interpolation-tag-unchecked",
+   "find": "            if c.interpolation != \"log_linear_df\":",
+   "replace": "            if False:"
+  },
+  {
+   "name": "value-kind-unchecked",
+   "find": "            if c.value_kind != \"discount_factor\":",
+   "replace": "            if False:"
+  },
+  {
+   "name": "percent-fixings-not-converted",
+   "find": "        scale = 0.01 if f.unit == \"percent\" else 1.0",
+   "replace": "        scale = 1.0"
+  },
+  {
+   "name": "decimal-fixings-scaled",
+   "find": "        scale = 0.01 if f.unit == \"percent\" else 1.0",
+   "replace": "        scale = 0.01"
+  },
+  {
+   "name": "repo-proxy-unit",
+   "find": "        scale = 1.0 if f.unit == \"percent\" else 100.0",
+   "replace": "        scale = 1.0"
+  },
+  {
+   "name": "repo-proxy-includes-ref",
+   "find": "prior = [(d, v * scale) for d, v in zip(f.dates, f.values) if d < ref]",
+   "replace": "prior = [(d, v * scale) for d, v in zip(f.dates, f.values) if d <= ref]"
+  },
+  {
+   "name": "immutability",
+   "find": "        if getattr(self, \"_frozen\", False):\n            raise AttributeError",
+   "replace": "        if False:\n            raise AttributeError"
+  },
+  {
+   "name": "pickle-keeps-quantlib-objects",
+   "find": "        st[\"_lazy\"] = {}",
+   "replace": "        pass"
+  },
+  {
+   "name": "memo-never-hits",
+   "find": "        if key not in self._lazy:\n            self._lazy[key] = build()\n        return self._lazy[key]",
+   "replace": "        self._lazy[key] = build()\n        return self._lazy[key]"
+  },
+  {
+   "name": "alias-not-resolved",
+   "find": "key = q.aliases.get(token.strip(), token.strip())",
+   "replace": "key = token.strip()"
+  },
+  {
+   "name": "several-curves-take-first",
+   "find": "        if len(available) > 1:\n            raise ConfigError",
+   "replace": "        if False:\n            raise ConfigError"
+  },
+  {
+   "name": "unknown-name-tolerated",
+   "find": "            if name not in available:\n                raise ConfigError(f\"the snapshot has no",
+   "replace": "            if False:\n                raise ConfigError(f\"the snapshot has no"
+  },
+  {
+   "name": "unknown-calendar-tolerated",
+   "find": "            if cd is None:\n                raise ConfigError",
+   "replace": "            if False:\n                raise ConfigError"
+  },
+  {
+   "name": "wrap-not-idempotent",
+   "find": "    if isinstance(pricer, QLPricer):\n        return pricer\n",
+   "replace": "    if False:\n        return pricer\n"
+  }
+ ]
+}

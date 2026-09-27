@@ -1,0 +1,12 @@
+{
+  "file": "src/pricebt/strategy/sizing.py",
+  "tests": ["tests/test_ladder_hedge_dust.py"],
+  "mutations": [
+    {"name": "dust-strict-less", "find": "np.abs(A * q[None, :]).sum(axis=0) <= min_trade_risk", "replace": "np.abs(A * q[None, :]).sum(axis=0) < min_trade_risk"},
+    {"name": "dust-signed-risk", "find": "np.where(np.abs(A * q[None, :]).sum(axis=0) <= min_trade_risk, 0.0, q)", "replace": "np.where((A * q[None, :]).sum(axis=0) <= min_trade_risk, 0.0, q)"},
+    {"name": "dust-filter-before-scaling", "find": "    q = q * risk_percentage / 100.0\n    if min_trade_risk > 0:", "replace": "    if min_trade_risk > 0:"},
+    {"name": "dust-filter-off", "find": "    if min_trade_risk > 0:  # dust", "replace": "    if False:  # dust"},
+    {"name": "dust-keeps-instead-of-drops", "find": "0.0, q)\n    before =", "replace": "q, 0.0)\n    before ="},
+    {"name": "dust-max-instead-of-sum", "find": "np.abs(A * q[None, :]).sum(axis=0) <= min_trade_risk", "replace": "np.abs(A * q[None, :]).max(axis=0) <= min_trade_risk"}
+  ]
+}

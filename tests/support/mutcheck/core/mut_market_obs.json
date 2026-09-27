@@ -1,0 +1,25 @@
+{
+ "file": "src/pricebt/market.py",
+ "tests": [
+  "tests/test_engine_observation.py",
+  "tests/test_engine_baseline.py",
+  "tests/test_engine_audit.py"
+ ],
+ "mutations": [
+  {
+   "name": "wrap-key-without-ts",
+   "find": "wkey = (role, getattr(p, \"digest\", None) or id(p), None if pts is None else pd.Timestamp(pts).value)",
+   "replace": "wkey = (role, getattr(p, \"digest\", None) or id(p))"
+  },
+  {
+   "name": "reset-keeps-wrapped",
+   "find": "        self._wrapped.clear()\n        self.n_fetches",
+   "replace": "        self.n_fetches"
+  },
+  {
+   "name": "reset-keeps-counters",
+   "find": "        self.n_fetches = self.n_hits = self.n_wraps = 0\n",
+   "replace": ""
+  }
+ ]
+}

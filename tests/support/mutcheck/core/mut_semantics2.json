@@ -1,0 +1,9 @@
+{
+  "file": "src/pricebt/contracts/spec.py",
+  "tests": ["tests/guards/test_semantics.py", "tests/test_binding.py"],
+  "mutations": [
+    {"name": "required-check-off", "find": "    if missing or missing_layers:\n        hints = []", "replace": "    if False:\n        hints = []"},
+    {"name": "required-layers-ignored", "find": "    missing_layers = [n for n in schema.required_layers() if n not in bindings]", "replace": "    missing_layers = []"},
+    {"name": "required-methods-ignored", "find": "    missing = [n for k in (\"method\", \"measure\") for n in req[k] if n not in derived and n not in bindings]", "replace": "    missing = []"}
+  ]
+}

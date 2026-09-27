@@ -1,0 +1,88 @@
+{
+ "file": "tests/support/ust_minute.py",
+ "tests": [
+  "tests/test_support_ust.py"
+ ],
+ "mutations": [
+  {
+   "name": "flat days kept",
+   "find": "if present.any() and all(np.nanmax(block[:, j]) == np.nanmin(block[:, j]) for j in np.flatnonzero(present)):",
+   "replace": "if False:"
+  },
+  {
+   "name": "flat day needs only ONE constant cusip",
+   "find": "all(np.nanmax(block[:, j]) == np.nanmin(block[:, j]) for j in np.flatnonzero(present))",
+   "replace": "any(np.nanmax(block[:, j]) == np.nanmin(block[:, j]) for j in np.flatnonzero(present))"
+  },
+  {
+   "name": "session upper bound exclusive",
+   "find": "(tod <= self.session[1])",
+   "replace": "(tod < self.session[1])"
+  },
+  {
+   "name": "session lower bound exclusive",
+   "find": "(tod >= self.session[0])",
+   "replace": "(tod > self.session[0])"
+  },
+  {
+   "name": "yield band exclusive",
+   "find": "lo <= v <= hi",
+   "replace": "lo < v < hi"
+  },
+  {
+   "name": "bad-tick threshold 10x",
+   "find": "thr = self.outlier_bp / 100.0",
+   "replace": "thr = self.outlier_bp / 10.0"
+  },
+  {
+   "name": "bad-tick against zero instead of the median move",
+   "find": "excess = move - float(np.median(move[ok]))",
+   "replace": "excess = move"
+  },
+  {
+   "name": "bad-tick patience unlimited",
+   "find": "(np.abs(excess) > thr) & (streak + 1 < self.outlier_max_run)",
+   "replace": "(np.abs(excess) > thr)"
+  },
+  {
+   "name": "bad-tick patience off by one",
+   "find": "(streak + 1 < self.outlier_max_run)",
+   "replace": "(streak + 2 < self.outlier_max_run)"
+  },
+  {
+   "name": "cross-section of two accepted",
+   "find": "            if ok.sum() < 3:",
+   "replace": "            if ok.sum() < 2:"
+  },
+  {
+   "name": "bad-tick ignores the last accepted level",
+   "find": "            last[accept] = row[accept]",
+   "replace": "            last[:] = np.where(np.isfinite(row), row, last)"
+  },
+  {
+   "name": "run count off",
+   "find": "run[k] = np.where(rep[k], run[k - 1] + 1, 0)",
+   "replace": "run[k] = np.where(rep[k], run[k - 1] + 2, 0)"
+  },
+  {
+   "name": "repeat flag inverted",
+   "find": "rep[1:] = y[1:] == y[:-1]",
+   "replace": "rep[1:] = y[1:] != y[:-1]"
+  },
+  {
+   "name": "default mapping asof",
+   "find": "kind=\"minute\", mode=\"exact\")",
+   "replace": "kind=\"minute\", mode=\"asof\")"
+  },
+  {
+   "name": "filtered flag always present",
+   "find": "                if self.outlier_bp is not None:\n                    flags[c][\"filtered\"]",
+   "replace": "                if True:\n                    flags[c][\"filtered\"]"
+  },
+  {
+   "name": "quote not restricted to reference data",
+   "find": "and lo <= v <= hi and self.reference.get(c) is not None:",
+   "replace": "and lo <= v <= hi:"
+  }
+ ]
+}

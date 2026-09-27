@@ -1,0 +1,1 @@
+{"file":"tests/guards/scan.py","tests":["tests/guards/test_twins.py"],"mutations":[{"name":"contrib-not-excluded-from-core","find":"if \"contrib\" not in p.relative_to(pkg).parts and \"__pycache__\" not in p.parts)\n\n\ndef all_py_files","replace":"if \"__pycache__\" not in p.parts)\n\n\ndef all_py_files"}]}

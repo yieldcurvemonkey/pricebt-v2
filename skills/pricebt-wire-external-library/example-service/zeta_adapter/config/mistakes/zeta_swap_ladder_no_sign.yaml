@@ -1,0 +1,15 @@
+# NEGATIVE CONTROL 4: the `delta_ladder` binding forgot `sign: -1` (zeta's LADDER_10BP has the OPPOSITE sign to RISK_10BP: a payer's ladder is negative, pricebt's is positive).
+# Expected tie-out verdict (needs delta_ladder in the audit measures, Python API): L2.delta_ladder.<every bucket with risk> EXCEEDS with max_rel 2.0; dv01 stays exact (it sums the RAW ladder in code).
+instruments:
+  usd_sofr_ois:
+    factory: "zeta_adapter:swap"
+    bind:
+      delta_ladder:   # the shipped binding has `sign: -1.0` here
+        target: {method: delta_ladder}
+        kwargs: {ctx: "@ctx"}
+        keys: [1M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y, 20Y, 30Y]
+        reduce: zeta_ladder_to_tenor_dict
+        scale: 0.1
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}

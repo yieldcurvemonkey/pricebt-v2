@@ -1,0 +1,28 @@
+{
+ "file": "src/pricebt/config/cli.py",
+ "tests": [
+  "tests/test_tieout_cycle3.py"
+ ],
+ "mutations": [
+  {
+   "name": "T4-only-config-errors-caught",
+   "find": "    except Exception as e:  # any failure",
+   "replace": "    except ConfigError as e:  # any failure"
+  },
+  {
+   "name": "T4-duplicate-check-before-strip",
+   "find": "        name = name.strip()\n        if name in out:",
+   "replace": "        if name in out:"
+  },
+  {
+   "name": "T4-error-without-its-type",
+   "find": "f\"error: [{getattr(e, 'code', None) or type(e).__name__}] {e}\"",
+   "replace": "f\"error: {e}\""
+  },
+  {
+   "name": "T5-cli-prints-no-stack-summary",
+   "find": "            for line in stack_summary(res.header):",
+   "replace": "            for line in ():"
+  }
+ ]
+}

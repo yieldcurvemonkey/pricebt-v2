@@ -1,0 +1,58 @@
+extends: [_swap_base.yaml, _ust_base.yaml]
+name: s07_swap_spread
+doc: >
+  10Y SWAP SPREAD, cross-product with TWO pricer roles and TWO instrument specs: long CT10 (10mm face; instrument `ust`, pricer role `ust` = EOD clean
+  prices, financed at GC = last published SOFR) against PAYING a spot-starting 10Y SOFR swap struck at par (instrument `usd_sofr_ois`, pricer role
+  `primary` = the REAL EOD SOFR curve store). The swap notional is set by a HedgeAction on `dv01` that sizes the swap template with `view.measure_of`
+  on ITS OWN pricer role, so the book is DV01-neutral at every monthly roll. Sign convention: dv01 = P&L per +1bp; long bond dv01 < 0, payer swap
+  dv01 > 0; P&L ~ D * d(s10 - y10) where s10 is the swap par rate and y10 the CT10 yield, D ~ 8-9k USD/bp: the book is LONG the swap spread
+  (gains when the swap rate rises relative to the Treasury yield, i.e. the spread widens / becomes less negative). Carry ~ D*(y10 - s10)
+  (+ SOFR received on the swap minus repo paid on the bond, ~0 with GC = SOFR). Rolled monthly (exit all, re-enter).
+  The backtest calendar is the curve store's business days (Good Fridays with bond prices but no curve are left out), so every point has both
+  pricers fresh (both stamped 17:00 ET). Costs: bond 1/64 point per side; swap a quarter bp of DV01 per side.
+  A stack overlay must name BOTH instruments and BOTH roles: `--stack configs/adapters/rateslib_swap.yaml --stack configs/adapters/rateslib_bond.yaml`.
+backtest:
+  tz: America/New_York
+  calendar: calendars/usd_fed.json
+  date_policy: close
+  grid: {from_mdp: ust, start: 2018-05-01, end: 2025-12-31}
+  initial_capital: 0
+  fill_lag: 0
+  on_error: raise
+  progress: {show: true, desc: S7 SWAP SPREAD}
+  attribution: {layers: [carry, roll, delta, convexity], cadence: eod}
+  measures: [dv01]
+market:
+  mdps:
+    sofr:
+      type: "support.curves:CurveStore"
+      kwargs: {asset: USD-SOFR-1D-CITIVELOEXCEL, window: [2018-04-01, 2026-02-27]}
+      time: {mode: asof, max_staleness: 12h}
+    ust:
+      type: "support.ust_eod:UstEod"
+      kwargs: {window: [2018-04-01, 2026-02-27], fixings: auto, partial_day_min_missing: 10}   # see s05: 5 partial panel days in 2023
+      time: {mode: asof, max_staleness: 12h}
+  pricers:
+    primary: {mdp: sofr, wrap: "pricebt.testing.refstack:wrap"}
+    ust: {mdp: ust, wrap: "pricebt.testing.refstack:wrap"}
+strategy:
+  triggers:
+    - type: periodic
+      frequency: 1m
+      calendar: [2023-02-10, 2023-06-15, 2023-08-01, 2023-11-20, 2023-12-04]   # the partial-panel days: roll the next day instead
+      actions:
+        - {type: exit_all, name: close_book}
+        - type: add_trade
+          name: long_ct10
+          priceables: {instrument: ust, name: ct10, terms: {side: buy, security: CT10, notional: 1e7, extras: {repo: {gc_rate: pricer}}}}
+          trade_duration: null
+          tags: [bond]
+          transaction_cost: {type: scaled, scaling_type: notional, scaling_level: 1.5625e-4}
+        - type: hedge
+          name: pay_swap
+          risk: dv01
+          priceables: {instrument: usd_sofr_ois, name: pay10y, terms: {side: pay, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+          trade_duration: null
+          tags: [swap]
+          transaction_cost: {type: scaled, scaling_type: "measure:dv01", scaling_level: 0.25}
+outputs: {dir: ../../results_new/s07_swap_spread, tearsheet: true}

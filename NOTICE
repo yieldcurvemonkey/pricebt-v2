@@ -1,0 +1,10 @@
+pricebt
+Copyright (c) 2026 the pricebt authors. Licensed under the Apache License, Version 2.0.
+
+This product ports design, vocabulary and logic from gs_quant (https://github.com/goldmansachs/gs-quant),
+Copyright Goldman Sachs, licensed under the Apache License, Version 2.0: the Strategy / Trigger / TriggerInfo /
+Action / TransactionModel / CashAccrualModel / RelativeDate concepts and their semantics (with deliberate deviations
+documented in docs/guides/gs-quant-deviations.md).
+
+rateslib is an optional dependency and is source-available under its own licence (non-commercial use unless a
+commercial licence is registered); it is not redistributed here.

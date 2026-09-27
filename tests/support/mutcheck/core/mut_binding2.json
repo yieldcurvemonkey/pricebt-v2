@@ -1,0 +1,1 @@
+{"file":"src/pricebt/contracts/binding.py","tests":["tests/test_binding.py"],"mutations":[{"name":"attribute-called","find":"        return _post(b, getattr(env.instrument, b.target))","replace":"        v = getattr(env.instrument, b.target)\n        return _post(b, v() if callable(v) else v)"}]}

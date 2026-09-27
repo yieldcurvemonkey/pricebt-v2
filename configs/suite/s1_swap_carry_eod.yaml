@@ -1,0 +1,28 @@
+extends: _swap_base_eod.yaml
+name: s1_swap_carry_eod
+doc: >
+  S1. Receive 10Y SOFR swap struck at par, rolled monthly (held until the next monthly trigger, then re-struck at the new par rate) on REAL EOD curves,
+  2022-01-03..2025-12-31. A carry/roll harvesting strategy: P&L should be dominated by the delta layer (curve moves); the roll layer
+  (carry + roll-down on a static curve) is positive when the curve is upward sloping and negative when inverted (2022-2024).
+  Cost: 0.1 ccy per ccy of dv01 per side (0.1bp of dv01). The exit is `next schedule` (the next monthly trigger instant): a plain `1m`
+  duration is measured from the ROLLED entry date while the periodic schedule is base date + k months, so after a weekend roll the old
+  and new swaps overlap for a day (seen as net dv01 = 2x on those days in a first run).
+backtest:
+  progress: {desc: S1 SWAP CARRY EOD}
+strategy:
+  triggers:
+    - type: periodic
+      frequency: 1m
+      actions:
+        - type: add_trade
+          name: roll10y
+          priceables: {instrument: usd_sofr_ois, name: recv10y, terms: {side: receive, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+          trade_duration: "next schedule"
+          transaction_cost: {type: scaled, scaling_type: "measure:dv01", scaling_level: 0.1}
+outputs: {dir: ../../results_new/s1_swap_carry_eod}
+tieout:
+  tolerances:
+    L3.unexplained:
+      rel: 1.5e-2
+      floor: 1.0
+      reason: "one stack's adapter takes its directional derivatives by central differences of step h = 0.1 of the realised move, so its remainder is (1 - h^2) = 0.99 times the true one (verified ratio 0.9896 .. 0.9905; measured 1.000e-2); 1.5e-2 is 1.5 x h^2 and still catches a wrong layer definition (tasks/tolerance_ledger.yaml)"

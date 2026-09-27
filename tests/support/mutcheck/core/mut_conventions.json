@@ -1,0 +1,21 @@
+{
+  "file": "src/pricebt/contracts/schema.py",
+  "tests": ["tests/test_conventions_vocab.py"],
+  "mutations": [
+    {"name": "mapping-check-off", "find": "        if not isinstance(conventions, Mapping):\n            raise ConfigError(f\"`conventions` must be a mapping", "replace": "        if False:\n            raise ConfigError(f\"`conventions` must be a mapping"},
+    {"name": "string-keys-off", "find": "        if bad:\n            raise ConfigError(f\"convention keys must be strings", "replace": "        if False:\n            raise ConfigError(f\"convention keys must be strings"},
+    {"name": "unknown-allowed", "find": "        if unknown:\n            hints = ", "replace": "        if False:\n            hints = "},
+    {"name": "no-suggestion", "find": "difflib.get_close_matches(k, list(self.conventions), n=1)", "replace": "[]"},
+    {"name": "missing-allowed", "find": "        if missing:\n            raise ConfigError(f\"missing convention keys", "replace": "        if False:\n            raise ConfigError(f\"missing convention keys"},
+    {"name": "require-all-ignored", "find": "(require_all or c.required) and n not in conventions", "replace": "c.required and n not in conventions"},
+    {"name": "bool-is-int", "find": "isinstance(v, int) and not isinstance(v, bool) and v >= 0 if spec.type == \"int\"", "replace": "isinstance(v, int) and v >= 0 if spec.type == \"int\""},
+    {"name": "negative-int-ok", "find": "isinstance(v, int) and not isinstance(v, bool) and v >= 0 if spec.type == \"int\"", "replace": "isinstance(v, int) and not isinstance(v, bool) if spec.type == \"int\""},
+    {"name": "blank-name-ok", "find": "isinstance(v, str) and bool(v.strip()) if spec.type == \"name\"", "replace": "isinstance(v, str) if spec.type == \"name\""},
+    {"name": "bool-any", "find": "else isinstance(v, bool) if spec.type == \"bool\"", "replace": "else True if spec.type == \"bool\""},
+    {"name": "token-any", "find": "else v in spec.values if spec.type == \"token\"", "replace": "else True if spec.type == \"token\""},
+    {"name": "name-not-stripped", "find": "return {k: (v.strip() if self.conventions[k].type == \"name\" else v) for k, v in conventions.items()}", "replace": "return dict(conventions)"},
+    {"name": "type-check-off", "find": "        if ctype not in (\"\", *CONVENTION_TYPES):", "replace": "        if False:"},
+    {"name": "values-on-int-ok", "find": "        if values and ctype != \"token\":", "replace": "        if False:"},
+    {"name": "empty-token-ok", "find": "        if ctype == \"token\" and not values:", "replace": "        if False:"}
+  ]
+}

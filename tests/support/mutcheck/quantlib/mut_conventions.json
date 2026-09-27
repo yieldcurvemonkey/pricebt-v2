@@ -1,0 +1,55 @@
+{
+ "file": "src/pricebt/contrib/quantlib/conventions.py",
+ "tests": [
+  "tests/test_quantlib_conventions.py",
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_bond.py"
+ ],
+ "mutations": [
+  {
+   "name": "vocabulary-not-enforced-completeness",
+   "find": "check_conventions(raw, require_all=True)",
+   "replace": "check_conventions(raw, require_all=False)"
+  },
+  {
+   "name": "unsupported-token-ignored",
+   "find": "        if ok != \"*\" and v not in ok:",
+   "replace": "        if False:"
+  },
+  {
+   "name": "street-supported",
+   "find": "\"yield_convention\": (\"treasury\",),",
+   "replace": "\"yield_convention\": (\"treasury\", \"street\"),"
+  },
+  {
+   "name": "linear-supported",
+   "find": "\"end_of_month\": (False,), \"fixing_lag_days\": (1,), \"time_accrual\": (\"lump\",),",
+   "replace": "\"end_of_month\": (False,), \"fixing_lag_days\": (1,), \"time_accrual\": (\"lump\", \"linear\"),"
+  },
+  {
+   "name": "day-count-365-supported",
+   "find": "\"day_count\": (\"act360\",), \"frequency\": (\"annual\", \"semiannual\"),",
+   "replace": "\"day_count\": (\"act360\", \"act365f\"), \"frequency\": (\"annual\", \"semiannual\"),"
+  },
+  {
+   "name": "freq-months-wrong",
+   "find": "return {\"annual\": 12, \"semiannual\": 6}[self.frequency]",
+   "replace": "return {\"annual\": 12, \"semiannual\": 12}[self.frequency]"
+  },
+  {
+   "name": "bond-settlement-lag-supported",
+   "find": "\"calendar\": \"*\", \"settlement_lag_days\": (0,),",
+   "replace": "\"calendar\": \"*\", \"settlement_lag_days\": \"*\","
+  },
+  {
+   "name": "reason-lost",
+   "find": "why = _REASON.get((asset_class, key, v)) or _REASON.get((asset_class, key, None)) or",
+   "replace": "why = "
+  },
+  {
+   "name": "swap-lag-restricted",
+   "find": "\"calendar\": \"*\", \"spot_lag_days\": \"*\", \"payment_lag_days\": \"*\",",
+   "replace": "\"calendar\": \"*\", \"spot_lag_days\": (2,), \"payment_lag_days\": (2,),"
+  }
+ ]
+}

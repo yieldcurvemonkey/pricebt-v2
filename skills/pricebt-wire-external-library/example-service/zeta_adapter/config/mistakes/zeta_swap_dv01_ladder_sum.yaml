@@ -1,0 +1,10 @@
+# NEGATIVE CONTROL 9: dv01 with the market definition (the ladder sum) in EVERY state, the annuity nowhere (pricebt-layers-and-ladder rule 5 without a declaration).
+# Expected tie-out verdict: L2.dv01 EXCEEDS on the swap that is unstarted AND off par (P000004, forward-starting, struck 60bp above par: percent-level); the at-par swaps and the started swap stay noise.
+instruments:
+  usd_sofr_ois:
+    factory: "zeta_adapter:swap"
+    bind:
+      dv01: {target: {function: "zeta_mistakes:dv01_ladder_sum_in_every_state"}, kwargs: {swap: "@instrument", ctx: "@ctx"}, scale: 0.1}
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}

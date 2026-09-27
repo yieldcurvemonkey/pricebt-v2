@@ -1,0 +1,15 @@
+{
+ "file": "src/pricebt/contrib/quantlib/conventions.py",
+ "tests": [
+  "tests/test_quantlib_conventions.py",
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_bond.py"
+ ],
+ "mutations": [
+  {
+   "name": "day-count-365-supported",
+   "find": "\"day_count\": (\"act360\",), \"frequency\": (\"annual\", \"semiannual\"),",
+   "replace": "\"day_count\": (\"act360\", \"act365f\"), \"frequency\": (\"annual\", \"semiannual\"),"
+  }
+ ]
+}

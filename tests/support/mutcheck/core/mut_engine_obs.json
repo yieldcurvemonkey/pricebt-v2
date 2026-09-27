@@ -1,0 +1,16 @@
+{
+ "file": "src/pricebt/engine/engine.py",
+ "tests": [
+  "tests/test_engine_audit.py",
+  "tests/test_engine_baseline.py",
+  "tests/test_engine_observation.py",
+  "tests/test_tieout_review.py"
+ ],
+ "mutations": [
+  {
+   "name": "vector-audit-collapsed",
+   "find": "                if isinstance(raw, Mapping):  # a vector measure",
+   "replace": "                if False:  # a vector measure"
+  }
+ ]
+}

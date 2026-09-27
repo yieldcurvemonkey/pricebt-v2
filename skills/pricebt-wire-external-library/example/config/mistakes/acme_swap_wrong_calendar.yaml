@@ -1,0 +1,8 @@
+# NEGATIVE CONTROL 4: the wrap loads the snapshot's holidays plus one of another market's (2024-05-28, the day after Memorial Day): a calendar with a holiday too many.
+# Expected tie-out verdict: L0.resolved_terms is `input` with `effective` in the located difference (spot is 2024-05-30 instead of 2024-05-29), L1.pv follows as `input`;
+# snapshot digests and conventions stay exact (the inputs are identical: only the library's calendar differs).
+instruments:
+  usd_sofr_ois: {factory: "acme_adapter:swap"}
+market:
+  pricers:
+    primary: {wrap: "acme_mistakes:wrap_with_an_extra_holiday"}

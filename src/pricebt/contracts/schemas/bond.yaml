@@ -1,0 +1,143 @@
+schema_version: 1
+asset_class: bond
+extends: generic
+doc: >-
+  A fixed-coupon government bond marked from a quote, optionally financed. Direction sign: +1 is BOUGHT (long); its dv01 is negative because a
+  long position loses value when yields rise. The library owns settlement, accrual and financing conventions.
+terms:
+  side:
+    kind: term
+    type: enum
+    values: [buy, sell]
+    aliases: {long: buy, short: sell}
+    required: true
+    doc: "buy = long (+1); sell = short (-1). `long`/`short` are aliases."
+  security:
+    kind: term
+    type: string
+    required: true
+    doc: "The security: an identifier, or an alias the provider's reference data resolves (for example an on-the-run token)."
+  notional:
+    kind: term
+    type: number
+    required: true
+    positive: true
+    unit: currency
+    doc: "Unsigned face amount. Direction is `side`."
+  extras:
+    kind: term
+    type: mapping
+    doc: "Opaque per-trade extras for the adapter, for example financing terms."
+direction:
+  term: side
+  sign: {buy: 1, sell: -1}
+methods:
+  value:
+    kind: method
+    required: true
+    doc: "Per-unit mark of the bond (dirty value plus flows due, holder-signed): see generic."
+measures:
+  notional:
+    kind: measure
+    derived: terms.notional
+    returns: float
+    unit: currency
+    sign: unsigned
+    doc: "The `notional` (face) term of the trade as built. No binding."
+  dv01:
+    kind: measure
+    required: true
+    returns: float
+    unit: "currency per +1bp"
+    sign: "holder: negative for a long"
+    synonyms: [pv01, dollar_delta, bpv, risk]
+    doc: "DOLLAR DELTA: the change in value for a +1bp move of the bond's yield, per unit as built with its face amount."
+  gamma:
+    kind: measure
+    required: true
+    returns: float
+    unit: "currency per bp^2"
+    sign: holder
+    synonyms: [convexity, curvature]
+    doc: "Second derivative of the value with respect to the same +1bp yield move, per unit as built."
+  rate:
+    kind: measure
+    required: true
+    returns: float
+    unit: percent
+    synonyms: [ytm, yield, market_rate]
+    doc: "The bond's own market rate: its yield to maturity in percent."
+  ytm:
+    kind: measure
+    required: false
+    returns: float
+    unit: percent
+    doc: "Yield to maturity, percent."
+  duration:
+    kind: measure
+    required: false
+    returns: float
+    unit: years
+    doc: "Modified duration in years."
+  accrued:
+    kind: measure
+    required: false
+    returns: float
+    unit: "per 100 face"
+    doc: "Accrued interest per 100 face at the mark."
+layers:
+  carry:
+    kind: layer
+    id: bond.carry
+    version: 1
+    required: true
+    returns: float
+    unit: "currency, per unit, over the interval"
+    needs: [prev_pricer]
+    doc: "Coupon accrual and pull to par at an unchanged yield, net of financing, plus flows paid in the interval."
+  roll:
+    kind: layer
+    id: bond.roll
+    version: 1
+    required: true
+    returns: float
+    unit: "currency, per unit, over the interval"
+    needs: [prev_pricer]
+    doc: "Yield change from ageing down the yield curve over the interval at an unchanged curve; zero when the snapshot carries no such curve."
+  delta:
+    kind: layer
+    id: bond.delta
+    version: 1
+    required: true
+    returns: float
+    unit: "currency, per unit, over the interval"
+    needs: [prev_pricer]
+    doc: "First-order change from the realised yield move after roll: -dv01 times the residual move in bp."
+  convexity:
+    kind: layer
+    id: bond.convexity
+    version: 1
+    required: true
+    returns: float
+    unit: "currency, per unit, over the interval"
+    needs: [prev_pricer]
+    doc: "Second-order change: 1/2 gamma times the yield move squared."
+default_layers: [carry, roll, delta, convexity]
+conventions:
+  calendar: {type: name, doc: "The NAME of a calendar in the market snapshot, used for payment dates (and settlement when the lag is above zero)."}
+  settlement_lag_days: {type: int, doc: "Business days from the trade date to settlement."}
+  day_count: {values: [act360, act365f, actact_icma, actact_isda, thirty360], doc: "Coupon accrual day count."}
+  frequency: {values: [monthly, quarterly, semiannual, annual], doc: "Coupons per year."}
+  business_day_convention: {values: [unadjusted, following, modified_following, preceding, modified_preceding], doc: "How a non-business accrual date is adjusted."}
+  payment_business_day_convention: {values: [unadjusted, following, modified_following, preceding, modified_preceding], doc: "How a payment date falling on a non-business day is adjusted."}
+  payment_lag_days: {type: int, doc: "Business days between the end of an accrual period and its payment."}
+  stub: {values: [short_front, long_front, short_back, long_back], doc: "Where an irregular period goes."}
+  end_of_month: {type: bool, doc: "Whether schedule dates roll to month end."}
+  compounding: {values: [monthly, quarterly, semiannual, annual], doc: "Yield quotation compounding frequency."}
+  yield_convention: {values: [treasury, street], doc: "The first- and last-period rule of the price and yield conversion."}
+  ex_dividend_days: {type: int, doc: "Length of the ex-coupon period in days."}
+  financing_day_count: {values: [act360, act365f, actact_icma, actact_isda, thirty360], doc: "Day count of the financing accrual."}
+  time_accrual: {values: [lump, linear], doc: "How intraday time counts toward carry and roll: `lump` or `linear`."}
+pricer_capabilities:
+  security: {kind: lookup, required: false, args: {token: {type: string}}, returns: mapping, doc: "Reference data for a security or alias; optional."}
+  quote: {kind: lookup, required: false, args: {security: {type: string}}, returns: mapping, doc: "The market quote for a security; optional."}

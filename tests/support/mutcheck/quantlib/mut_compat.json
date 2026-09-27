@@ -1,0 +1,83 @@
+{
+ "file": "src/pricebt/contrib/quantlib/_compat.py",
+ "tests": [
+  "tests/test_quantlib_globals.py",
+  "tests/test_quantlib_wrap.py",
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_tieout.py",
+  "tests/test_quantlib_bond.py",
+  "tests/test_quantlib_conventions.py"
+ ],
+ "mutations": [
+  {
+   "name": "eval-date-not-restored",
+   "find": "            s.evaluationDate = prev\n        except RuntimeError:",
+   "replace": "            pass\n        except RuntimeError:"
+  },
+  {
+   "name": "events-switch-not-set",
+   "find": "    s.includeReferenceDateEvents = True\n    try:",
+   "replace": "    try:"
+  },
+  {
+   "name": "events-switch-not-restored",
+   "find": "        s.includeReferenceDateEvents = prev_events\n",
+   "replace": ""
+  },
+  {
+   "name": "fixings-not-cleared-at-exit",
+   "find": "    finally:\n        clear_fixings()\n",
+   "replace": "    finally:\n"
+  },
+  {
+   "name": "fixings-not-cleared-at-entry",
+   "find": "    prev, prev_events = s.evaluationDate, s.includeReferenceDateEvents\n    clear_fixings()\n",
+   "replace": "    prev, prev_events = s.evaluationDate, s.includeReferenceDateEvents\n"
+  },
+  {
+   "name": "clears-everyones-history",
+   "find": "    ql.IndexManager.instance().clearHistory(_index_name())",
+   "replace": "    ql.IndexManager.instance().clearHistories()"
+  },
+  {
+   "name": "eval-date-not-set",
+   "find": "    _set_eval(d)\n    s.includeReferenceDateEvents = True",
+   "replace": "    s.includeReferenceDateEvents = True"
+  },
+  {
+   "name": "bespoke-calendar-becomes-shared",
+   "find": "    cal = ql.BespokeCalendar(name)\n",
+   "replace": "    cal = ql.WeekendsOnly()\n"
+  },
+  {
+   "name": "weekmask-ignored",
+   "find": "        if tok not in days:\n            cal.addWeekend(wd)",
+   "replace": "        if tok in (\"sat\", \"sun\"):\n            cal.addWeekend(wd)"
+  },
+  {
+   "name": "out-of-range-holiday-not-skipped",
+   "find": "        if 1901 <= h.year <= 2199:",
+   "replace": "        if True:"
+  },
+  {
+   "name": "holidays-not-added",
+   "find": "            cal.addHoliday(qd(h))",
+   "replace": "            pass"
+  },
+  {
+   "name": "no-extrapolation",
+   "find": "    c.enableExtrapolation()\n    return c",
+   "replace": "    return c"
+  },
+  {
+   "name": "index-fixings-rescaled",
+   "find": "idx.addFixings([qd(d) for d in dates], [float(v) for v in values_decimal], True)",
+   "replace": "idx.addFixings([qd(d) for d in dates], [float(v) / 100.0 for v in values_decimal], True)"
+  },
+  {
+   "name": "index-on-a-named-calendar",
+   "find": "idx = ql.OvernightIndex(INDEX_FAMILY, 0, ql.USDCurrency(), cal, ql.Actual360(), handle)",
+   "replace": "idx = ql.OvernightIndex(INDEX_FAMILY, 0, ql.USDCurrency(), ql.UnitedStates(ql.UnitedStates.SOFR), ql.Actual360(), handle)"
+  }
+ ]
+}

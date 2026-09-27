@@ -1,0 +1,79 @@
+{
+ "file": "src/pricebt/contrib/rateslib/layers.py",
+ "tests": [
+  "tests/test_rl_swap.py",
+  "tests/test_layer_conformance_adapters.py"
+ ],
+ "mutations": [
+  {
+   "name": "fold-roll-drops-fixings",
+   "find": "\"roll\": r[\"roll\"] + r[\"fixings\"]",
+   "replace": "\"roll\": r[\"roll\"]"
+  },
+  {
+   "name": "fold-delta-drops-resample",
+   "find": "\"delta\": r[\"delta\"] + r[\"resample\"]",
+   "replace": "\"delta\": r[\"delta\"]"
+  },
+  {
+   "name": "tau-360",
+   "find": "TAU_DAYS = 365.0",
+   "replace": "TAU_DAYS = 360.0"
+  },
+  {
+   "name": "x-value-cash-factor",
+   "find": "float(curve[p]) / d1 - 1.0",
+   "replace": "float(curve[p]) / d1 - 0.0"
+  },
+  {
+   "name": "paid-window-open-left",
+   "find": "(tab[\"Payment\"] >= t0) & (tab[\"Payment\"] < t1)",
+   "replace": "(tab[\"Payment\"] > t0) & (tab[\"Payment\"] < t1)"
+  },
+  {
+   "name": "paid-window-closed-right",
+   "find": "(tab[\"Payment\"] >= t0) & (tab[\"Payment\"] < t1)",
+   "replace": "(tab[\"Payment\"] >= t0) & (tab[\"Payment\"] <= t1)"
+  },
+  {
+   "name": "shifted-roll-keeps-t0-node",
+   "find": "if d > t0:",
+   "replace": "if d >= t0:"
+  },
+  {
+   "name": "residual-sign",
+   "find": "\"residual\": (V1 - V_base) - delta - convexity,",
+   "replace": "\"residual\": (V1 - V_base) - delta + convexity,"
+  },
+  {
+   "name": "roll-days-off-by-one",
+   "find": "N = (t1 - t0).days\n",
+   "replace": "N = (t1 - t0).days + 1\n"
+  },
+  {
+   "name": "zero-dv01-unit",
+   "find": "return float(self.grad.sum()) * 1e-4",
+   "replace": "return float(self.grad.sum()) * 1e-3"
+  },
+  {
+   "name": "zero-gamma-unit",
+   "find": "* 1e-8",
+   "replace": "* 1e-7"
+  },
+  {
+   "name": "zero-jacobian-sign",
+   "find": "J = -tau * df",
+   "replace": "J = tau * df"
+  },
+  {
+   "name": "convexity-half",
+   "find": "convexity = 0.5 * float(dz @ zr.hess @ dz)",
+   "replace": "convexity = 0.4 * float(dz @ zr.hess @ dz)"
+  },
+  {
+   "name": "roll-only-when-n-above-one",
+   "find": "c_roll0 = c0.roll(N) if N > 0 else c0",
+   "replace": "c_roll0 = c0.roll(N) if N > 1 else c0"
+  }
+ ]
+}

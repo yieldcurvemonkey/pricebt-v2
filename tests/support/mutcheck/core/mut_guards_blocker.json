@@ -1,0 +1,10 @@
+{
+  "file": "tests/guards/blocker.py",
+  "tests": ["tests/guards/test_twins.py"],
+  "mutations": [
+    {"name": "blocker-does-not-raise", "find": "            raise ModuleNotFoundError(f\"No module named {fullname!r} (blocked by the pricebt import blocker)\", name=fullname)", "replace": "            return None"},
+    {"name": "blocker-not-at-position-0", "find": "sys.meta_path.insert(0, finder)", "replace": "sys.meta_path.append(finder)"},
+    {"name": "blocker-only-exact-name", "find": "if fullname.split(\".\")[0] in self.roots:", "replace": "if fullname in self.roots:"},
+    {"name": "blocker-roots-empty", "find": "finder = BannedRoots(roots if roots is not None else default_roots())", "replace": "finder = BannedRoots([])"}
+  ]
+}

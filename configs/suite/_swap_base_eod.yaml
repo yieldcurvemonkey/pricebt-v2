@@ -1,0 +1,17 @@
+extends: _swap_base.yaml
+doc: >
+  Shared base of the SWAP suite EOD configs (extended by s1*, s2*, s3*, s4*, s11*, s12*). Not a runnable strategy on its own.
+  REAL data: EOD SOFR curves (asset USD-SOFR-1D-CITIVELOEXCEL) and the published SOFR fixings, read from data/fixtures by `support.curves:CurveStore`, which
+  emits plain snapshots (curve nodes, fixings, the swap calendar `usd_fed`) and imports no pricing library. Main window 2022-01-03..2025-12-31.
+  See _swap_base.yaml for the instrument spec, the stacks and how to run.
+backtest:
+  grid: {from_mdp: primary, start: 2022-01-03, end: 2025-12-31}
+  attribution: {cadence: eod}
+market:
+  mdps:
+    sofr:
+      type: "support.curves:CurveStore"
+      kwargs: {asset: USD-SOFR-1D-CITIVELOEXCEL}
+      time: {mode: asof, max_staleness: 12h}
+  pricers:
+    primary: {mdp: sofr, wrap: "pricebt.testing.refstack:wrap"}

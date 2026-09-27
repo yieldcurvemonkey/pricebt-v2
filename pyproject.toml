@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pricebt"
+version = "0.1.0"
+description = "Config-driven, event-driven backtester in the spirit of gs_quant.backtests; the core has no dependence on any pricing library (adapters plug in through configuration)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = ["numpy>=1.26", "pandas>=2.1", "pyyaml>=6", "tqdm>=4.66"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+plot = ["matplotlib>=3.8"]
+rateslib = ["rateslib>=2.7"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+pricebt = "pricebt.config.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pricebt = ["contracts/schemas/*.yaml"]

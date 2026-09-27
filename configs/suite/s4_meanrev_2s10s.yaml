@@ -1,0 +1,53 @@
+extends: _swap_base_eod.yaml
+name: s4_meanrev_2s10s
+doc: >
+  S4. Mean reversion of the 2s10s par-swap spread on REAL EOD SOFR curves. Signal: the `rate` measure (the par rate, percent) of a freshly built
+  spot-starting 10Y swap minus that of a 2Y swap, in bp, observed at each grid point (a `measure` signal per tenor and a `derived` combo); the
+  mean_reversion trigger z-scores the current value against the PRIOR 60 observations (current excluded, no look-ahead). Entry |z| > 1.5 toward the
+  mean: z > +1.5 (curve unusually steep) -> DV01-neutral FLATTENER; z < -1.5 -> STEEPENER (legs +/-10,000/bp dv01, the steepener package scaled by -1/+1).
+  Exit when |z| < 0.3 (exit_mode close) or after 20 business days (trade_duration 20b), whichever first; after a time exit no re-entry until |z| < 0.3
+  resets the trigger. The grid starts 2021-10-01 so the 60-point warm-up (no pre-start warm-up exists for signals) ends in late Dec 2021.
+  Cost: 0.1 ccy per ccy of dv01 per side.
+backtest:
+  grid: {from_mdp: primary, start: 2021-10-01, end: 2025-12-31}
+  progress: {desc: S4 MEANREV 2S10S}
+signals:
+  par10:
+    type: measure
+    template: {instrument: usd_sofr_ois, name: par10y, terms: {side: pay, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+    measure: rate
+  par2:
+    type: measure
+    template: {instrument: usd_sofr_ois, name: par2y, terms: {side: pay, maturity: 2Y, notional: 1e7, fixed_rate: par}}
+    measure: rate
+  s2s10: {type: derived, op: combo, inputs: [par10, par2], weights: [100.0, -100.0]}
+strategy:
+  triggers:
+    - type: mean_reversion
+      data_source: s2s10
+      z_score_bound: 1.5
+      rolling_mean_window: 60
+      rolling_std_window: 60
+      exit_mode: close
+      exit_z: 0.3
+      actions:
+        - type: add_scaled_trade
+          name: mr_pay10y
+          priceables: {instrument: usd_sofr_ois, name: pay10y, terms: {side: pay, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+          trade_duration: 20b
+          tags: [mr, leg10y]
+          scaling_type: risk_measure
+          scaling_risk: dv01
+          scaling_level: 10000
+          transaction_cost: {type: scaled, scaling_type: "measure:dv01", scaling_level: 0.1}
+        - type: add_scaled_trade
+          name: mr_recv2y
+          priceables: {instrument: usd_sofr_ois, name: recv2y, terms: {side: receive, maturity: 2Y, notional: 1e7, fixed_rate: par}}
+          trade_duration: 20b
+          tags: [mr, leg2y]
+          scaling_type: risk_measure
+          scaling_risk: dv01
+          scaling_level: -10000
+          transaction_cost: {type: scaled, scaling_type: "measure:dv01", scaling_level: 0.1}
+        - {type: exit_trade, name: mr_exit, tags: [mr], reason: z_reverted}
+outputs: {dir: ../../results_new/s4_meanrev_2s10s}

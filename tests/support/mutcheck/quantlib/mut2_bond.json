@@ -1,0 +1,43 @@
+{
+ "file": "src/pricebt/contrib/quantlib/bond.py",
+ "tests": [
+  "tests/test_quantlib_bond.py",
+  "tests/test_quantlib_tieout.py",
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_globals.py",
+  "tests/test_quantlib_wrap.py",
+  "tests/test_quantlib_conventions.py"
+ ],
+ "mutations": [
+  {
+   "name": "schedule-business-calendar",
+   "find": "ql.Period(ql.Semiannual), ql.NullCalendar(), ql.Unadjusted",
+   "replace": "ql.Period(ql.Semiannual), cal, ql.Unadjusted"
+  },
+  {
+   "name": "pulldown-uses-current-curve",
+   "find": "yc = ytm_curve(prev, self.conv)",
+   "replace": "yc = ytm_curve(p, self.conv)"
+  },
+  {
+   "name": "ytm-curve-all-aliases",
+   "find": "            if not _CT.match(alias) or sid not in qs.quotes:",
+   "replace": "            if sid not in qs.quotes:"
+  },
+  {
+   "name": "ytm-curve-days-360",
+   "find": "pts[(sec.maturity_date - p.reference_date).days / 365.25] = y",
+   "replace": "pts[(sec.maturity_date - p.reference_date).days / 360.0] = y"
+  },
+  {
+   "name": "matured-boundary",
+   "find": "if settle >= inst.last_payment:\n            return {\"ytm\": float(\"nan\")",
+   "replace": "if settle > inst.last_payment:\n            return {\"ytm\": float(\"nan\")"
+  },
+  {
+   "name": "priced-boundary",
+   "find": "return p.reference_date < self._inst(p).last_payment",
+   "replace": "return p.reference_date <= self._inst(p).last_payment"
+  }
+ ]
+}

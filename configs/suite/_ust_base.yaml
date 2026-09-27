@@ -1,0 +1,31 @@
+doc: >
+  Shared base of the US Treasury suite configs (s05, s06, s07, s09, ctrl_*). Not a runnable strategy on its own.
+  ONE instrument spec, `ust` (asset class bond), bought or sold by terms: side buy (alias long) / sell (alias short), the security (`CT10` = the on-the-run
+  10Y, resolved on each snapshot by the provider's reference data, or a CUSIP), the face `notional` and the per-trade financing `extras: {repo: ...}`.
+  The `conventions` block is written out once and shared by every stack (spec T5, X1): `calendar` NAMES the calendar the market snapshot carries
+  (`us_govt`, served by the test-support quote panels). The base names the dependency-free reference stack as its default library; the pricing libraries
+  are STACK OVERLAYS that set only instruments.ust.factory / .bind and market.pricers.ust.wrap:
+  `pricebt run <config> --stack configs/adapters/rateslib_bond.yaml` (also quantlib_bond.yaml, refstack_bond.yaml).
+  Market data comes from `support.ust_eod:UstEod` / `support.ust_minute:UstMinute` (tests/support, test code, snapshots only): run from the project root
+  with the root, `src` and `tests` on the python path (pytest.ini sets them for the tests).
+registry: {allow: [support]}
+instruments:
+  ust:
+    asset_class: bond
+    factory: "pricebt.testing.refstack:bond"
+    pricer: ust
+    conventions:
+      calendar: us_govt
+      settlement_lag_days: 0
+      day_count: actact_icma
+      frequency: semiannual
+      business_day_convention: unadjusted
+      payment_business_day_convention: following
+      payment_lag_days: 0
+      stub: short_front
+      end_of_month: true
+      compounding: semiannual
+      yield_convention: treasury
+      ex_dividend_days: 0
+      financing_day_count: act360
+      time_accrual: lump

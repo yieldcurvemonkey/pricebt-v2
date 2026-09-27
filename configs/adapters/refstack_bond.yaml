@@ -1,0 +1,8 @@
+# Stack overlay (spec X1, D3): the dependency-free reference stack (numpy only) for a config with the bond instrument `ust` and the pricer role `ust`.
+# The suite bases already name it as their default; this overlay makes the choice explicit next to the other stacks.
+#   pricebt run configs/suite/s05_ust_ct10_financed.yaml --stack configs/adapters/refstack_bond.yaml
+instruments:
+  ust: {factory: "pricebt.testing.refstack:bond"}
+market:
+  pricers:
+    ust: {wrap: "pricebt.testing.refstack:wrap"}

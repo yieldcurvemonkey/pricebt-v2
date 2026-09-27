@@ -1,0 +1,263 @@
+{
+ "file": "src/pricebt/contrib/quantlib/swap.py",
+ "tests": [
+  "tests/test_quantlib_swap.py",
+  "tests/test_quantlib_tieout.py",
+  "tests/test_quantlib_globals.py",
+  "tests/test_quantlib_wrap.py",
+  "tests/test_quantlib_bond.py",
+  "tests/test_quantlib_conventions.py"
+ ],
+ "mutations": [
+  {
+   "name": "started-uses-le",
+   "find": "return self.effective < p.reference_date",
+   "replace": "return self.effective <= p.reference_date"
+  },
+  {
+   "name": "fixings-always-installed",
+   "find": "        if not self.effective < eval_date:\n            return (), ()",
+   "replace": "        if False:\n            return (), ()"
+  },
+  {
+   "name": "fixings-hole-not-detected",
+   "find": "                if missing:\n                    raise MarketDataUnavailable(p.ts, {}, f\"{len(missing)} SOFR",
+   "replace": "                if False:\n                    raise MarketDataUnavailable(p.ts, {}, f\"{len(missing)} SOFR"
+  },
+  {
+   "name": "no-fixings-not-detected",
+   "find": "        if fx is None or not fx[0]:\n            raise MarketDataUnavailable(p.ts, {}, f\"swap started",
+   "replace": "        if False:\n            raise MarketDataUnavailable(p.ts, {}, f\"swap started"
+  },
+  {
+   "name": "fixings-before-effective-kept",
+   "find": "        i = bisect.bisect_left(dates, self.effective)",
+   "replace": "        i = 0"
+  },
+  {
+   "name": "cash-window-includes-ref",
+   "find": "                    cash = sum(a for d, a in w.flows(t0) if d < ref)\n        return Valuation(ctx.ts, pv, cash, 0.0",
+   "replace": "                    cash = sum(a for d, a in w.flows(t0) if d <= ref)\n        return Valuation(ctx.ts, pv, cash, 0.0"
+  },
+  {
+   "name": "cash-window-excludes-t0",
+   "find": "                    cash = sum(a for d, a in w.flows(t0) if d < ref)\n        return Valuation(ctx.ts, pv, cash, 0.0",
+   "replace": "                    cash = sum(a for d, a in w.flows(t0 + dt.timedelta(days=1)) if d < ref)\n        return Valuation(ctx.ts, pv, cash, 0.0"
+  },
+  {
+   "name": "matured-uses-le",
+   "find": "return self.last_payment(p.calendar(self.conv.calendar)) < p.reference_date",
+   "replace": "return self.last_payment(p.calendar(self.conv.calendar)) <= p.reference_date"
+  },
+  {
+   "name": "matured-cash-lost",
+   "find": "cash = self._cash(p, t0) if t0 < ref and self.last_payment(p.calendar(self.conv.calendar)) >= t0 else 0.0",
+   "replace": "cash = 0.0"
+  },
+  {
+   "name": "rate-in-decimal",
+   "find": "            r = float(w.swap.fairRate()) * 100.0\n        return r",
+   "replace": "            r = float(w.swap.fairRate())\n        return r"
+  },
+  {
+   "name": "par-rate-in-decimal",
+   "find": "            rate = float(w.swap.fairRate()) * 100.0 + (spread or 0.0) / 100.0",
+   "replace": "            rate = float(w.swap.fairRate()) + (spread or 0.0) / 100.0"
+  },
+  {
+   "name": "spread-bp-as-percent",
+   "find": "+ (spread or 0.0) / 100.0  # par in PERCENT",
+   "replace": "+ (spread or 0.0) / 1.0  # par in PERCENT"
+  },
+  {
+   "name": "spread-bp-over-divided",
+   "find": "+ (spread or 0.0) / 100.0  # par in PERCENT",
+   "replace": "+ (spread or 0.0) / 10000.0  # par in PERCENT"
+  },
+  {
+   "name": "spread-without-par-allowed",
+   "find": "    elif spread is not None:\n        raise ConfigError(\"extras par_spread_bp applies only",
+   "replace": "    elif False:\n        raise ConfigError(\"extras par_spread_bp applies only"
+  },
+  {
+   "name": "spread-type-unchecked",
+   "find": "    if spread is not None and (isinstance(spread, bool) or not isinstance(spread, (int, float)) or not math.isfinite(spread)):",
+   "replace": "    if False:"
+  },
+  {
+   "name": "unknown-extras-ignored",
+   "find": "    if unknown:\n        raise ConfigError(f\"swap extras",
+   "replace": "    if False:\n        raise ConfigError(f\"swap extras"
+  },
+  {
+   "name": "dv01-sign",
+   "find": "            v = -float(w.swap.fixedLegBPS())",
+   "replace": "            v = float(w.swap.fixedLegBPS())"
+  },
+  {
+   "name": "dv01-aged-analytic",
+   "find": "        if self.started(p):\n            return float(sum(",
+   "replace": "        if False:\n            return float(sum("
+  },
+  {
+   "name": "dv01-fresh-ladder",
+   "find": "        with C.guard(p.reference_date):\n            w = _World(self, p, p.ql_curve(), p.reference_date)\n            v = -float(w.swap.fixedLegBPS())",
+   "replace": "        if True:\n            return float(sum(self.delta_ladder(ctx=ctx, tenors=tenors).values()))\n        with C.guard(p.reference_date):\n            w = _World(self, p, p.ql_curve(), p.reference_date)\n            v = -float(w.swap.fixedLegBPS())"
+  },
+  {
+   "name": "ladder-scale",
+   "find": "out[t] = (v_up - w.npv()) / (2 * _risk.LADDER_BUMP / 1e-4)",
+   "replace": "out[t] = (v_up - w.npv()) / (2 * _risk.LADDER_BUMP / 1e-3)"
+  },
+  {
+   "name": "ladder-sign",
+   "find": "out[t] = (v_up - w.npv()) / (2 * _risk.LADDER_BUMP / 1e-4)",
+   "replace": "out[t] = (w.npv() - v_up) / (2 * _risk.LADDER_BUMP / 1e-4)"
+  },
+  {
+   "name": "ladder-priced-on-dense-curve",
+   "find": "                w = _World(self, p, rc.base, p.reference_date)\n                out = {}",
+   "replace": "                w = _World(self, p, p.ql_curve(), p.reference_date)\n                out = {}"
+  },
+  {
+   "name": "ladder-cache-shared-between-positions",
+   "find": "        key = (\"ql_swap_ladder\", id(self), rc.tenors)",
+   "replace": "        key = (\"ql_swap_ladder\", 0, rc.tenors)"
+  },
+  {
+   "name": "gamma-scale",
+   "find": "(up + dn - 2 * v0) / (_risk.PARALLEL_BUMP / 1e-4) ** 2",
+   "replace": "(up + dn - 2 * v0) / (_risk.PARALLEL_BUMP / 1e-4) ** 1"
+  },
+  {
+   "name": "gamma-uses-up-twice",
+   "find": "            w.link(rc.parallel_dn)\n            dn = w.npv()",
+   "replace": "            w.link(rc.parallel_up)\n            dn = w.npv()"
+  },
+  {
+   "name": "zero-dv01-returns-gamma",
+   "find": "        return self._zero_shift(ctx)[0]",
+   "replace": "        return self._zero_shift(ctx)[1]"
+  },
+  {
+   "name": "zero-shift-days-360",
+   "find": "math.exp(-bp * 1e-4 * n / _TAU_DAYS)",
+   "replace": "math.exp(-bp * 1e-4 * n / 360.0)"
+  },
+  {
+   "name": "carry-sign",
+   "find": "\"carry\": x_fwd - v0,",
+   "replace": "\"carry\": v0 - x_fwd,"
+  },
+  {
+   "name": "roll-sign",
+   "find": "\"roll\": x_roll - x_fwd,",
+   "replace": "\"roll\": x_fwd - x_roll,"
+  },
+  {
+   "name": "delta-drops-directional-derivative",
+   "find": "\"delta\": (v_base + cash - x_roll) + first,",
+   "replace": "\"delta\": (v_base + cash - x_roll),"
+  },
+  {
+   "name": "delta-drops-resample",
+   "find": "\"delta\": (v_base + cash - x_roll) + first,",
+   "replace": "\"delta\": first,"
+  },
+  {
+   "name": "convexity-scale",
+   "find": "second = (up + dn - 2 * v_base) / (2 * _H * _H)",
+   "replace": "second = (up + dn - 2 * v_base) / (_H * _H)"
+  },
+  {
+   "name": "delta-scale",
+   "find": "first = (up - dn) / (2 * _H)",
+   "replace": "first = (up - dn) / _H"
+  },
+  {
+   "name": "layers-cash-window-includes-t1",
+   "find": "cash = sum(a for d, a in w.flows(t0) if d < t1)",
+   "replace": "cash = sum(a for d, a in w.flows(t0) if d <= t1)"
+  },
+  {
+   "name": "carry-discounts-window-flows",
+   "find": "if d >= t1 else a for d, a in w0.flows(t0))",
+   "replace": "if d >= t0 else a for d, a in w0.flows(t0))"
+  },
+  {
+   "name": "roll-curve-not-shifted",
+   "find": "[d + dt.timedelta(days=n) for d in dates0 if d > t0]",
+   "replace": "[d for d in dates0 if d > t0]"
+  },
+  {
+   "name": "roll-shift-one-day",
+   "find": "n = (t1 - t0).days",
+   "replace": "n = 1 if t1 > t0 else 0"
+  },
+  {
+   "name": "zero-space-days-360",
+   "find": "tau = [(d - t1).days / _TAU_DAYS for d in dates1[1:]]",
+   "replace": "tau = [(d - t1).days / 360.0 for d in dates1[1:]]"
+  },
+  {
+   "name": "dz-sign",
+   "find": "dz = [-math.log(a) / t + math.log(b) / t",
+   "replace": "dz = [math.log(a) / t - math.log(b) / t"
+  },
+  {
+   "name": "layers-without-previous-pricer",
+   "find": "        if p0 is None:\n            raise ConfigError(\"layers need",
+   "replace": "        if False:\n            raise ConfigError(\"layers need"
+  },
+  {
+   "name": "layers-cache-shared-between-positions",
+   "find": "        key = (\"ql_swap_decomposition\", id(self))",
+   "replace": "        key = (\"ql_swap_decomposition\", 0)"
+  },
+  {
+   "name": "par-of-started-swap-allowed",
+   "find": "        if effective < p.reference_date:\n            raise ConfigError(f\"fixed_rate 'par' needs",
+   "replace": "        if False:\n            raise ConfigError(f\"fixed_rate 'par' needs"
+  },
+  {
+   "name": "rate-token-not-checked",
+   "find": "        if rate.strip().lower() != \"par\":",
+   "replace": "        if False:"
+  },
+  {
+   "name": "spot-lag-fixed-2",
+   "find": "spot = C.pd_(cal.advance(C.qd(ref), conv.spot_lag_days, ql.Days))\n    if isinstance(spec, str) and spec.strip().lower() == \"spot\":",
+   "replace": "spot = C.pd_(cal.advance(C.qd(ref), 2, ql.Days))\n    if isinstance(spec, str) and spec.strip().lower() == \"spot\":"
+  },
+  {
+   "name": "forward-start-not-adjusted",
+   "find": "return C.pd_(cal.adjust(C.qd(_schedule.add_months(spot, months, spot.day)), _ois.BDC[conv.business_day_convention]))",
+   "replace": "return _schedule.add_months(spot, months, spot.day)"
+  },
+  {
+   "name": "maturity-not-adjusted",
+   "find": "maturity = C.pd_(cal.adjust(C.qd(unadj[-1]), bdc))",
+   "replace": "maturity = unadj[-1]"
+  },
+  {
+   "name": "resolved-rate-dropped",
+   "find": "return Built(obj, {\"effective\": effective, \"maturity\": maturity, \"fixed_rate\": float(rate)})",
+   "replace": "return Built(obj, {\"effective\": effective, \"maturity\": maturity})"
+  },
+  {
+   "name": "wrapped-pricer-not-required",
+   "find": "    if not isinstance(p, QLPricer):\n        raise ConfigError(f\"the market pricer is a",
+   "replace": "    if False:\n        raise ConfigError(f\"the market pricer is a"
+  },
+  {
+   "name": "curve-anchor-not-checked",
+   "find": "        if curve.referenceDate() != C.qd(self.eval_date):",
+   "replace": "        if False:"
+  },
+  {
+   "name": "fixings-decimal-taken-as-percent",
+   "find": "        dates, values = fx\n        i = bisect",
+   "replace": "        dates, values = fx[0], tuple(v * 100 for v in fx[1])\n        i = bisect"
+  }
+ ]
+}

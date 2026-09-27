@@ -1,0 +1,48 @@
+{
+ "file": "src/pricebt/tieout/report.py",
+ "tests": [
+  "tests/test_tieout_cycle3.py"
+ ],
+ "mutations": [
+  {
+   "name": "T5-unit-conversion-not-flagged-in-the-table",
+   "find": "{'NOT IDENTITY: ' + flag if flag else ''}",
+   "replace": "{''}"
+  },
+  {
+   "name": "T5-summary-line-omits-the-non-identity-bindings",
+   "find": "flagged = _not_identity(header.get(\"bindings\", {}).get(s, {}))",
+   "replace": "flagged = []"
+  },
+  {
+   "name": "T5-markdown-omits-the-stacks-section",
+   "find": "    if rep.disclosure:\n        out += _stacks_section(rep.disclosure)",
+   "replace": "    if False:\n        out += _stacks_section(rep.disclosure)"
+  },
+  {
+   "name": "T5-literal-kwargs-not-shown",
+   "find": "lit = {k: v for k, v in dict(b.get(\"kwargs\") or {}).items() if not (isinstance(v, str) and v.startswith(\"@\"))}",
+   "replace": "lit = {}"
+  },
+  {
+   "name": "T5-wrap-not-shown",
+   "find": "{s} | {r} | {w or '(none)'} |",
+   "replace": "{s} | {r} | (none) |"
+  },
+  {
+   "name": "reason-column-not-printed",
+   "find": "{str(t.get('reason', '')).replace('|', '/')} |\" for k, t in rep.tolerances.items()]",
+   "replace": "\" for k, t in rep.tolerances.items()]"
+  },
+  {
+   "name": "floor-unit-column-not-printed",
+   "find": "{t.get('unit', '')} | {t['expected']}",
+   "replace": " | {t['expected']}"
+  },
+  {
+   "name": "disclosure-missing-from-the-json-verdicts",
+   "find": ", \"disclosure\": rep.disclosure}",
+   "replace": "}"
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+doc: >
+  BASE config wiring ARBS (spec Z5: a real foreign stack, not the fictional worked examples) as the swap instrument's market data AND its pricing
+  library: `arbs_adapter.provider:ArbsErisEodProvider` fetches ARBS's own USD-SOFR-1D EOD curve (source ERIS_EOD_LIVE-RL_BASIC) for a known list of
+  NY business dates; `arbs_adapter:wrap` turns each snapshot into ARBS's own `RLIRSwapCurve`; `arbs_adapter:swap` prices through ARBS's own value
+  functions for value/rate/dv01 (unstarted) and pricebt's rateslib layer/ladder plumbing for the rest (see `arbs_adapter/swap.py`'s module docstring).
+  One trade: a 10Y receiver struck at par, held for the window. Needs the real ARBS checkout (`PRICEBT_ARBS_ROOT`, default `C:\Users\chris\clee\ARBS`)
+  and the `rateslib` extra; not runnable in CI without both.
+    python -m pricebt validate configs\adapters\arbs_swap_base.yaml
+    python -m pricebt run configs\adapters\arbs_swap_base.yaml --dry-run
+  PYTHONPATH must include the repository root (the directory CONTAINING `arbs_adapter`), e.g. `$env:PYTHONPATH = "src;tests;."`.
+registry: {allow: [arbs_adapter]}
+backtest:
+  tz: America/New_York
+  calendar: {holidays: []}   # the one-week window below has no US holiday in it; a wider window should point at calendars/usd_fed.json instead
+  date_policy: close
+  grid: {start: 2024-05-20, end: 2024-05-24, freq: 1b}
+  progress: {show: false}
+  attribution: {layers: [carry, roll, delta, convexity], cadence: eod}
+  measures: [dv01]
+market:
+  mdps:
+    eod:
+      type: "arbs_adapter.provider:ArbsErisEodProvider"
+      kwargs:
+        dates: [2024-05-20, 2024-05-21, 2024-05-22, 2024-05-23, 2024-05-24]
+        curve_name: USD-SOFR-1D
+        curve_id: sofr
+  pricers:
+    primary: {mdp: eod, wrap: "arbs_adapter:wrap"}
+instruments:
+  usd_sofr_ois:
+    asset_class: swap
+    factory: "arbs_adapter:swap"
+    conventions:
+      calendar: nyc
+      spot_lag_days: 2
+      day_count: act360
+      frequency: annual
+      business_day_convention: modified_following
+      payment_lag_days: 2
+      compounding: daily_compounded
+      stub: short_front
+      end_of_month: false
+      fixing_lag_days: 1
+      time_accrual: lump
+trades:
+  recv10y: {instrument: usd_sofr_ois, terms: {side: receive, maturity: 10Y, notional: 1e7, fixed_rate: par}}
+strategy:
+  initial_portfolio: [{template: recv10y, quantity: 1}]
+outputs: {dir: ../../results_new/arbs_swap_base}

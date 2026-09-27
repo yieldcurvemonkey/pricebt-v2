@@ -1,0 +1,113 @@
+{
+ "file": "src/pricebt/contrib/rateslib/wrap.py",
+ "tests": [
+  "tests/test_snapshot_wrap_rateslib.py"
+ ],
+ "mutations": [
+  {
+   "name": "interpolation tag mapped to linear",
+   "find": "TAGS = {\"log_linear_df\": \"log_linear\"}",
+   "replace": "TAGS = {\"log_linear_df\": \"linear\"}"
+  },
+  {
+   "name": "alias token case sensitive",
+   "find": "m = _ALIAS.fullmatch(up)",
+   "replace": "m = _ALIAS.fullmatch(tok)"
+  },
+  {
+   "name": "alias bucket not normalised",
+   "find": "hit = self._aliases.get(f\"{m.group(1)}{int(m.group(2))}\")",
+   "replace": "hit = self._aliases.get(up)"
+  },
+  {
+   "name": "unknown alias is a config error instead of unavailable",
+   "find": "raise MarketDataUnavailable(None, {\"bond\": token, \"asof\": str(asof)}, f\"no {token} in the reference table on {asof}\")",
+   "replace": "raise ConfigError(f\"no {token}\", code=\"X\")"
+  },
+  {
+   "name": "market convention always declared",
+   "find": "if quoteset.price_convention == \"market\":",
+   "replace": "if True:"
+  },
+  {
+   "name": "market convention never declared",
+   "find": "if quoteset.price_convention == \"market\":",
+   "replace": "if False:"
+  },
+  {
+   "name": "decimal fixings not scaled",
+   "find": "scale = 100.0 if f.unit == \"decimal\" else 1.0",
+   "replace": "scale = 1.0"
+  },
+  {
+   "name": "roll curve from every quote",
+   "find": "ids = [c for a, c in qs.aliases.items() if a.startswith(\"CT\")] or list(qs.quotes)",
+   "replace": "ids = list(qs.quotes)"
+  },
+  {
+   "name": "roll curve from every alias",
+   "find": "a.startswith(\"CT\")",
+   "replace": "a.startswith(\"O\")"
+  },
+  {
+   "name": "roll curve needs no second point",
+   "find": "if len(pts) >= 2 else None",
+   "replace": "if len(pts) >= 1 else None"
+  },
+  {
+   "name": "bid/offer with one side",
+   "find": "None if q is None or q.bid is None or q.offer is None else (q.bid, q.offer)",
+   "replace": "None if q is None or (q.bid is None and q.offer is None) else (q.bid, q.offer)"
+  },
+  {
+   "name": "panel always has a curve",
+   "find": "has_curve=cs is not None,",
+   "replace": "has_curve=True,"
+  },
+  {
+   "name": "flags not read from the snapshot",
+   "find": "return dict(self.quoteset.provenance.get(\"flags\", {}).get(cusip, {}))",
+   "replace": "return {}"
+  },
+  {
+   "name": "repo fixing is the oldest",
+   "find": "return float(f.iloc[-1])",
+   "replace": "return float(f.iloc[0])"
+  },
+  {
+   "name": "memo ignores the curve name",
+   "find": "hit = memo.get((curve, fixings))",
+   "replace": "hit = memo.get(None) or next(iter(memo.values()), None)"
+  },
+  {
+   "name": "unknown tag substituted by log_linear",
+   "find": "    if tag not in TAGS:\n        raise ConfigError",
+   "replace": "    if False:\n        raise ConfigError"
+  },
+  {
+   "name": "raw ids not resolved through securities",
+   "find": "        for cand in (tok, tok.upper()):",
+   "replace": "        for cand in ():"
+  },
+  {
+   "name": "publication policy applied a second time",
+   "find": "super().__init__(ts, curve, fixings=None, **kw)\n        object.__setattr__(self, \"fixings\", fixings)",
+   "replace": "super().__init__(ts, curve, fixings=fixings, **kw)"
+  },
+  {
+   "name": "several curves silently take the first",
+   "find": "    if len(section) > 1:\n        raise ConfigError",
+   "replace": "    if False:\n        raise ConfigError"
+  },
+  {
+   "name": "roll-curve clean quotes solved with the library convention",
+   "find": "float(q.clean), settle, market=market_clean(self))",
+   "replace": "float(q.clean), settle, market=False)"
+  },
+  {
+   "name": "bond_ytm clean quote solved with the library convention",
+   "find": "float(q.clean), self.reference_date, market=market_clean(self))",
+   "replace": "float(q.clean), self.reference_date, market=False)"
+  }
+ ]
+}

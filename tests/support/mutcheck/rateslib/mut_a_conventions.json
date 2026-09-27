@@ -1,0 +1,54 @@
+{
+ "file": "src/pricebt/contrib/rateslib/conventions.py",
+ "tests": [
+  "tests/test_rl_swap.py",
+  "tests/test_rl_bond.py"
+ ],
+ "mutations": [
+  {
+   "name": "day-count-act365",
+   "find": "_DAY = {\"act360\": \"act360\", \"act365f\": \"act365f\"}",
+   "replace": "_DAY = {\"act360\": \"act365f\", \"act365f\": \"act365f\"}"
+  },
+  {
+   "name": "modifier-following",
+   "find": "\"modified_following\": \"MF\"",
+   "replace": "\"modified_following\": \"F\""
+  },
+  {
+   "name": "frequency-semiannual",
+   "find": "\"annual\": \"a\"",
+   "replace": "\"annual\": \"s\""
+  },
+  {
+   "name": "payment-lag-zero",
+   "find": "\"payment_lag\": self.payment_lag_days",
+   "replace": "\"payment_lag\": 0"
+  },
+  {
+   "name": "eom-true",
+   "find": "\"eom\": False, \"leg2_fixing_method\"",
+   "replace": "\"eom\": True, \"leg2_fixing_method\""
+  },
+  {
+   "name": "weekend-mask-dropped",
+   "find": "week_mask=weekend)",
+   "replace": "week_mask=[])"
+  },
+  {
+   "name": "holidays-dropped",
+   "find": "holidays=[dt.datetime(h.year, h.month, h.day) for h in cd.holidays if h.weekday() not in weekend]",
+   "replace": "holidays=[]"
+  },
+  {
+   "name": "swap-calendar-field",
+   "find": "return SwapConv(b[\"calendar\"], b[\"spot_lag_days\"], b[\"day_count\"], b[\"frequency\"], b[\"business_day_convention\"], b[\"payment_lag_days\"])",
+   "replace": "return SwapConv(b[\"calendar\"], b[\"spot_lag_days\"] + 1, b[\"day_count\"], b[\"frequency\"], b[\"business_day_convention\"], b[\"payment_lag_days\"])"
+  },
+  {
+   "name": "unsupported-check-off",
+   "find": "if ok != \"*\" and v not in ok:",
+   "replace": "if False:"
+  }
+ ]
+}

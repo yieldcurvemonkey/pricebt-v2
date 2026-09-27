@@ -1,0 +1,10 @@
+# NEGATIVE CONTROL 3: the `gamma` binding forgot `scale: 0.01` (zeta's CONVEXITY_10BP is per (10bp)^2 = 100 x the second difference of a 1bp move; pricebt's gamma is per bp^2).
+# Expected tie-out verdict: L2.gamma EXCEEDS (a factor of 100), with the baseline layer that reads gamma (L3.tay_convexity, tay_unexplained); dv01, rate, L0, L1 stay exact.
+instruments:
+  usd_sofr_ois:
+    factory: "zeta_adapter:swap"
+    bind:
+      gamma: {target: {method: gamma}, kwargs: {ctx: "@ctx"}}   # the shipped binding has `scale: 0.01` here
+market:
+  pricers:
+    primary: {wrap: "zeta_adapter:wrap"}
