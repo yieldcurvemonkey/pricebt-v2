@@ -32,8 +32,8 @@ The notes are **evidence about gs_quant, ARBS and v1**. Where a note *proposes* 
 | gs port source (2.1.17, read-only) | `C:\Users\chris\clee\gsquant-temp-claude\gs-quant\gs_quant\backtests\` |
 | gs API reference (1.5.4, read-only) | `C:\Users\chris\anaconda3\Lib\site-packages\gs_quant\` (base python `C:\Users\chris\anaconda3\python.exe`) |
 | Python for pricebt | `C:\Users\chris\anaconda3\envs\stir\python.exe` |
-| ARBS (read-only; import only in plan task P5.2 after the user approves) | `C:\Users\chris\clee\ARBS` |
+| ARBS (read-only source; never imported in autonomous mode; P5.2 deferred) | `C:\Users\chris\clee\ARBS` |
 
-## Suggested hand-off prompt (for the implementing session)
+## Hand-off prompt
 
-> Implement pricebt v2 in the worktree `C:\Users\chris\clee\gsquant-temp-claude\pricebt-v2` (branch `v2-redesign`) exactly as specified in `docs/v2/DESIGN.md` and `docs/v2/IMPLEMENTATION_PLAN.md`. Work phase by phase (P0→P6), with one workflow per phase following the plan's §1 recipe: parallel implementation agents with disjoint file ownership, one adversarial verifier per task, a fix loop, then run the phase gate yourself and commit. Re-read DESIGN §2 (the five MUSTs) at the start of every phase. Stop and ask me at every item in IMPLEMENTATION_PLAN §9, and in particular before anything imports ARBS. ultracode
+`docs/v2/HANDOFF_PROMPT.md` is the prompt for the implementing session: fully autonomous, P0 → P6. The plan's §9 holds the autonomous decision rules.

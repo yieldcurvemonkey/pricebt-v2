@@ -23,7 +23,7 @@ Notation:
 
 ## 0. Decisions the user must confirm before hand-off
 
-These are the only open choices; everything else in this document is decided. The implementer MUST NOT start Phase 3 until decisions 0.1–0.3 are confirmed. The plan assumes the defaults below.
+**STATUS: ALL CONFIRMED by the user on 2026-09-27. The defaults below are final.** On 0.1 the user added: *"port the logic and design of gs_quant, do not integrate it"*. pricebt re-implements the open-source gs code and has no runtime dependency on gs_quant. The installed gs_quant 1.5.4 is used only by the offline dev tool `tools/gs_api_snapshot.py`, which introspects signatures for the parity test. No pricebt module and no test imports gs_quant.
 
 | # | Decision | Default (assumed by the plan) | Why | Alternative |
 |---|---|---|---|---|
