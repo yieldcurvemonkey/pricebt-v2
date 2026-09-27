@@ -13,6 +13,7 @@ import os
 import pytest
 
 import toylib.rates as _toylib_rates
+from pricebt.session import GsSession, PricebtSession
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
@@ -29,7 +30,12 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 @pytest.fixture(autouse=True)
 def isolation():
     """Save/restore process-global state between tests (IMPLEMENTATION_PLAN.md section 0.6).
-    Extended by later tasks (P2.3, P3.1, P3.3); P1.5 adds toylib.rates.reset_recorders()."""
+    Extended by later tasks (P3.1, P3.3); P1.5 adds toylib.rates.reset_recorders(), P2.3 adds
+    PricebtSession.current / GsSession.current."""
     _toylib_rates.reset_recorders()
+    prev_pricebt_session = PricebtSession.current
+    prev_gs_session = GsSession.current
     yield
     _toylib_rates.reset_recorders()
+    PricebtSession.current = prev_pricebt_session
+    GsSession.current = prev_gs_session

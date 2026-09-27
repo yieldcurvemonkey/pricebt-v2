@@ -224,15 +224,18 @@ def test_engine_resolve_seam_delegates_to_pricing_engine_resolve(monkeypatch):
     assert calls["engine_resolve"] == (priceable, True)
 
 
-def test_engine_seams_do_not_silently_succeed_before_p2_2_exists():
-    # Without the fake above: pricebt.assets.pricing has no engine_calc/engine_resolve until P2.2.
-    # Depending on whether the parallel P1.4 task has filled in assets/config.py yet,
-    # `from pricebt.assets import pricing` itself either fails (ImportError/ModuleNotFoundError)
-    # or succeeds and then `pricing.engine_calc`/`engine_resolve` are simply missing
-    # (AttributeError) -- either way, calling a seam for real right now must not succeed.
+def test_engine_seams_raise_without_a_session(monkeypatch):
+    # pricebt DEV note (P2.2): before P2.2, pricebt.assets.pricing had no engine_calc/engine_resolve
+    # at all, so calling a seam for real always failed with ImportError/AttributeError -- this test
+    # documented that placeholder state. Now that P2.2 has filled the module in, the seams exist and
+    # delegate correctly (proven above); calling one for real with no PricebtSession raises pricebt's
+    # own PricebtError instead (DESIGN.md section 6.1), which this test now asserts.
     from pricebt.markets import _engine_calc, _engine_resolve
+    from pricebt.errors import PricebtError
+    from pricebt.session import PricebtSession
 
-    with pytest.raises((ImportError, ModuleNotFoundError, AttributeError)):
+    monkeypatch.setattr(PricebtSession, "current", None)
+    with pytest.raises(PricebtError):
         _engine_calc(object(), object())
-    with pytest.raises((ImportError, ModuleNotFoundError, AttributeError)):
+    with pytest.raises(PricebtError):
         _engine_resolve(object(), True)
