@@ -1,0 +1,16 @@
+# Allowed differences between pricebt and the gs_quant 1.5.4 API snapshot
+# (tests/data/gs_api_1_5_4.json / gs_instruments_1_5_4.json), consumed by
+# tests/test_gs_api_parity.py (IMPLEMENTATION_PLAN.md P4.2; DESIGN.md section 12.3).
+#
+# Each entry is {symbol, aspect, reason, dev_id}, with a non-empty reason. Any difference between
+# pricebt and the snapshot that is not listed here fails the parity test. Expected occupants
+# (DESIGN.md section 12.3), added by P4.2:
+#   - the trailing keyword-only pricebt_asset, quantity_ and **kwargs on instrument constructors;
+#   - the stubs;
+#   - the trailing fields 2.1.17 appended to a 1.5.4 signature;
+#   - the 2.1.17-only measures FXDeltaLocalCcy/FXGammaLocalCcy/FXVegaLocalCcy (absent from the
+#     1.5.4 snapshot, so they are extra pricebt symbols, not mismatches).
+#
+# Empty for now (P1.6): this file is filled in by P4.2, after pricebt.instrument and
+# pricebt.backtests exist to compare against.
+[]

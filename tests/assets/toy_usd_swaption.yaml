@@ -1,0 +1,32 @@
+schema_version: 1
+asset: toy_usd_swaption
+description: >
+  Toy USD swaption: Bachelier (normal) pricing with a flat vol over the toy rates world in
+  tests/toylib/swaption.py. Test-only fixture, never shipped; mirrors DESIGN.md section 13's
+  swaption extensibility walkthrough at toy scale. Units: npv USD; vega USD per +1bp of normal vol.
+instrument: IRSwaption
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Pay
+  buy_sell: Buy
+  expiration_date: 1y
+  termination_date: 10y
+  notional_currency: USD
+  strike: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.swaption as ts
+market:
+  expr: 'ts.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_swaption_vol
+resolve:
+  expr: 'ts.resolve_swaption(market, kwargs)'
+functions:
+  npv:  {expr: 'ts.npv(market, trade)', unit: ccy}
+  vega: {expr: 'ts.vega(market, trade)', unit: ccy_per_bp}
+attributes:
+  expiration_date: 'resolved["expiration_date"]'
+risk_measures:
+  Price: npv
+  IRVega: {scalar: vega}

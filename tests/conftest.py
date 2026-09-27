@@ -3,14 +3,16 @@
 - An unmarked test gets the `core` marker, so `-m core` selects every test unless it opts into
   `notebook` or `live_arbs`.
 - `live_arbs` tests are skipped unless PRICEBT_LIVE_ARBS=1 (autonomous mode never sets this).
-- `isolation` is an autouse fixture stub: later tasks extend it (P1.5, P2.3, P3.1, P3.3) to save and
-  restore process-global state between tests, per section 0.6. It does nothing yet.
+- `isolation` is an autouse fixture: later tasks extend it (P1.5, P2.3, P3.1, P3.3) to save and
+  restore process-global state between tests, per section 0.6. P1.5 adds toylib.rates.reset_recorders().
 """
 from __future__ import annotations
 
 import os
 
 import pytest
+
+import toylib.rates as _toylib_rates
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
@@ -26,6 +28,8 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
 
 @pytest.fixture(autouse=True)
 def isolation():
-    """Stub: later tasks extend this to save/restore session singletons, counters and caches
-    between tests (IMPLEMENTATION_PLAN.md section 0.6)."""
+    """Save/restore process-global state between tests (IMPLEMENTATION_PLAN.md section 0.6).
+    Extended by later tasks (P2.3, P3.1, P3.3); P1.5 adds toylib.rates.reset_recorders()."""
+    _toylib_rates.reset_recorders()
     yield
+    _toylib_rates.reset_recorders()

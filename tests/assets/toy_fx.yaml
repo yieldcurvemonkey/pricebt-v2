@@ -1,0 +1,20 @@
+# Toy FX table for tests (never shipped): EURUSD = 1.10 + 0.01*sin(2*pi*n/252), n = the
+# business-day index since 2020-01-01 from toylib.rates.business_day_index. USDEUR is the
+# reciprocal (DESIGN.md section 4.5).
+schema_version: 1
+fx: toy_fx
+imports: |
+  import math
+  import toylib.rates as tr
+code: |
+  def _eurusd(d):
+      n = tr.business_day_index(d)
+      return 1.10 + 0.01 * math.sin(2 * math.pi * n / 252)
+
+  def rate(base, quote, d):
+      if (base, quote) == ("EUR", "USD"):
+          return _eurusd(d)
+      if (base, quote) == ("USD", "EUR"):
+          return 1.0 / _eurusd(d)
+      return None
+rate: 'rate(base, quote, pricebt_date)'
