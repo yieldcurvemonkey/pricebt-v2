@@ -1,9 +1,0 @@
-# Stack overlay (spec X1, D3): the QuantLib adapter for a config with the bond instrument `ust` and the pricer role `ust`.
-# It sets ONLY instruments.<name>.factory / .bind and market.pricers.<role>.wrap; the shared `conventions` block stays the base's.
-# A config with both a swap and a bond (s07) takes both overlays:  --stack quantlib_swap.yaml --stack quantlib_bond.yaml
-#   pricebt run configs/suite/s05_ust_ct10_financed.yaml --stack configs/adapters/quantlib_bond.yaml
-instruments:
-  ust: {factory: "pricebt.contrib.quantlib:bond"}
-market:
-  pricers:
-    ust: {wrap: "pricebt.contrib.quantlib:wrap"}

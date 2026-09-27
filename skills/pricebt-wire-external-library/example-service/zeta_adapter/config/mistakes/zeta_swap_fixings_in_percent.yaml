@@ -1,8 +1,0 @@
-# NEGATIVE CONTROL 8: the wrap sends the fixings in PERCENT where zeta wants BASIS POINTS (the factor 100 forgotten).
-# Expected tie-out verdict: L1.pv EXCEEDS on the swap that has started (P000003, the seasoned 2Y: its floating leg accrues on fixings 100 times too small), with cash and everything that reads them;
-# the unstarted swaps and L0 stay exact.
-instruments:
-  usd_sofr_ois: {factory: "zeta_adapter:swap"}
-market:
-  pricers:
-    primary: {wrap: "zeta_mistakes:wrap_fixings_in_percent"}

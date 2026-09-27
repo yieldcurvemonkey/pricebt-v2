@@ -1,9 +1,0 @@
-# Stack overlay (spec X1, D3): the rateslib adapter for a config with the bond instrument `ust` and the pricer role `ust`.
-# It sets ONLY instruments.<name>.factory / .bind and market.pricers.<role>.wrap; the adapter's kit ships the default bindings, so no `bind` is written.
-# A config with both a swap and a bond (s07) takes both overlays:  --stack rateslib_swap.yaml --stack rateslib_bond.yaml
-#   pricebt run configs/suite/s05_ust_ct10_financed.yaml --stack configs/adapters/rateslib_bond.yaml
-instruments:
-  ust: {factory: "pricebt.contrib.rateslib:bond"}
-market:
-  pricers:
-    ust: {wrap: "pricebt.contrib.rateslib:wrap"}

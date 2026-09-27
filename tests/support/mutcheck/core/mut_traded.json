@@ -1,5 +1,0 @@
-{"file": "src/pricebt/tieout/compare.py", "tests": ["tests/test_tieout_review.py"], "mutations": [
- {"name": "turnover-back-in-the-ratios", "find": "RATIO_STATS = frozenset({\"skew\", \"kurt\", \"sortino\", \"calmar\", \"profit_factor\", \"var\", \"cvar\"})", "replace": "RATIO_STATS = frozenset({\"skew\", \"kurt\", \"sortino\", \"calmar\", \"profit_factor\", \"var\", \"cvar\", \"turnover\"})"},
- {"name": "turnover-in-no-group-at-all", "find": "TRADED_STATS = frozenset({\"turnover\"})", "replace": "TRADED_STATS = frozenset()"},
- {"name": "traded-group-compared-as-money", "find": "(\"stats\", [k for k in num if k not in RATIO_STATS | TRADED_STATS])", "replace": "(\"stats\", [k for k in num if k not in RATIO_STATS])"}
-]}

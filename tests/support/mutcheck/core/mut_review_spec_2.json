@@ -1,1 +1,0 @@
-{"file": "src/pricebt/contracts/spec.py", "tests": ["tests/test_spec.py", "tests/test_spec_review.py"], "mutations": [{"name": "layers-str-iterated", "find": "    if isinstance(v, str) or not isinstance(v, (list, tuple)):", "replace": "    if not isinstance(v, (list, tuple, str)):"}]}

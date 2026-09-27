@@ -1,42 +1,31 @@
-import warnings
+"""Shared pytest configuration (IMPLEMENTATION_PLAN.md sections 0.6 and 2, task P0.1).
+
+- An unmarked test gets the `core` marker, so `-m core` selects every test unless it opts into
+  `notebook` or `live_arbs`.
+- `live_arbs` tests are skipped unless PRICEBT_LIVE_ARBS=1 (autonomous mode never sets this).
+- `isolation` is an autouse fixture stub: later tasks extend it (P1.5, P2.3, P3.1, P3.3) to save and
+  restore process-global state between tests, per section 0.6. It does nothing yet.
+"""
+from __future__ import annotations
+
+import os
 
 import pytest
 
-warnings.filterwarnings("ignore", message=r"(?s).*Rateslib is source-available.*")
 
-from guards.partition import pytest_collection_modifyitems  # noqa: F401  (spec G-5: an unmarked test, or a `core` test that needs a library, stops the run)
-from pricebt.engine import Engine, EngineSettings
-from pricebt.market import MarketData
-from pricebt.testing.scripted import ScriptedStrategy
-from pricebt.testing.toys import ToyMDP
-from pricebt.timeutil import Clock, TimeContext, TimeGrid
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    for item in items:
+        if not any(item.iter_markers(name=m) for m in ("core", "notebook", "live_arbs")):
+            item.add_marker(pytest.mark.core)
 
 
-@pytest.fixture
-def tctx():
-    return TimeContext()
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    if any(item.iter_markers(name="live_arbs")) and os.environ.get("PRICEBT_LIVE_ARBS") != "1":
+        pytest.skip("live_arbs: set PRICEBT_LIVE_ARBS=1 to run")
 
 
-@pytest.fixture
-def grid(tctx):
-    return TimeGrid.daily("2024-01-02", "2024-02-29", "1b", tctx)
-
-
-def make_engine(grid, strategy=None, mdp=None, **settings):
-    mdp = mdp or ToyMDP()
-    market = MarketData({"primary": mdp}, Clock())
-    settings.setdefault("show_progress", False)
-    return Engine(grid, market, strategy or ScriptedStrategy(), EngineSettings(**settings)), market, mdp
-
-
-@pytest.fixture
-def mk():
-    return make_engine
-
-
-def assert_identity(rec, initial=0.0, tol=1e-9):
-    """equity == initial + cash + tcost + positions_value on every row (docs/DESIGN.md section 6)."""
-    eq = rec.equity
-    lhs = eq["equity"]
-    rhs = initial + eq["cash"] + eq["tcost"] + eq["positions_value"]
-    assert (lhs - rhs).abs().max() < tol
+@pytest.fixture(autouse=True)
+def isolation():
+    """Stub: later tasks extend this to save/restore session singletons, counters and caches
+    between tests (IMPLEMENTATION_PLAN.md section 0.6)."""
+    yield

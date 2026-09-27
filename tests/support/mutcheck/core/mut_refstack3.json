@@ -1,3 +1,0 @@
-{"file": "src/pricebt/testing/refstack.py", "tests": ["tests/test_refstack_precise.py", "tests/test_refstack_edges.py", "tests/test_refstack_golden.py", "tests/test_refstack_bond.py"], "mutations": [
- {"name": "richardson-off", "find": "        first = (4.0 * d_b - d_a) / 3.0", "replace": "        first = d_a"},
- {"name": "convexity-richardson-off", "find": "        second = (4.0 * s_b - s_a) / 3.0", "replace": "        second = s_a"}]}

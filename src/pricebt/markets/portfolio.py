@@ -1,4 +1,4 @@
-"""PricebtSession, GsSession (a no-op shim with the gs signature), Environment.
+"""Portfolio.
 
 Not yet implemented: see IMPLEMENTATION_PLAN.md for the phase that fills this in.
 """

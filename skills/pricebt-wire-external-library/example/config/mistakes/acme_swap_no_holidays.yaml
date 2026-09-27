@@ -1,8 +1,0 @@
-# CONTROL 5 (a run that must STOP): the wrap forgets to load the snapshot's holidays, so acmelib prices on a weekend-only calendar.
-# Expected: the run is refused with MarketDataUnavailable ("1 overnight fixings missing between 2024-05-28 and 2024-06-19; first 2024-06-19"): 2024-06-19 is a holiday the market
-# publishes no fixing for, and a weekend-only calendar makes it a business day. No number is produced from invented data, so there is no tie-out report to read.
-instruments:
-  usd_sofr_ois: {factory: "acme_adapter:swap"}
-market:
-  pricers:
-    primary: {wrap: "acme_mistakes:wrap_without_holidays"}

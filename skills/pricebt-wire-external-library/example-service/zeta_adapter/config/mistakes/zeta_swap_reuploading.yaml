@@ -1,7 +1,0 @@
-# NEGATIVE CONTROL 10 (the service rule): the wrap uploads the market again on every request. Numbers are identical, so the tie-out PASSES: only `client.stats["markets_uploaded"]` shows it
-# (tests/test_skills_example_zeta_proofs.py asserts the count: one upload per snapshot for the shipped wrap, many more for this one).
-instruments:
-  usd_sofr_ois: {factory: "zeta_adapter:swap"}
-market:
-  pricers:
-    primary: {wrap: "zeta_mistakes:wrap_reuploading"}

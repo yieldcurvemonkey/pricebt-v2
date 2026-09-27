@@ -1,8 +1,0 @@
-# NEGATIVE CONTROL 7 (a run that must STOP): the wrap loads no holidays, so zeta prices on a weekend-only calendar.
-# Expected: the run is refused with MarketDataUnavailable (zeta Z530: "no SOFR fixing dated 2024-05-27 in the market"): 2024-05-27 is a holiday the market publishes no fixing for, and a
-# weekend-only calendar makes it a business day inside the seasoned swap's fixing window. No number is produced from invented data, so there is no tie-out report to read.
-instruments:
-  usd_sofr_ois: {factory: "zeta_adapter:swap"}
-market:
-  pricers:
-    primary: {wrap: "zeta_mistakes:wrap_without_holidays"}
