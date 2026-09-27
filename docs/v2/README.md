@@ -10,6 +10,8 @@ pricebt v2 is a gs_quant-compatible, event-driven backtester with **no pricing o
 
 ## Research notes (evidence; cite by section, e.g. R02§4)
 
+The notes are **evidence about gs_quant, ARBS and v1**. Where a note *proposes* a design (config key names, variable names, a draft config, "recommendations"), **DESIGN.md supersedes it**. Example: R06§7's draft uses `pricing:`/`portfolio:` and `quantity`; the contract is DESIGN §4 (`functions:`/`portfolio_functions:`, `pricebt_quantity`).
+
 | Note | Contents |
 |---|---|
 | `research/01-gs-strategy-triggers-datasources.md` | Strategy, every trigger (exact semantics, MR golden table), data sources (the v2 GenericDataSource spec), backtest_utils, RelativeDate rules, 1.5.4 vs 2.1.17 drift, proposed deviations D1–D15 |
