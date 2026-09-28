@@ -240,6 +240,37 @@ def test_number_unit_bucketed_value_reports_empty_unit_dict_lazy_and_group():
     assert aggregated["value"].sum() == pytest.approx(3.0)
 
 
+def test_intensive_unit_bucketed_value_agrees_lazy_and_group_p6_2_finding_3():
+    """DESIGN.md section 5.4: an intensive unit (bp/pct/decimal) is NOT multiplied by quantity_ --
+    unconditionally, not just on the lazy per-instrument path. The lazy thunk (`_lazy_value` ->
+    `_scale_bucket`) already gated this correctly; `_portfolio_value_from_entries` (the group path,
+    via `group_aggregate`) used to bake the real quantity_ into `weights` regardless of unit, so an
+    intensive-unit ladder disagreed between the two access paths (this test's twin above,
+    `test_number_unit_bucketed_value_reports_empty_unit_dict_lazy_and_group`, only covers the
+    extensive `number` unit, where the two routes coincidentally agree either way)."""
+    cfg = {
+        "schema_version": 1,
+        "asset": "bp_unit_bucketed",
+        "instrument": "ConfigInstrument",
+        "currency": "USD",
+        "market": {"expr": "1"},
+        "functions": {"scalar_fn": {"expr": "1.0", "unit": "number"}},
+        "portfolio_functions": {"bucket_fn": {"expr": "{'b': float(sum(weights))}", "unit": "bp", "returns": "buckets"}},
+        "risk_measures": {"Price": "scalar_fn", "IRDelta": {"scalar": "scalar_fn", "bucketed": "bucket_fn"}},
+    }
+    session = PricebtSession.use(assets=[cfg])
+    d = date(2024, 1, 2)
+    inst = ConfigInstrument(pricebt_asset="bp_unit_bucketed", name="x", quantity_=3.0)
+
+    lazy = session.pricing.value(inst, d, IRDelta, None).result()  # single-instrument -> _lazy_value's thunk
+    assert lazy["value"].sum() == pytest.approx(1.0)  # bp is intensive: NOT scaled by quantity_
+
+    with PricingContext(d):
+        prr = Portfolio([inst]).calc(IRDelta)
+    aggregated = prr.aggregate()  # -> group_aggregate, even for a portfolio of one
+    assert aggregated["value"].sum() == pytest.approx(1.0)  # must agree with the lazy path, not 3.0
+
+
 def test_bucketed_and_group_aggregate_fill_risk_key_risk_measure():
     """DESIGN.md section 8.2: 'pricebt fills date and risk_measure' -- the scalar path already did;
     the lazy per-instrument path and group_aggregate must too."""
@@ -327,6 +358,34 @@ def test_historical_multi_measure_calc_by_date_preserves_unit_and_indexes_by_mea
     expected = session.pricing.value(resolved, d0, Price, None)
     assert float(value) == pytest.approx(float(expected))
     assert value.unit == expected.unit
+
+
+def test_attribute_cache_key_includes_resolution_date_and_csa_p6_2_finding_4():
+    """DESIGN.md section 4.3/6.3: attribute()'s injected env (pricebt_date/pricebt_csa/market) is
+    resolution-date/csa-dependent, so its cache key must be too. Without `resolve:`, resolved_terms
+    is kwargs verbatim (section 4.4) -- independent of the resolution date -- so two instruments
+    resolved on different dates with the SAME kwargs collide on every other key component, and
+    (before this fix) the second call silently returned the first call's cached, wrong-date value."""
+    cfg = {
+        "schema_version": 1,
+        "asset": "no_resolve_date_reader",
+        "instrument": "ConfigInstrument",
+        "currency": "USD",
+        "market": {"expr": "1"},
+        "functions": {"scalar_fn": {"expr": "1.0", "unit": "number"}},
+        "risk_measures": {"Price": "scalar_fn"},
+        "attributes": {"seen_date": "pricebt_date"},
+    }
+    session = PricebtSession.use(assets=[cfg])
+    d0, d1 = date(2024, 1, 2), date(2024, 6, 3)
+    template = ConfigInstrument(pricebt_asset="no_resolve_date_reader", name="x", quantity_=1.0)
+
+    resolved0 = session.pricing.resolve(template, d0, None)
+    resolved1 = session.pricing.resolve(template, d1, None)
+    assert resolved0.resolved_terms == resolved1.resolved_terms  # confirms the collision setup is real
+
+    assert session.pricing.attribute(resolved0, "seen_date") == d0
+    assert session.pricing.attribute(resolved1, "seen_date") == d1  # must not be d0's cached value
 
 
 # ------------------------------------------------------------------------------------ reset()

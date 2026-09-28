@@ -92,6 +92,31 @@ def test_exit_by_name_does_not_touch_a_simultaneously_held_hedge():
     assert len(d3_hedge_legs) >= 1
 
 
+def test_exit_trade_action_on_an_initial_portfolio_position_does_not_crash_dev_e17():
+    # DEV-E17: an initial_portfolio position's own CashPayments carry no TransactionCostEntry
+    # (DEV-E4's _resolve_initial_portfolio), unlike every action-created trade. Exiting one via
+    # ExitTradeAction previously crashed with `list.remove(x): x not in list` when the impl tried
+    # to unconditionally relocate a TCE that never existed.
+    _session()
+    d1, d2 = date(2024, 1, 2), date(2024, 1, 3)
+    seed = _swap("seed")
+    exit_ = DateTrigger(
+        trigger_requirements=DateTriggerRequirements(dates=[d2]),
+        actions=[ExitTradeAction(name="Exit")],  # no priceable_names -> exits everything held
+    )
+    strategy = Strategy(initial_portfolio=[seed], triggers=[exit_])
+    bt = GenericEngine().run_backtest(strategy, states=[d1, d2], show_progress=False)  # must not raise
+
+    ledger = bt.trade_ledger()
+    row = ledger.loc[[n for n in ledger.index if "seed" in n][0]]
+    assert row["Status"] == "closed"
+    assert row["Close"] == d2
+    session = PricebtSession.current
+    resolved = session.pricing.resolve(seed, d1, None)
+    expected_exit_pv = float(session.pricing.value(resolved, d2, Price, None))
+    assert row["Close Value"] == pytest.approx(expected_exit_pv)
+
+
 def test_same_day_entry_and_exit_gives_direction_zero_in_ledger():
     _session()
     d1 = date(2024, 1, 2)

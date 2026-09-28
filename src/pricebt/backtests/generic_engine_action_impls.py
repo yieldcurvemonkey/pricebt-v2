@@ -664,13 +664,14 @@ class ExitTradeActionImpl(ActionHandler):
                         else:
                             cp.effective_date = s
                             backtest.cash_payments[s].append(cp)
-                        # pricebt (P4.1 finding, Phase 3 regression): an initial_portfolio position's
-                        # own CashPayments (_resolve_initial_portfolio, generic_engine.py) are created
-                        # with no TransactionCostEntry at all (transaction_cost_entry=None), unlike
-                        # every action-created trade. Exiting such a position (a normal use of
-                        # ExitTradeAction()/ExitAllPositionsAction(), e.g. rebalancing out of a
-                        # starting book) previously crashed here with `list.remove(x): x not in
-                        # list` -- there was nothing to move/date-stamp in the first place.
+                        # pricebt DEV-E17: an initial_portfolio position's own CashPayments
+                        # (_resolve_initial_portfolio, generic_engine.py) are created with no
+                        # TransactionCostEntry at all (transaction_cost_entry=None), unlike every
+                        # action-created trade. gs relocates the TCE here unconditionally, which
+                        # would crash with `list.remove(x): x not in list` the first time an
+                        # ExitTradeAction/ExitAllPositionsAction exits an initial_portfolio position
+                        # -- there is nothing to move/date-stamp in the first place. Skip the
+                        # relocation when there is no TCE to relocate.
                         if cp.transaction_cost_entry is not None:
                             backtest.transaction_cost_entries[s].append(cp.transaction_cost_entry)
                             backtest.transaction_cost_entries[cp_date].remove(cp.transaction_cost_entry)

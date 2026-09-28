@@ -42,18 +42,20 @@ is unexercised — most such rows are still reached by a broader scenario test.
 | DEV-E8 | `backtest.results[d]` on the defaultdict silently creates `[]` entries | `.get(d)` | no dedicated test found |
 | DEV-E9 | a hedge's `trade_duration` attribute is looked up on the Portfolio, which fails | looked up on the single hedge instrument when the portfolio has one leaf | no dedicated test found |
 | DEV-E10 | `ExitTradeAction.priceable_names` as a bare string is substring-matched; typo `priceables_names` | `make_list(priceable_names)` | `tests/test_actions.py` |
-| DEV-E11 | `initial_value` appears only from the first cash-payment date, in that payment's currency | seeded before the cash walk, currency chosen per DESIGN §7 point 7 | `tests/test_multi_currency.py::test_initial_value_currency_selection_order` |
+| DEV-E11 | `initial_value` appears only from the first cash-payment date, in that payment's currency | seeded before the cash walk, currency chosen per DESIGN §7 point 7 | `tests/test_multi_currency.py::test_initial_value_currency_selection_order` (currency choice), `tests/test_multi_currency.py::test_initial_value_seeded_at_grid_first_not_first_cash_payment_date_dev_e11` (date axis) |
 | DEV-E12 | `dt.date.today()` guards | compared with the backtest end date (`_BACKTEST_END`) | `tests/test_transaction_costs.py` |
 | DEV-E13 | cash currency via `map_ccy_name_to_ccy` of the unit's long name (unknown → `None`) | the ISO code taken from the value's unit | `tests/test_multi_currency.py` (asserts `cash_dict` keyed by `"USD"`/`"EUR"`) |
 | DEV-E14 | risk list and PRR `risk_measures` built from `set(...)`, non-deterministic column order | ordered de-duplication | `tests/test_result_shapes.py` |
 | DEV-E15 | multi-currency only through server-side `result_ccy` | `result_ccy` converts through the FX config; otherwise gs's errors, with a hint | `tests/test_multi_currency.py` |
 | DEV-E16 | gs prices every weekday server-side | missing-market handling for grid and off-grid dates | `tests/test_missing_market.py` |
+| DEV-E17 | `ExitTradeActionImpl` relocates the exited position's TransactionCostEntry unconditionally; crashes `list.remove(x): x not in list` exiting an initial_portfolio position (its CashPayments carry no TCE, DEV-E4) | skipped when there is no TCE to relocate | `tests/test_engine_exit_trade.py::test_exit_trade_action_on_an_initial_portfolio_position_does_not_crash_dev_e17` |
+| DEV-E18 | `result_ccy`'s server-side conversion never reaches a `ScaledTransactionModel(scaling_type=<RiskMeasure>)`; the transaction cost prices in the measure's own currency and `Total` silently sums it with the converted Price/Cash | a `ParameterisedRiskMeasure` scaling_type is rewritten to `scaling_type(currency=result_ccy)` (mirrors DEV-E15) via a `_RESULT_CCY` ContextVar set for the run | `tests/test_multi_currency.py::test_scaled_transaction_model_risk_measure_scaling_type_converts_to_result_ccy_dev_e18` |
 
 ## Results
 
 | ID | gs behaviour | pricebt behaviour | Test(s) |
 |---|---|---|---|
-| DEV-R1 | `result_summary` ffills the previous PV onto a flat date while cash already includes the exit proceeds, so `Total` double-counts | a flat date gets PV 0 and risk 0 before the ffill; a non-flat non-grid date also prices continuing positions into that row | `tests/test_engine_periodic_roll.py`, `tests/test_engine_smoke.py`, `tests/test_result_shapes.py` |
+| DEV-R1 | `result_summary` ffills the previous PV onto a flat date while cash already includes the exit proceeds, so `Total` double-counts | a flat date gets PV 0 and risk 0 before the ffill; a non-flat non-grid date also prices continuing positions into that row | `tests/test_engine_periodic_roll.py`, `tests/test_result_shapes.py` (flat-date zeroing half); `tests/test_engine_smoke.py::test_non_grid_non_flat_date_prices_the_continuing_position_fresh_dev_r1` (non-flat, non-grid continuing-pricing half — test_result_shapes.py's hand-built fixtures cannot reach this) |
 | DEV-R2 | `get_risk_summary_df` is computed once and never invalidated | recomputed on each call | `tests/test_result_shapes.py` |
 | DEV-R4 | bucketed cells are ffilled on flat dates | zeroed, following DEV-R1 | `tests/test_result_shapes.py::test_case_b_bucketed_irdelta_is_zero_on_flat_date_not_ffilled_dev_r4` |
 | DEV-R5 | bucketed frames ordered by `sort_risk`/`point_sort_order` (asset-class regexes) | the config's bucket order, first appearance across groups | `tests/test_risk_results.py` |

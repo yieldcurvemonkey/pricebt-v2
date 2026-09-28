@@ -5,7 +5,7 @@ bookkeeping) and the `Total` identity on every row.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -25,7 +25,13 @@ from pricebt.backtests.backtest_objects import BackTest, CashPayment
 from pricebt.backtests.backtest_utils import CalcType
 from pricebt.backtests.generic_engine import GenericEngine, _final_date_of
 from pricebt.backtests.strategy import Strategy
-from pricebt.backtests.triggers import PeriodicTrigger, PeriodicTriggerRequirements, TriggerInfo
+from pricebt.backtests.triggers import (
+    DateTrigger,
+    DateTriggerRequirements,
+    PeriodicTrigger,
+    PeriodicTriggerRequirements,
+    TriggerInfo,
+)
 from pricebt.instrument import IRSwap
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import IRDelta, Price
@@ -333,3 +339,43 @@ def test_calc_calls_and_calculations_bookkeeping():
     assert bt.calculations != 0
     assert bt.calc_calls == 3
     assert bt.calculations == n_dates * portfolio_size * n_risks
+
+
+def test_non_grid_non_flat_date_prices_the_continuing_position_fresh_dev_r1():
+    """DEV-R1's harder half (DESIGN.md section 11; _handle_cash, generic_engine.py): on a non-grid
+    date that is NOT flat -- a held position's own off-grid exit fires while ANOTHER position is
+    still held past it -- the continuing position is priced fresh into `results[d]`, so
+    `result_summary` shows its true PV on that date instead of an ffilled, stale one.
+
+    DESIGN.md section 12.4 names test_result_shapes.py as covering this, but that file's fixtures
+    are built BY HAND (never through GenericEngine), so it is structurally incapable of reaching
+    generic_engine.py's `_handle_cash` at all; its only non-grid case (Case B) is a FLAT date,
+    exercising DEV-R1's easier half (zeroing), not this one. This test drives the real engine.
+    """
+    _session()
+    d1 = date(2024, 1, 2)  # grid[0]
+    d2 = date(2024, 1, 9)  # grid[1], one week later
+    off_grid = d1 + timedelta(days=3)  # strictly between d1 and d2; not a grid date
+    held = IRSwap(pay_or_receive="Pay", termination_date="10y", notional_currency="USD", notional_amount=1_000_000, name="held")
+    exits = IRSwap(pay_or_receive="Receive", termination_date="5y", notional_currency="USD", notional_amount=2_000_000, name="exits")
+    entry = DateTrigger(
+        trigger_requirements=DateTriggerRequirements(dates=[d1]),
+        actions=[
+            AddTradeAction(held, None, name="Hold"),  # never exits on its own -> continues past d2
+            AddTradeAction(exits, timedelta(days=3), name="Exit"),  # off-grid exit at `off_grid`
+        ],
+    )
+    strategy = Strategy(initial_portfolio=None, triggers=[entry])
+    bt = GenericEngine().run_backtest(strategy, states=[d1, d2], show_progress=False)
+
+    assert off_grid in bt.results  # the fix's whole effect: a priced row exists for this date at all
+
+    session = PricebtSession.current
+    resolved_held = session.pricing.resolve(held, d1, None)
+    expected_fresh_pv = float(session.pricing.value(resolved_held, off_grid, Price, None))
+
+    row = bt.result_summary.loc[off_grid]
+    assert row[Price] == pytest.approx(expected_fresh_pv)
+    # Non-vacuity: this must be a genuinely different number from a stale ffill of d1's row, which
+    # combined BOTH positions' PVs (`held` and `exits`) on d1, not `held` alone freshly priced here.
+    assert row[Price] != pytest.approx(bt.result_summary.loc[d1, Price])

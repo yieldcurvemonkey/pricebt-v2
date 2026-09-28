@@ -253,15 +253,28 @@ class PricingService:
     # ------------------------------------------------------------------------------ group evaluation (section 6.3/8.2)
 
     def _portfolio_value_from_entries(self, asset, d: _date, function: str, csa: Optional[str], entries: Sequence[Tuple[dict, _date, Optional[str], float]]) -> Any:
+        spec = asset.functions.get(function)
+        if spec is None:
+            spec = asset.portfolio_functions.get(function)
+        # pricebt (P6.2 finding 3): `weights` is what the expression sees as each trade's size, so it
+        # must respect DESIGN.md section 5.4 the same way the single-instrument path does
+        # (_eval_unit_cached always evaluates with weights=[1.0]; quantity_ is applied afterwards by
+        # _scale_scalar/_scale_bucket, gated on scale_with_quantity). This path has no such
+        # after-the-fact multiplication -- group_aggregate calls _scale_bucket with quantity_=1.0,
+        # "weights already carry quantity_" -- so an intensive unit (scale_with_quantity=False) must
+        # never see the real quantity_ here either, or it gets scaled twice over (once by being
+        # baked into weights, and DESIGN says not at all).
+        scale_with_quantity = spec is None or spec.scale_with_quantity
         key_entries = []
         for rt, res_date, res_csa, w in entries:
             frozen = tuple(sorted(rt.items()))
-            key_entries.append((frozen, res_date, res_csa, w) if asset.build_on == "resolve_date" else (frozen, w))
+            kw = w if scale_with_quantity else 1.0
+            key_entries.append((frozen, res_date, res_csa, kw) if asset.build_on == "resolve_date" else (frozen, kw))
         key = (asset.name, d, function, csa, tuple(key_entries))
         if key in self._portfolio_value_cache:
             return self._portfolio_value_cache[key]
         trades = [self._trade_for(asset, rt, res_date, res_csa, d, csa) for rt, res_date, res_csa, _w in entries]
-        weights = [w for *_rest, w in entries]
+        weights = [w if scale_with_quantity else 1.0 for *_rest, w in entries]
         mkt = self.market(asset, d, csa)
         injected = {
             **self._base_injected(d, csa),
@@ -272,7 +285,6 @@ class PricingService:
             "weights": weights,
         }
         raw = self._ns(asset).eval(function, **injected)
-        spec = asset.portfolio_functions.get(function)
         result = dict(raw) if spec is not None and spec.returns == "buckets" else float(raw)
         self._portfolio_value_cache[key] = result
         return result
@@ -291,11 +303,20 @@ class PricingService:
         asset = self.asset_for(inst)
         resolved_terms = inst.resolved_terms
         frozen = tuple(sorted(resolved_terms.items()))
-        key = (asset.name, frozen, field, inst.quantity_)
-        if key in self._attribute_cache:
-            return self._attribute_cache[key]
         rk = inst.resolution_key
         res_date, res_csa = rk.date, inst.resolution_csa
+        # pricebt (P6.2 finding 4): the injected env below (pricebt_date/pricebt_timestamp/
+        # pricebt_csa, and market when the expression reads it) depends on res_date/res_csa, not
+        # just (asset, frozen resolved, field, quantity_) -- every sibling cache in this file
+        # (_trade_for, _eval_unit_cached, _portfolio_value_from_entries, resolve) threads date/csa
+        # through its key to match what it injects; this one didn't. Two instruments with the same
+        # (asset, resolved_terms, quantity_) but resolved on different dates/csa -- an ordinary
+        # occurrence when `resolve:` is absent, since resolved_terms is then just kwargs verbatim,
+        # independent of the resolution date -- would otherwise collide and silently return the
+        # first instrument's market/date/csa-dependent attribute value for the second.
+        key = (asset.name, frozen, field, inst.quantity_, res_date, res_csa)
+        if key in self._attribute_cache:
+            return self._attribute_cache[key]
         code = asset.code(field)
         injected = {
             **self._base_injected(res_date, res_csa),

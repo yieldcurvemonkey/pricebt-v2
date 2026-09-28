@@ -561,3 +561,37 @@ and pricebt's `prev_business_date` use a bare `date.today()` default.
 again — rejected: this only defers the same failure to the next day boundary rather than fixing the
 structural flakiness, and the snapshot is meant to be a stable, rarely-regenerated reference
 artifact, not something re-run to chase a moving wall clock.
+
+---
+
+## 2026-09-28 — P6.2 fix loop: DEV-E18 currency-conversion scope (a judgment call)
+
+**Situation:** finding 2 (P6.2) is that `ScaledTransactionModel(scaling_type=<RiskMeasure>)` never
+gets rewritten to `result_ccy`, unlike the run's `risks` list (DEV-E15). The fix mirrors that
+rewrite via a new `_RESULT_CCY` ContextVar read by `ScaledTransactionModel.get_unit_cost`. The
+open question: what happens when `scaling_type` is a plain, non-currency-capable `RiskMeasure`
+(e.g. `IRGamma`, which has no `currency` parameter at all) while `result_ccy` is set?
+
+**Rule applied:** IMPLEMENTATION_PLAN §9 row "A gs behaviour not in DESIGN §11 looks like a bug" is
+not quite this case (this is pricebt's OWN mechanism, DEV-E15, not a gs behaviour); closest is "A
+MUST seems impossible as written" in spirit — MUST-4 promises currency consistency, but a plain
+`RiskMeasure` literally cannot carry a `currency` parameter to convert through.
+
+**Decision:** left unconverted, same as the pre-existing `scaling_type` as a bare attribute-name
+string (e.g. `'notional_amount'`), which was already undocumented-currency/unconverted before this
+fix and is not part of this finding. Did **not** add a `risks`-list-style
+`raiser(f"Unparameterised risk: {r}")` for this case, to keep the fix scoped to the finding (making
+the previously-silently-wrong case correct) rather than inventing new strict-validation behaviour
+nobody asked for and no existing test exercises either way.
+
+**Evidence:** `src/pricebt/risk/__init__.py`'s `ParameterisedRiskMeasure`/`RiskMeasureWithCurrencyParameter`/
+`RiskMeasureWithFiniteDifferenceParameter` hierarchy — only these accept `currency=`; a bare
+`RiskMeasure` (e.g. `IRGamma`, `DollarPrice`) does not. `grep`ped `tests/test_transaction_costs.py`
+and `tests/test_multi_currency.py`: no existing test combines a non-parameterised `RiskMeasure`
+scaling_type with `result_ccy`, so this choice breaks nothing either way.
+
+**Alternative considered:** raise (mirroring the `risks` list's strict `Unparameterised risk: {r}`)
+whenever `result_ccy` is set and `scaling_type` is a plain `RiskMeasure` — rejected as unrequested
+scope creep for this finding; the finding's own evidence and repro only concern the
+`ParameterisedRiskMeasure` case. Can be revisited if a future finding shows the unconverted plain-
+`RiskMeasure` case actually causes a silent wrong number in practice.

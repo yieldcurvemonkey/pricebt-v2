@@ -54,7 +54,7 @@ from .actions import (
     RebalanceAction,
 )
 from .backtest_engine import BacktestBaseEngine
-from .backtest_objects import _BACKTEST_END, BackTest, CashPayment, PnlDefinition
+from .backtest_objects import _BACKTEST_END, _RESULT_CCY, BackTest, CashPayment, PnlDefinition
 from .backtest_utils import CalcType, clear_final_date_cache, get_final_date, make_list
 from .generic_engine_action_impls import (
     AddScaledTradeActionImpl,
@@ -445,6 +445,10 @@ class GenericEngine(BacktestBaseEngine):
         backtest.missing_market_dates = dropped_dates
 
         token = _BACKTEST_END.set(strategy_end_date)
+        # pricebt DEV-E18: see backtest_objects.py -- ScaledTransactionModel.get_unit_cost reads
+        # this to rewrite a RiskMeasure scaling_type to result_ccy, mirroring the `risks` rewrite
+        # above for the primary risks list.
+        ccy_token = _RESULT_CCY.set(result_ccy)
         try:
             logger.info("Resolving initial portfolio")
             self._resolve_initial_portfolio(
@@ -513,6 +517,7 @@ class GenericEngine(BacktestBaseEngine):
             return backtest
         finally:
             _BACKTEST_END.reset(token)
+            _RESULT_CCY.reset(ccy_token)
 
     def _resolve_initial_portfolio(
         self, initial_portfolio, backtest, strategy_start_date, strategy_pricing_dates, holiday_calendar, duration=None

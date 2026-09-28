@@ -533,7 +533,7 @@ The seams `pricebt.markets._engine_calc` and `pricebt.markets._engine_resolve` (
 | trade (`build_on=resolve_date`) | `(asset, frozen resolved, resolution date, resolution csa)`; always built on `market(resolution date, resolution csa)`, **never** on the requesting date's market | the library trade object |
 | unit value | `(asset, frozen resolved, date, function, csa)`, plus `(resolution date, resolution csa)` for `resolve_date` assets | float |
 | portfolio value | `(asset, date, function, csa, tuple((frozen resolved, [res date, res csa,] weight) ...))` | float or dict |
-| attribute | `(asset, frozen resolved, field, quantity_)` | value |
+| attribute | `(asset, frozen resolved, field, quantity_, resolution date, resolution csa)` | value |
 | fx | `(from, to, date)` | float |
 
 `frozen resolved` = `tuple(sorted(resolved.items()))`, which is hashable because of §4.4. **Unit values depend only on economic terms** (and on the build market for `resolve_date` assets), so a hedge's unit trade and its scaled copy share cache entries.
@@ -611,8 +611,8 @@ Messages that pricebt authors MUST pass the token scan (§12.2). Write "GS serve
 1. **Local by default (gs parity).** A currency-bearing measure with no `currency` parameter (e.g. `Price`) is in the **function's currency**: its own `currency:`, else the asset currency (decision 0.5). Its `FloatWithInfo.unit` is then `{"<that ccy>": 1}`. `currency='local'` means the same thing.
 2. **Converted on request.** A measure with `currency='USD'` evaluates to unit value × quantity_ × `fx(function currency, 'USD', d)`, with unit `{"USD": 1}`. `DollarPrice` is equivalent to `Price(currency='USD')`.
 3. **`run_backtest(result_ccy='USD')`** applies exactly the gs rule (R02§3.2):
-   - every risk `r` in the run becomes `r(currency='USD')`;
-   - a risk that is not a `ParameterisedRiskMeasure` raises `RuntimeError(f'Unparameterised risk: {r}')`;
+   - every risk `r` in the run becomes `r(currency='USD')`, including a `ScaledTransactionModel`'s `RiskMeasure` `scaling_type` (DEV-E18) — otherwise a transaction cost could silently stay in the measure's own currency while `Total` sums it in as if converted;
+   - a risk that is not a `ParameterisedRiskMeasure` raises `RuntimeError(f'Unparameterised risk: {r}')` — except a non-parameterised `scaling_type`, which DEV-E18 leaves unconverted rather than raising (DECISIONS_LOG.md 2026-09-28);
    - the price measure becomes `Price(currency='USD')`;
    - cash is then booked from the converted price at the payment date's FX, so `cash_dict` has one key.
 4. **A mixed book without `result_ccy`** gets the gs errors unchanged, plus a hint:
@@ -719,7 +719,7 @@ pricebt reimplements gs's identity semantics exactly (R03§14.1, R04§9):
   - `service` = the `PricingService` instance that created it.
 
   The thunk and the group call use that captured service and the captured (date, csa). They never read `PricebtSession.current`, so a view computed after a `reset()` or after the session block has exited re-evaluates correctly, as a cache miss rather than an error.
-- `PortfolioRiskResult.aggregate()` for a single bucketed measure first collects the leaf futures without evaluating them. If they are all `LazyFuture`s with a non-None `group_key`, it groups them by `group_key` and calls `first_future.service.group_aggregate(group_key, members)` **once per group** (the service captured by the futures; no module-level hook). That call evaluates the portfolio function with all of the group's trades and `weights = [quantities]`, with no second multiplication. The resulting frames are concatenated and aggregated.
+- `PortfolioRiskResult.aggregate()` for a single bucketed measure first collects the leaf futures without evaluating them. If they are all `LazyFuture`s with a non-None `group_key`, it groups them by `group_key` and calls `first_future.service.group_aggregate(group_key, members)` **once per group** (the service captured by the futures; no module-level hook). That call evaluates the portfolio function with all of the group's trades and `weights = [quantities]` **if the function's unit is extensive** (§5.4), with no second multiplication; for an **intensive** unit, `weights = [1.0, ...]` instead (same rule the single-instrument thunk applies via `_eval_unit_cached`/`_scale_bucket` above), so quantity_ never reaches an intensive-unit portfolio function's `weights` by either route.
 - Otherwise (e.g. values materialised by user code), aggregation is `pd.concat(...)` followed by `groupby([mkt_type, mkt_asset, mkt_class, mkt_point, mkt_quoting_style], sort=False, dropna=False, as_index=False)["value"].sum()`.
 - Row order is first appearance: groups in asset-registration order, then buckets in returned-dict order (DEV-R5).
 - The group metadata travels **with the futures**, so any PRR that gs code rebuilds from `.futures` (ExitTradeActionImpl, `__add__`, slices) still aggregates by group.
@@ -906,6 +906,8 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 | DEV-E14 | generic_engine (P3.5) + risk/results (P1.3) + backtest_objects (P3.2) | risk list and PRR `risk_measures` built from `set(...)`, so the column order is non-deterministic | ordered de-duplication: user `risks`, then `strategy.risks`, then pnl risks, then the price measure. `PortfolioRiskResult.__add__` keeps the order; `get_risk_summary_df` reindexes to `self.risks` |
 | DEV-E15 | generic_engine (P3.5) + assets/pricing (P2.2) | multi-currency only through server-side `result_ccy` | `result_ccy` converts through the FX config; otherwise the gs errors, with a hint (§7) |
 | DEV-E16 | generic_engine + impls (P3.5) | gs prices every weekday server-side | missing-market handling for grid and off-grid dates (§9.5) |
+| DEV-E17 | impls (P3.5, ExitTradeActionImpl) | the exited position's TCE relocation (`transaction_cost_entries[s].append/remove`, `cp.transaction_cost_entry.date = s`) runs unconditionally; crashes with `list.remove(x): x not in list` when an initial_portfolio position (whose CashPayments carry `transaction_cost_entry=None`, DEV-E4's `_resolve_initial_portfolio`) is exited via ExitTradeAction/ExitAllPositionsAction | skipped when `cp.transaction_cost_entry is None` — nothing to relocate |
+| DEV-E18 | backtest_objects (`ScaledTransactionModel.get_unit_cost`, P3.2) + generic_engine (P3.5 sets `_RESULT_CCY`) | `result_ccy`'s server-side conversion (gs's only multi-currency mechanism) never reaches a transaction-cost model's `scaling_type`, so a `ScaledTransactionModel(scaling_type=<RiskMeasure>)` prices in the measure's own currency even when `run_backtest(result_ccy=...)` is set, and `Total` silently sums it in with the converted Price/Cash | mirrors the `risks`-list rewrite (DEV-E15): while a run has `result_ccy` set, a `ParameterisedRiskMeasure` scaling_type is rewritten to `scaling_type(currency=result_ccy)` before pricing, via a `_RESULT_CCY` ContextVar set for the run's duration (a plain, non-parameterised `RiskMeasure` scaling_type is left in its own currency, same as the `'notional_amount'`-style string case) |
 
 **Results (R03§4.4)**
 
@@ -1000,8 +1002,8 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 | `test_mean_reversion_golden.py` | the 19-row table of R01§6.5.9 (triggered, scaling, position), fed through `GenericDataSource` + `MeanReversionTriggerRequirements` |
 | `test_generic_data_source.py` | the R01§7.4 v2 spec: fill_forward returns the previous value (2.0, not 5.0), interpolate by position, no mutation, index normalisation, the `get_data_range` rules |
 | `test_risk_results.py` | the PRR contract (§8.2): `.get`, `.futures` rebuild after deleting an index, the `__getitem__` errors, `__add__` overlap and ordered union, `transform`, `to_frame` bucket sums, the 6-column bucketed frame, ';'-keyed points, order preserved |
-| `test_result_shapes.py` | R03§9 Cases A, B (with DEV-R1: `Total` = 2290, not 3790) and E, as exact frames; a weekly grid with a mid-week exit while another trade is held (DEV-R1 non-grid rule) |
-| `test_engine_smoke.py` | a periodic '1m' roll: ledger names, dates, `Trade PnL = Close + Open`, the `Total` identity on every row, entry/exit cash = ∓PV priced independently, the holding window, determinism |
+| `test_result_shapes.py` | R03§9 Cases A, B (with DEV-R1: `Total` = 2290, not 3790) and E, as exact frames, built by hand (never through GenericEngine); Case B's non-grid date is *flat* (DEV-R1's zeroing half only) |
+| `test_engine_smoke.py` | a periodic '1m' roll: ledger names, dates, `Trade PnL = Close + Open`, the `Total` identity on every row, entry/exit cash = ∓PV priced independently, the holding window, determinism; a weekly grid with a mid-week off-grid exit while another trade is held (DEV-R1's non-grid, non-flat "price the continuing position fresh" rule), driven through the real engine |
 | `test_engine_periodic_roll.py` | the 040300 swap variant |
 | `test_engine_hedge.py` | 040310 variant (toy EUR, `HedgeAction(IRDelta(aggregation_level='Type'), hedge, csa_term='EUR-OIS')`): the book's IRDelta ≈ 0 after each daily hedge; `pricebt_csa` is seen only while the hedge is resolved; the `risk_transformation=ResultWithInfoAggregator()` variant |
 | `test_engine_risk_trigger.py` | 040305-style `StrategyRiskTrigger` + `[ExitTradeAction(), AddTradeAction(...)]` fires again after the first rebalance (DEV-E1) |

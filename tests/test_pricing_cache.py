@@ -74,10 +74,17 @@ def test_resolve_date_trade_is_built_on_the_resolution_market_even_when_first_re
 
     market_count = tr.EVAL_COUNTS["market"]
     d2 = date(2024, 9, 1)
+    # pricebt (P6.2 finding 7): `CSA_SEEN[len(CSA_SEEN) - 1:]` was always just the single LAST
+    # entry (computed AFTER the call, with no length captured beforehand), so it would still pass
+    # even if d0's market were spuriously re-fetched during the d2 call, as long as that re-fetch
+    # wasn't the very last append -- a near-vacuous restatement of the EVAL_COUNTS assertion below
+    # it. Capture the length before the call and slice from there, so it actually covers everything
+    # CSA_SEEN gained during the d2 call, not just its last element.
+    csa_len_before = len(tr.CSA_SEEN)
     session.pricing.unit_value(swap, d2, "npv", None)
     assert tr.EVAL_COUNTS["market"] == market_count + 1  # only d2's market is new; d0's trade is reused
     assert tr.EVAL_COUNTS["trade"] == 1  # trade cache hit: still keyed on (resolution date, resolution csa)
-    assert ("market", d0, None) not in tr.CSA_SEEN[len(tr.CSA_SEEN) - 1 :]  # not re-fetched for d2's call
+    assert ("market", d0, None) not in tr.CSA_SEEN[csa_len_before:]  # not re-fetched for d2's call
 
     _ = asset  # asset config identified for documentation; unit_value re-derives it via the instrument
 

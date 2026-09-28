@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from pricebt.backtests.actions import AddTradeAction, HedgeAction
+from pricebt.backtests.backtest_objects import ScaledTransactionModel
 from pricebt.backtests.generic_engine import GenericEngine
 from pricebt.backtests.strategy import Strategy
 from pricebt.backtests.triggers import DateTrigger, DateTriggerRequirements, PeriodicTrigger, PeriodicTriggerRequirements
@@ -117,6 +118,53 @@ def test_cross_currency_hedging_with_irdelta_currency_usd():
         # both sides FIRST converted into USD -- proving the currency parameter, not just the
         # measure, flows correctly into HedgeActionImpl's unit-matching/scaling.
         assert float(bt.results[d][risk].aggregate()) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_scaled_transaction_model_risk_measure_scaling_type_converts_to_result_ccy_dev_e18():
+    # DEV-E18: a ScaledTransactionModel(scaling_type=<RiskMeasure>) must price in result_ccy, same
+    # as every other risk in the run -- not silently in the EUR swap's own local currency, which
+    # would make `Transaction Costs` a different currency from `Price`/`Cumulative Cash` in `Total`.
+    session = _session()
+    eur = _eur_swap(name="eur_tc")
+    scaling = IRDelta(aggregation_level="Type")
+    trigger = DateTrigger(
+        trigger_requirements=DateTriggerRequirements(dates=[D1]),
+        actions=[AddTradeAction(eur, None, transaction_cost=ScaledTransactionModel(scaling, 0.0001), name="Enter")],
+    )
+    strategy = Strategy(initial_portfolio=None, triggers=[trigger])
+    bt = GenericEngine().run_backtest(strategy, states=[D1], result_ccy="USD", show_progress=False)
+
+    resolved_eur = session.pricing.resolve(eur, D1, None)
+    eur_dv01_local = float(session.pricing.value(resolved_eur, D1, scaling, None))
+    fx_eur_usd = session.pricing.fx("EUR", "USD", D1)
+    # Hand-computed independently of _scale_scalar: the FX-converted cost, not the raw local one.
+    expected_cost_usd = -0.0001 * abs(eur_dv01_local * fx_eur_usd)
+    wrong_unconverted_cost = -0.0001 * abs(eur_dv01_local)
+    assert expected_cost_usd != pytest.approx(wrong_unconverted_cost)  # fx isn't ~1 here; discriminating
+
+    assert bt.transaction_costs[D1] == pytest.approx(expected_cost_usd)
+    row = bt.result_summary.loc[D1]
+    assert row["Transaction Costs"] == pytest.approx(expected_cost_usd)
+
+
+def test_initial_value_seeded_at_grid_first_not_first_cash_payment_date_dev_e11():
+    # DEV-E11's date-axis half: gs seeds initial_value only from whichever date the FIRST cash
+    # payment happens to be processed on; pricebt seeds it explicitly at the backtest's first grid
+    # date D[0] regardless. Every existing initial_value test uses states=[D1] with an immediate
+    # initial_portfolio, so D[0] and the first cash-payment date always coincide and can never
+    # disagree -- this one forces them apart: no initial_portfolio, and the only trade (hence the
+    # only cash payment) is added later, at D2.
+    PricebtSession.use(assets=[ASSETS / "toy_usd_irs.yaml"])
+    trade = _usd_swap(name="added")
+    trigger = DateTrigger(
+        trigger_requirements=DateTriggerRequirements(dates=[D2]),
+        actions=[AddTradeAction(trade, None, name="Enter")],
+    )
+    strategy = Strategy(initial_portfolio=None, triggers=[trigger])
+    bt = GenericEngine().run_backtest(strategy, states=[D1, D2, D3], initial_value=500.0, show_progress=False)
+
+    assert dict(bt.cash_dict[D1]) == {"USD": 500.0}  # seeded at D[0], before any cash payment exists
+    assert bt.result_summary.loc[D1, "Cumulative Cash"] == pytest.approx(500.0)
 
 
 def test_initial_value_currency_selection_order():

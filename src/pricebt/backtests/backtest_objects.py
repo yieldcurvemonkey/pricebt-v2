@@ -59,6 +59,17 @@ from .data_sources import DataSource
 # job (P3.5); this file only defines it and reads it.
 _BACKTEST_END: "ContextVar[Optional[dt.date]]" = ContextVar('_BACKTEST_END', default=None)
 
+# pricebt DEV-E18: same pattern as _BACKTEST_END above. run_backtest's result_ccy rewrite
+# (generic_engine.py) converts the run's `risks` list and price measure to `r(currency=result_ccy)`
+# but has no way to reach into an action's own `transaction_cost`/`transaction_cost_exit` models --
+# a ScaledTransactionModel(scaling_type=<RiskMeasure>) is a plain dataclass with no run context.
+# Without this, its scaling_type is priced in whatever currency the (unparameterised) measure
+# defaults to (decision 0.5's function/asset currency), never result_ccy, so under a multi-currency
+# run the booked Transaction Costs can be silently in a different currency than Price/Cumulative
+# Cash while Total sums all three as if they matched. GenericEngine sets/resets this for the run's
+# duration (P3.5, alongside _BACKTEST_END); ScaledTransactionModel.get_unit_cost reads it below.
+_RESULT_CCY: "ContextVar[Optional[str]]" = ContextVar('_RESULT_CCY', default=None)
+
 
 class BaseBacktest(ABC):
     pass
@@ -672,8 +683,17 @@ class ScaledTransactionModel(TransactionModel):
         cutoff = backtest_end if backtest_end is not None else dt.date.today()
         if state > cutoff:
             return np.nan
+        # pricebt DEV-E18: rewrite to result_ccy exactly like generic_engine.py's `risks` list does,
+        # so a currency-bearing scaling_type prices (and, via PricingService, FX-converts) into the
+        # same currency as Price/Cumulative Cash instead of silently staying in its own. A plain
+        # (non-currency-capable) RiskMeasure is left as-is, same as the 'notional_amount'-style
+        # string scaling_type above -- undocumented currency, but no worse than before this fix.
+        scaling_type = self.scaling_type
+        result_ccy = _RESULT_CCY.get()
+        if result_ccy is not None and isinstance(scaling_type, ParameterisedRiskMeasure):
+            scaling_type = scaling_type(currency=result_ccy)
         with PricingContext(state):
-            risk = instrument.calc(self.scaling_type)
+            risk = instrument.calc(scaling_type)
         return risk
 
 
