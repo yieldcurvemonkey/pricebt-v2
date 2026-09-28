@@ -8,11 +8,17 @@
 # (`notebooks/src/040304_mean_reversion_toy.py`): buy/sell a 10y USD payer whenever the 10y par
 # rate strays from its own rolling mean.
 #
-# **This notebook is built but not executed** (`tools/nb_build.py --no-exec`;
-# IMPLEMENTATION_PLAN.md P5.1): running it imports ARBS, which needs the user's approval (P5.2).
-# The dates below are chosen from the config's documented coverage
-# (`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s description: 2020-07-01..2026-08-20,
-# dense from 2021-01-04) so that a run, once approved, has real data across the whole window.
+# Running this imports ARBS, which needed the user's approval (P5.2, granted and run 2026-09-28;
+# see docs/v2/LIVE_ARBS_REPORT.md). The dates below are chosen from the config's documented
+# coverage (`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s description:
+# 2020-07-01..2026-08-20, dense from 2021-01-04) so a run has real data across the whole window.
+
+# %%
+# Only needed if you open this notebook directly in Jupyter with no PYTHONPATH set (tools/nb_build.py
+# sets PYTHONPATH=src for its own kernel subprocess, so this is redundant but harmless there).
+import sys
+
+sys.path.append(r"C:\Users\chris\clee\gsquant-temp-claude\pricebt-v2\src")
 
 # %%
 from datetime import date, datetime
@@ -33,14 +39,20 @@ from pricebt.session import PricebtSession
 PricebtSession.use(assets=["configs/assets/usd_sofr_ois_interest_rate_swap.yaml"])  # replaces GsSession.use(...)
 
 # %% [markdown]
-# `start_date` is the first date the config's ARBS source is dense (decision 0.2). `end_date` is
-# `datetime.today().date()`, as in the gs notebook: dates past the config's `_LAST_SAFE`
-# (2026-08-20) are dropped by `PricebtSession`'s `missing_market='drop'` policy, with a warning, and
-# listed on `backtest.missing_market_dates` — the same way gs would drop a weekend or holiday.
+# `start_date` is the first date the config's ARBS source is dense (decision 0.2). `end_date` stops
+# short of `datetime.today().date()` (as the gs notebook would use): a full scan of the config's
+# `_LAST_SAFE`-bounded range found 3 dates (2026-05-21, 2026-06-11, 2026-07-28, out of 1469 business
+# days) where the local ARBS store serves a market whose own `reference_date()` doesn't match the
+# date requested — a real ARBS local-store data-quality issue the config's `load_market` validation
+# (R06 s1.6) correctly raises on rather than silently pricing off the wrong curve. Dates past
+# `_LAST_SAFE` are separately dropped by `PricebtSession`'s `missing_market='drop'` policy, with a
+# warning, and listed on `backtest.missing_market_dates` — but that policy only covers a market
+# expression returning `None`, not a raised validation error, so it does not smooth over these 3
+# dates. `end_date` here stops before the first of them.
 
 # %%
 start_date = date(2021, 1, 4)
-end_date = datetime.today().date()
+end_date = date(2026, 4, 30)  # avoids 3 known-bad ARBS store dates (2026-05-21, 06-11, 07-28) past this point
 
 swap = IRSwap(pay_or_receive=PayReceive.Pay, termination_date="10y", notional_currency=Currency.USD,
               notional_amount=1e4, fixed_rate="ATM", name="swap_10y")
