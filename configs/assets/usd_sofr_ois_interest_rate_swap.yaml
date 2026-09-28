@@ -1,0 +1,200 @@
+schema_version: 1
+asset: usd_sofr_ois_interest_rate_swap
+description: >
+  USD SOFR OIS swap priced by ARBS on Eris EOD curves. Reads the ARBS curve store only: no curve-store writes and no
+  network for dates <= _LAST_SAFE (2026-08-20); each call creates an empty today-dated folder in ARBS's fixings cache.
+  Instrument: pricebt.instrument.IRSwap (gs fields). Units: npv USD; dv01 USD per +1bp (payer > 0); rates in bp.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Receive          # gs server default (R04 s1); coerced to PayReceive.Receive (value 'Rec')
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6           # gs does not document one; pricebt makes it explicit
+
+imports: |
+  import os, sys, re, contextlib, io, warnings
+  os.environ["ARBS_SUPABASE_ENABLED"] = "0"          # MUST precede ANY ARBS import (R06 s6.2): no production database
+  if r"C:\Users\chris\clee\ARBS" not in sys.path:
+      sys.path.insert(0, r"C:\Users\chris\clee\ARBS")
+  import datetime as _dt
+  import pandas as pd
+  with warnings.catch_warnings():
+      warnings.simplefilter("ignore")                  # rateslib LicenceNotice on import
+      import rateslib as rl
+  from MDP.IRSwaps.IRSwapsMDP import IRSwapsMDP
+  from Query.IRSwaps.backends.rateslib.RLIRSwapCurve import RLIRSwapCurve
+  import Caching.supabase_engine as _arbs_se
+  if _arbs_se.SUPABASE_ENABLED:
+      raise RuntimeError("ARBS was imported before ARBS_SUPABASE_ENABLED=0 took effect; restart the kernel")
+
+code: |
+  _MDP = IRSwapsMDP(source="ERIS_EOD_LIVE-RL_BASIC")   # store-backed Eris, 2020-07-01..2026-08-20 (R06 s1.3). Construct ONCE.
+  # _MDP = IRSwapsMDP(source="ERIS_EOD_LIVE-RL_BASIC-NOJUMPS")   # DO NOT enable without user approval: network + overwrites
+  #                                                              # curve-store partitions USD-SOFR-1D/date=<d> (R06 s1.3, s6.1)
+  _CURVE = "USD-SOFR-1D"
+  _LAST_SAFE = _dt.date(2026, 8, 20)   # (1) last stored RL_BASIC curve; (2) bulk_get_data reads SOFR fixings for d BEFORE the
+                                       # store lookup and ignore_cache_miss does not protect it: any d whose previous US business
+                                       # day is missing from ARBS's fixings cache (newest 2026-09-04) triggers a NY Fed/FRED download
+                                       # and rewrites the fixings cache. Raise only after a deliberate refresh approved by the user.
+  _ATM = re.compile(r"^\s*(atm|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25', 'a-100' (bp)
+
+  def load_market(d):
+      if d >= _dt.date.today() or d > _LAST_SAFE:
+          return None                  # today -> 'live' (network); after _LAST_SAFE -> fixings download (network + writes)
+      if d.weekday() >= 5:
+          return None
+      try:
+          got = _MDP.bulk_get_data(dict(curve_name=_CURVE, timestamps=[d], ignore_cache_miss=True))   # fresh dict (ARBS pops keys)
+      except ValueError as e:
+          if "resolved to an empty collection" in str(e):
+              return None              # US GovernmentBond holiday (QuantLib calendar): ARBS drops the date, then raises
+          raise
+      m = got.get(d)
+      if m is None:
+          return None                  # store hole / sanity-quarantined day
+      if m.reference_date().date() != d:
+          raise ValueError(f"served reference date {m.reference_date().date()} for {d}")   # validate the serve (R06 s1.6)
+      return m
+
+  def _tenor(x):
+      return isinstance(x, str) and re.fullmatch(r"\d+[dwmyDWMY]", x.strip()) is not None
+
+  def _effective(m, eff):
+      if eff is None or (isinstance(eff, str) and eff.strip().lower() in ("spot", "0b")):
+          return m.spot_date()                                   # reference + 2b (R06 s3.2)
+      if isinstance(eff, str):
+          return m.calendar_advance(m.spot_date(), eff)          # forward start counted FROM SPOT (not build_irswap(fwd=))
+      return pd.Timestamp(eff).to_pydatetime()
+
+  def _sign(por):
+      s = str(getattr(por, "value", por)).strip().lower()        # pricebt enum (value 'Rec'), or a raw string
+      if s == "pay": return 1.0
+      if s in ("rec", "receive", "receiver"): return -1.0
+      raise ValueError(f"pay_or_receive must be Pay or Receive, got {por!r}")
+
+  def resolve_swap(m, kw):
+      eff = _effective(m, kw.get("effective_date"))
+      term = kw["termination_date"]
+      notional = float(kw["notional_amount"]) * _sign(kw["pay_or_receive"])   # '100k'-style strings are rejected by float()
+      if _tenor(term):
+          probe = m.build_irswap(effective_date=eff, tenor=term.upper(), notional=notional)   # struck at par (sentinel)
+      else:
+          probe = m.build_irswap(effective_date=eff, maturity_date=pd.Timestamp(term).to_pydatetime(), notional=notional)
+      fr = kw.get("fixed_rate", "ATM")
+      mm = _ATM.match(fr) if isinstance(fr, str) else None
+      if mm:
+          spread_bp = float(mm.group(3) or 0.0) * (-1.0 if mm.group(2) == "-" else 1.0)
+          k = float(m.fair_rate(probe)) + spread_bp / 1e4          # decimal
+      elif isinstance(fr, str):
+          raise ValueError(f"unsupported fixed_rate {fr!r} (use 'ATM', 'ATM+x', 'a-x' in bp, or a decimal)")
+      else:
+          k = float(fr)                                              # decimal, gs convention (0.0325 = 3.25%)
+      if k == 0.0:
+          raise ValueError("a 0.0 strike collides with the ARBS par sentinel (R06 s3.3)")
+      return {
+          "effective_date": m.effective_date(probe).date(),
+          "termination_date": m.maturity_date(probe).date(),
+          "fixed_rate": k,                                           # decimal
+          "notional": notional,                                      # signed, + = payer
+      }
+
+  def build_swap(m, r):
+      return m.build_irswap(effective_date=pd.Timestamp(r["effective_date"]).to_pydatetime(),
+                            maturity_date=pd.Timestamp(r["termination_date"]).to_pydatetime(),
+                            fixed_rate=r["fixed_rate"], notional=r["notional"])
+
+  def alive(m, t):                          # rate/risk functions: the swap still has accrual periods ahead
+      return m.maturity_date(t).date() > m.reference_date().date()
+
+  def unsettled(m, t):                      # npv only: the final coupon pays at maturity + PaymentLag 2b (R06 s2)
+      return pd.Timestamp(m.calendar_advance(m.maturity_date(t), "2b")).date() > m.reference_date().date()
+
+  def remark(m, t):                        # the same swap rebuilt on market m (m's fixings); memo per market (R06 s3.4)
+      memo = m.__dict__.setdefault("_pricebt_remark", {})
+      hit = memo.get(id(t))
+      if hit is not None and hit[0] is t:
+          return hit[1]
+      r = m.build_irswap(effective_date=m.effective_date(t), maturity_date=m.maturity_date(t),
+                         fixed_rate=m.fixed_rate(t), notional=m.notional(t))
+      memo[id(t)] = (t, r)
+      return r
+
+  def _carry_ok(m, t, h):                  # mirrors ARBS's own raise conditions (_carry_roll.py:167-183)
+      start = pd.Timestamp(m.calendar_advance(m.spot_date(), h))
+      return pd.Timestamp(m.effective_date(t)) >= start or pd.Timestamp(m.maturity_date(t)) > start
+
+  def _roll_ok(m, t, h):                   # _carry_roll.py:140-162
+      spot = pd.Timestamp(m.spot_date())
+      aged_eff = max(pd.Timestamp(m.calendar_advance(m.effective_date(t), "-" + h)), spot)
+      return pd.Timestamp(m.calendar_advance(m.maturity_date(t), "-" + h)) > aged_eff
+
+  def _risk_model(m, tenors):              # par-swap risk curve + Solver, memoised per (market, tenors) (R06 s4 option B)
+      memo = m.__dict__.setdefault("_pricebt_risk", {})
+      if tenors in memo:
+          return memo[tenors]
+      dense, spot, ref = m.handle(), m.spot_date(), m.reference_date()
+      nodes, pars = {ref: 1.0}, []
+      for b in tenors:
+          p = m.build_irswap(effective_date=spot, tenor=b, notional=1_000_000)
+          pars.append(float(m.fair_rate(p)))
+          mat = m.maturity_date(p)
+          nodes[mat] = float(dense[mat])
+      risk = rl.Curve(nodes=dict(sorted(nodes.items())), convention=dense.meta.convention,
+                      calendar=dense.meta.calendar, interpolation="log_linear", id=f"{m.id()}-RISK")
+      meta = dict(m.meta()); meta["id"] = risk.id
+      rh = RLIRSwapCurve(rl_curve_id=risk.id, rl_curve_handle=risk, fixings=m.index(), meta_data=meta)
+      insts = [rh.build_irswap(effective_date=spot, tenor=b, fixed_rate=k, notional=1_000_000) for b, k in zip(tenors, pars)]
+      with contextlib.redirect_stdout(io.StringIO()):
+          sv = rl.Solver(curves=[risk], instruments=insts, s=[k * 100.0 for k in pars],
+                         instrument_labels=list(tenors), id=risk.id, func_tol=1e-8, conv_tol=1e-10)
+      if sv.result["status"] != "SUCCESS":
+          raise RuntimeError(f"risk curve calibration failed: {sv.result}")
+      memo[tenors] = (rh, sv)
+      return memo[tenors]
+
+  def delta_ladder(m, trades, weights, tenors):
+      tenors = tuple(tenors)
+      live = [(t, w) for t, w in zip(trades, weights) if alive(m, t) and w != 0.0]
+      if not live:
+          return {b: 0.0 for b in tenors}
+      rh, sv = _risk_model(m, tenors)
+      rebuilt = [rh.build_irswap(effective_date=m.effective_date(t), maturity_date=m.maturity_date(t),
+                                 fixed_rate=m.fixed_rate(t), notional=m.notional(t) * w) for t, w in live]
+      d = rl.Portfolio(rebuilt).delta(solver=sv)
+      blk = d.xs("instruments", level=0) if "instruments" in set(d.index.get_level_values(0)) else d
+      s = blk.iloc[:, 0].astype(float); s.index = s.index.get_level_values(-1)
+      return {b: float(s.get(b, 0.0)) + 0.0 for b in tenors}   # USD per +1bp of each pillar par rate, payer > 0
+
+market:
+  expr: 'load_market(pricebt_date)'        # -> RLIRSwapCurve, or None (weekend, US holiday, store hole, beyond _LAST_SAFE)
+  key: usd_sofr_eris_rlbasic
+resolve:
+  expr: 'resolve_swap(market, kwargs)'
+trade:
+  expr: 'build_swap(market, resolved)'
+  build_on: resolve_date                   # npv/pv01 are safe on later markets; other functions use remark() (R06 s3.4)
+functions:
+  npv:        {expr: '0.0 if not unsettled(market, trade) else market.npv(trade)', unit: ccy}
+  dv01:       {expr: '0.0 if not alive(market, trade) else market.pv01(trade)', unit: ccy_per_bp}   # pv01 safe as-is (R06 s3.4)
+  par_rate:   {expr: 'float("nan") if not alive(market, trade) else market.fair_rate(remark(market, trade)) * 1e4', unit: bp}
+  fixed_rate: {expr: 'market.fixed_rate(trade) * 1e4', unit: bp}
+  carry_1m:   {expr: 'float("nan") if not (alive(market, trade) and _carry_ok(market, trade, "1m")) else market.carry_bps_running(remark(market, trade), "1m")', unit: bp}
+  roll_1m:    {expr: 'float("nan") if not (alive(market, trade) and _roll_ok(market, trade, "1m")) else market.roll_bps_running(remark(market, trade), "1m")', unit: bp}
+portfolio_functions:
+  delta_ladder:
+    expr: 'delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: USD-SOFR-1D, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'   # signed by quantity: rebalance netting (s9.4)
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}      # IRDeltaParallel / IRDeltaLocalCcy fall back here (s8.1 rule 3)
+  IRFwdRate: par_rate
