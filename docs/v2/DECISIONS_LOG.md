@@ -45,6 +45,51 @@ decision 0.2.
 
 ---
 
+## 2026-09-27 — Phase 2: a verdict-parsing bug in the orchestrating workflow script hid two real
+adversarial-verifier FAILs as PASS; caught at the phase gate, fixed before commit
+
+**Situation:** The Phase 2 workflow script's fix-loop used `/^\s*PASS\b/i.test(verdict)` to decide whether
+an adversarial verifier's free-text report counted as a pass. Two verifier reports (P2.1's round-2 verdict
+on `Portfolio`, P2.2's round-3 verdict on `PricingService`) literally began with the line "PASS" followed
+immediately by "FAIL" and then a "## Verdict: FAIL" header and a list of confirmed problems — apparently
+the verifier agent started to write "PASS", caught itself, and corrected to "FAIL" in the same response.
+The regex matched only the leading token and treated both as passing, so the workflow's internal fix loop
+exited early and two real bugs went unfixed: (1) `Portfolio.__getitem__`/`pop` raised `KeyError` on no
+match instead of returning `gs`'s `()`, `append()` didn't unpack an iterable, `__add__` raised the wrong
+exception type, `to_frame` was missing `mappings=None` — five unmarked gs-parity violations, one of them
+actively pinned "correct" by the implementer's own test; (2) `PricingService`'s DESIGN §8.1 rule-5 "no
+aggregation_level parameter, no scalar form mapped" case wrongly summed a bucketed mapping into a scalar
+instead of returning the bucketed form, and `kwargs` was never injected into `trade:`/`functions:`
+evaluations on an asset with no `resolve:` block, per DESIGN §4.3.
+
+**Rule applied:** IMPLEMENTATION_PLAN.md §9 row "An agent reports 'done'" ("Treat it as a claim. Re-run the
+acceptance command and the phase gate yourself before committing") — this is exactly that case, one level
+removed: the orchestrator's own automated re-check had a bug, and the *orchestrator's* independent phase-gate
+run (full suite green, guards green) did not by itself catch the two parity/correctness gaps, because the
+existing test suite didn't exercise them (a `KeyError`-pinning test made the bug pass, not fail; the rule-5
+gap had no covering test at all). Reading the workflow's own JSON result payload before trusting its
+"PASS" framing is what caught it.
+
+**Decision:** read the raw verdict text for every task before committing Phase 2 (not just the workflow's
+round-classification), found the two false positives, and ran a targeted follow-up workflow to fix both,
+with a corrected parser (`VERDICT: PASS`/`VERDICT: FAIL` on its own line, checked for an explicit FAIL
+token before accepting a leading PASS as real). Both follow-up fixes were independently re-verified and the
+full phase-2 gate (484/484, guards 68/68) was re-run before the phase-2 commit. Adopted the corrected
+parser and the explicit `VERDICT: PASS`/`VERDICT: FAIL` instruction for every subsequent phase's workflow
+scripts (P3 onward).
+
+**Evidence:** the two verifier reports' raw text (`tests/test_portfolio.py`'s
+`test_len_iter_getitem_contains` originally asserted `pytest.raises(KeyError)` for `p["missing"]`, now
+asserts `p["missing"] == ()`, confirmed against the real installed gs_quant 1.5.4 via `inspect.getsource`
+and live execution); `src/pricebt/assets/pricing.py`'s rule-5 scalar/bucketed selection logic, fixed and
+covered by a new test using a bucket-only-mapped plain `RiskMeasure`.
+
+**Alternative considered:** trust the workflow's own round-classification and commit — rejected; that is
+precisely the failure mode IMPLEMENTATION_PLAN §9 warns against, just one layer further from the surface
+(a buggy checker, not a buggy implementation, hiding the real state).
+
+---
+
 ## 2026-09-27 — P0.1: `target/__init__.py` added to the skeleton
 
 **Situation:** DESIGN.md section 3.2's literal skeleton list under `src/pricebt/` names
@@ -273,3 +318,136 @@ also covers.
 
 **Evidence:** IMPLEMENTATION_PLAN.md section 2 "Delete" list (P0.1); research/08-pricebt-v1-strip-
 inventory.md section 8 (the "KEEP" cells, now superseded).
+
+---
+
+## 2026-09-27 — P3.3: DEV-E5's own wording is internally in tension; resolved in favour of "hedges get no meta"
+
+**Situation:** a verifier flagged that `HedgeAction.__post_init__` routed its inner priceable
+through `_rename_priceables`, which unconditionally sets `position_meta` on every priceable it
+touches — but DESIGN.md section 11's DEV-E5 row itself reads two ways: "Each action's
+`__post_init__` sets `(action.name, ...)` ... on every renamed priceable" (which would include
+HedgeAction) versus, later in the same row, "Positions with no meta (hedges) are never matched by
+name" (which names hedges as the one category `position_meta` is None for).
+
+**Rule applied:** DESIGN.md section 11 DEV-E5's stated *purpose* (fix the gs crash where a held
+hedge's parsed name breaks `ExitTradeAction`, research/02 line 209) outweighs the row's first,
+looser sentence when the two are read literally against each other — a reading that gives every
+action's renamed priceable real position_meta reproduces the exact crash under a different
+exception (`TypeError: '<=' not supported between NoneType and date`, once an `ExitTradeAction`
+name list happens to contain the generic `'Priceable0'` a hedge's anonymous leg would get), because
+R4's hedge rename embeds the create date into the wrapping portfolio's *name string*
+(`generic_engine.py`, P3.5), never into the leg's own `position_meta[2]` the way R2/R3 fill it in
+for ordinary trades.
+
+**Decision:** `HedgeAction.__post_init__` calls `_rename_priceables(self.name, portfolio,
+set_meta=False)` (new keyword, default `True` for every other caller), so a hedge leg's
+`position_meta` stays the `Instrument.__init__` default of `None`.
+`test_position_meta_set_by_hedge_action_on_its_inner_priceable` (asserted `==
+("Action2", "Priceable0", None)`) is renamed `test_position_meta_not_set_by_hedge_action_...` and
+now asserts `is None`.
+
+**Evidence:** DESIGN.md section 11 DEV-E5 row (both sentences quoted above); research/02 line 209
+("Hedge instruments end in `..._Action2_Priceable0` → `strptime('Priceable0')` raises `ValueError`
+→ any `ExitTradeAction(priceable_names=...)` crashes if a hedge position is held") and line 190 (R4:
+the hedge rename touches the wrapping portfolio's name, not a per-leg `position_meta`); the real gs
+2.1.17 `gs_quant/backtests/actions.py:440-446` (HedgeAction's own rename loop has no `position_meta`
+field to set at all, since gs has no such field).
+
+**Alternative considered:** keep DEV-E5's first sentence literally ("every renamed priceable" incl.
+hedges) — rejected: it reintroduces the exact bug DEV-E5 exists to remove, just with a different
+`TypeError` instead of gs's `ValueError`, the moment any `ExitTradeAction(priceable_names=[...])`
+list contains the generic anonymous-priceable name `'Priceable0'` shared by every action type while
+a hedge is held.
+
+---
+
+## 2026-09-27 — P3.3: DEV-E10's fix is `None`-preserving, not the row's literal unconditional
+`make_list`
+
+**Situation:** DESIGN.md section 11 DEV-E10's row text says the fix is `make_list(priceable_names)`
+applied unconditionally, to replace gs's bare-string substring-match bug and a typo'd alternate
+kwarg. `src/pricebt/backtests/actions.py:345-346` instead guards it:
+`if self.priceable_names is not None: self.priceable_names = make_list(self.priceable_names)` — so
+a `None` value (the default, meaning "exit everything") stays `None` rather than becoming `[]`. This
+is the same shape of tension DEV-E5 above hit: DESIGN's one-line fix text, read literally, breaks on
+contact with the real gs downstream code it has to interoperate with.
+
+**Rule applied:** DESIGN.md section 11's own stated purpose for DEV-E10 (fix gs's bare-string
+substring-match bug and the `priceables_names` typo) outweighs the literal "unconditional" wording
+where the two conflict, the same precedent set for DEV-E5 above.
+
+**Decision:** keep the `is not None` guard. `make_list(None) == []` would collapse the `None`
+sentinel; the real gs 2.1.17 `gs_quant/backtests/generic_engine_action_impls.py:440` branches
+`if self.action.priceable_names is None:` (exit everything) versus line 453's truthiness branch on
+a real list — collapsing `None` to `[]` hits neither branch and raises `UnboundLocalError` inside
+gs's own impl code the moment `ExitAllPositionsAction()` (no args, `priceable_names=None` by
+default) is used. Pinned by `test_exit_trade_action_none_stays_none` and
+`test_exit_all_positions_action_default_args_keeps_the_none_sentinel`.
+
+**Evidence:** DESIGN.md section 11 DEV-E10 row; real gs `gs_quant/backtests/
+generic_engine_action_impls.py:440,453` (the `None`-vs-truthy branch pair `ExitTradeActionImpl`
+reads); `src/pricebt/backtests/actions.py:332-346` (the `# pricebt DEV-E10` comment already
+documents this reasoning at the guard itself).
+
+**Alternative considered:** unconditional `make_list(priceable_names)` per the row's literal text —
+rejected: crashes `ExitAllPositionsAction()`'s default-args "exit everything" path in P3.5's engine
+impl, which is a real, exercised code path (research/02's action-handler table), not a hypothetical.
+
+---
+
+## 2026-09-27 — P3.5: two cross-ownership bug fixes to P1.3's `risk/results.py` and P2.2's
+`assets/pricing.py`, retroactively declared as shared edits
+
+**Situation:** while wiring `HedgeAction` under a `HistoricalPricingContext` (P3.5's own scope),
+the implementer hit two real, pre-existing bugs in already-closed tasks' files, both of which block
+the engine whenever a hedge is priced on more than one risk measure across history (i.e. essentially
+always, since the hedge's own risk measure and the price measure are both present):
+
+1. `assets/pricing.py`'s `_historical_instrument_value` built a `pandas.Series` directly from a dict
+   of `FloatWithInfo` values. pandas silently downcasts a float subclass to plain `float64` the
+   moment it lands in a `Series`, so every `.unit`/`.risk_key` was lost — `SeriesWithInfo` carries
+   that metadata on the *series itself* (`_metadata`), not per element, and the constructor call
+   here never passed it through.
+2. `risk/results.py`'s `PortfolioRiskResult._by_date` did not handle a `MultipleRiskMeasureResult`
+   (a dict keyed by `RiskMeasure`, produced whenever `HistoricalPricingContext.calc()` is called with
+   more than one measure) — indexing it by a `date` key always raised `KeyError`, since the dict's
+   keys are measures, not dates. It also called `.loc[item]` directly on a per-date Series, which
+   has the same metadata-loss problem as (1).
+
+Neither bug is a gs-behavior deviation (DESIGN §11 has no row for either — there is no gs parity
+question here, `PortfolioRiskResult`/`SeriesWithInfo` are pricebt's own reimplementation), so no
+`# pricebt DEV-XX` marker applies; both are pure pricebt-internal correctness bugs that happened to
+be latent until P3.5's engine became the first real caller to exercise the historical-hedge path.
+An adversarial verifier (round 3) correctly flagged that touching `assets/pricing.py` and
+`risk/results.py` — files P2.2 and P1.3 respectively own per IMPLEMENTATION_PLAN.md §4 — without a
+declared shared edit or a marker was a process violation regardless of the fix's correctness, per
+the same "an unmarked change is a finding regardless of whether it seems like an improvement" logic
+applied throughout this project.
+
+**Rule applied:** IMPLEMENTATION_PLAN.md §9 row "A MUST seems impossible as written" (closest
+analogue: a task cannot complete correctly without touching a file outside its declared ownership) —
+find the closest design that keeps all five MUSTs, record it, do not relax a MUST. Reverting the
+fixes would restore two real, reproducible correctness bugs purely for process compliance, which
+DESIGN §2.1's MUSTs do not ask for; documenting and keeping them is the correct resolution.
+
+**Decision:** both fixes are kept as written (each already carries an in-code comment explaining the
+root cause, both are covered by mutation-verified regression tests —
+`test_historical_multi_measure_calc_by_date_preserves_unit_and_indexes_by_measure` in
+`tests/test_pricing_service.py`, added during P3.5's own fix loop). This entry is the retroactive
+"shared edit" declaration IMPLEMENTATION_PLAN.md §5's P3.5 task description should have named
+up front.
+
+**Evidence:** `git -C <worktree> diff HEAD -- src/pricebt/assets/pricing.py` (the `_historical_
+instrument_value` change, ~lines 517-543) and `-- src/pricebt/risk/results.py` (`_by_date`'s new
+`MultipleRiskMeasureResult` branch and the `_series_item` helper, ~lines 343-388); the P3.5 round-1
+fix report's "Finding 5" section, which added the regression test and confirmed the mutation
+evidence for both files independently.
+
+**Alternative considered:** revert both fixes and have P3.5 work around them from within its own
+files only — rejected: the bugs are in the shared metadata-preservation contract
+(`FloatWithInfo`/`SeriesWithInfo`.unit surviving a round trip through a `pandas.Series`), not in
+anything P3.5-specific, so any workaround would either duplicate the fix inside generic_engine.py
+(worse: the same latent bug would still exist for any other future caller of
+`_historical_instrument_value`/`_by_date`) or silently produce wrong `.unit` values for hedges
+priced under a `HistoricalPricingContext`.

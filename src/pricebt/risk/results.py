@@ -343,16 +343,46 @@ class PortfolioRiskResult:
                 futures.append(PricingFuture(res))
         return PortfolioRiskResult(self.portfolio, (item,), futures)
 
+    @staticmethod
+    def _series_item(series, item):
+        """pre-existing bug fix (out of P3.5's own scope, but confirmed blocking): `.loc[item]`
+        scalar indexing returns a bare element, not something carrying `.unit`/`.risk_key` --
+        SeriesWithInfo/DataFrameWithInfo store those on the SERIES itself (`_metadata`), not per
+        element, and `_historical_instrument_value` (assets/pricing.py) builds one FloatWithInfo
+        per date and then loses each one's `.unit` the moment it lands in a float64-backed pandas
+        Series. Re-wrap a scalar extraction with the series' own unit/risk_key; a per-date bucketed
+        (DataFrame) entry already carries its own metadata and is returned as is.
+        """
+        value = series.loc[item]
+        if isinstance(value, (pd.Series, pd.DataFrame)):
+            return value
+        return FloatWithInfo(value, unit=getattr(series, "unit", None), risk_key=getattr(series, "risk_key", None))
+
     def _by_date(self, item: dt.date):
         if not self.dates:
             raise RuntimeError("Can only index by date on historical results")
         futures = []
         for f in self.futures:
             res = f.result()
-            if isinstance(res, (PortfolioRiskResult, MultipleRiskMeasureResult)):
+            if isinstance(res, PortfolioRiskResult):
                 futures.append(PricingFuture(res[item]))
+            elif isinstance(res, MultipleRiskMeasureResult):
+                # pre-existing bug fix (out of P3.5's own scope, but confirmed blocking: a
+                # MultipleRiskMeasureResult is a dict keyed by RiskMeasure, not by date, so `res[item]`
+                # with a date `item` always raised KeyError. This is the shape a multi-measure
+                # HistoricalPricingContext.calc() on a plain Instrument produces (assets/pricing.py
+                # _historical_instrument_value: one SeriesWithInfo per measure) -- exactly what
+                # GenericEngine's HedgeActionImpl/generic_engine.py hit via `p.results[d][p.risk]`
+                # whenever more than one risk measure is requested (i.e. essentially always, since
+                # the hedge's own risk and the price measure are both always present). Index each
+                # measure's per-date Series/DataFrame instead of the dict itself.
+                if not all(isinstance(v, (pd.Series, pd.DataFrame)) and item in v.index for v in res.values()):
+                    raise RuntimeError("Can only index by date on historical results")
+                futures.append(
+                    PricingFuture(MultipleRiskMeasureResult((m, self._series_item(v, item)) for m, v in res.items()))
+                )
             elif isinstance(res, (pd.Series, pd.DataFrame)) and item in res.index:
-                futures.append(PricingFuture(res.loc[item]))
+                futures.append(PricingFuture(self._series_item(res, item)))
             else:
                 raise RuntimeError("Can only index by date on historical results")
         return PortfolioRiskResult(self.portfolio, self.risk_measures, futures)

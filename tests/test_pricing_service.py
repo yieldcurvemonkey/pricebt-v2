@@ -300,6 +300,35 @@ def test_nested_historical_resolve_keeps_inner_name_and_gives_distinct_objects_p
     assert inner1.priceables[0].resolved_terms["effective_date"] == d1
 
 
+def test_historical_multi_measure_calc_by_date_preserves_unit_and_indexes_by_measure():
+    """Regression for two pre-existing bugs (out of P3.5's nominal file ownership -- assets/pricing.py,
+    risk/results.py -- but confirmed blocking, found wiring GenericEngine's HedgeActionImpl, whose
+    `p.results[d][p.risk]` needs both): a HistoricalPricingContext.calc() with more than one risk
+    measure, on a plain Instrument, must (1) keep each date's `.unit` (a bare
+    `pd.Series({date: FloatWithInfo, ...})` silently downcasts every element to a plain float64, so
+    the per-instrument SeriesWithInfo's constructor must be given `unit`/`risk_key` explicitly), and
+    (2) be indexable by date (`PortfolioRiskResult._by_date` used to KeyError: the per-instrument
+    future holds a MultipleRiskMeasureResult keyed by RiskMeasure, not by date).
+    """
+    session = _session()
+    d0, d1 = date(2024, 1, 2), date(2024, 6, 3)
+    swap = _swap()
+    port = Portfolio([swap])
+
+    with HistoricalPricingContext(dates=[d0, d1]):
+        result = port.calc((Price, IRDelta))
+
+    by_date = result[d0]  # used to raise RuntimeError("Can only index by date...") via KeyError
+    value = by_date[swap][Price]
+    assert isinstance(value, FloatWithInfo)
+    assert value.unit is not None
+
+    resolved = session.pricing.resolve(_swap(), d0, None)
+    expected = session.pricing.value(resolved, d0, Price, None)
+    assert float(value) == pytest.approx(float(expected))
+    assert value.unit == expected.unit
+
+
 # ------------------------------------------------------------------------------------ reset()
 
 

@@ -517,9 +517,32 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     # SeriesWithInfo has no per-date grouping partner to defer to, and the engine's own daily loop
     # drives single-date PricingContexts, where laziness actually matters (DESIGN.md section 8.2).
     per_date = {d: _instrument_calc_value(service, inst, measures, d, csa) for d in dates}
+    # pre-existing bug fix (out of P3.5's own scope, but confirmed blocking -- found wiring
+    # GenericEngine's HedgeActionImpl, whose `p.results[d][p.risk]` reads a historical
+    # per-instrument result's `.unit` after indexing by date): a bare `pd.Series({date: FloatWithInfo,
+    # ...})` silently downcasts every FloatWithInfo element to a plain float64 (pandas cannot hold a
+    # float subclass in a float64-backed array), so `.unit`/`.risk_key` were lost the moment the
+    # per-date values were put in a Series -- SeriesWithInfo carries them on the SERIES itself
+    # (`_metadata`, risk/results.py), not per element, and the constructor call here never passed
+    # them. Grab them from one representative value (constant across dates for the same instrument
+    # and measure) and pass them through explicitly.
     if len(measures) == 1:
-        return SeriesWithInfo(pd.Series({d: _unwrap(per_date[d]) for d in dates}))
-    return MultipleRiskMeasureResult((m, SeriesWithInfo(pd.Series({d: _unwrap(per_date[d][m]) for d in dates}))) for m in measures)
+        rep = next(iter(per_date.values()), None)
+        return SeriesWithInfo(
+            pd.Series({d: _unwrap(per_date[d]) for d in dates}),
+            unit=getattr(rep, "unit", None),
+            risk_key=getattr(rep, "risk_key", None),
+        )
+    result = MultipleRiskMeasureResult()
+    rep_multi = next(iter(per_date.values()), None)
+    for m in measures:
+        rep = rep_multi[m] if rep_multi is not None else None
+        result[m] = SeriesWithInfo(
+            pd.Series({d: _unwrap(per_date[d][m]) for d in dates}),
+            unit=getattr(rep, "unit", None),
+            risk_key=getattr(rep, "risk_key", None),
+        )
+    return result
 
 
 def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str]) -> PortfolioRiskResult:
