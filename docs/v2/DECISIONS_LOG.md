@@ -595,3 +595,34 @@ whenever `result_ccy` is set and `scaling_type` is a plain `RiskMeasure` — rej
 scope creep for this finding; the finding's own evidence and repro only concern the
 `ParameterisedRiskMeasure` case. Can be revisited if a future finding shows the unconverted plain-
 `RiskMeasure` case actually causes a silent wrong number in practice.
+
+---
+
+## 2026-09-28 — P5.2 live ARBS run: executed with the user's explicit approval, all 7 checks passed
+
+**Situation:** P5.2 was deferred throughout autonomous execution per the hard safety limit (never
+import/execute ARBS without the user's own approval for the first run). After all 6 autonomous
+phases were complete, committed, and pushed to
+[github.com/yieldcurvemonkey/pricebt-v2](https://github.com/yieldcurvemonkey/pricebt-v2), the user
+directly instructed "run the live ARBS tests" in this session.
+
+**Rule applied:** this is exactly the condition the deferral was waiting for — DESIGN.md's own text
+for Appendix A says "the implementer copies this file, then runs the live checks in
+IMPLEMENTATION_PLAN P5.2, only after the user approves the first live run." The user, present and
+directing this session, gave that approval explicitly.
+
+**Decision:** ran `$env:PRICEBT_LIVE_ARBS="1"; pytest -m live_arbs -o addopts= -v` from the worktree
+root. All 7 tests passed. Filled in `docs/v2/LIVE_ARBS_REPORT.md`'s Results section with the actual
+observed values (previously template placeholders) — npv/dv01/par_rate/delta_ladder for the 10y ATM
+payer check, the seasoned-mark npv, the short-040304-run ledger count and runtime, and confirmation
+that the no-network/no-curve-store-write check (6) found zero unexpected filesystem changes (one
+empty today-dated fixings-cache folder, the only change ARBS is documented to make even on a pure
+cache hit). Re-ran the full non-live suite afterward to confirm nothing else was affected: unchanged
+at 968 passed / 7 skipped.
+
+**Evidence:** live pytest output (`7 passed, 968 deselected, 3 warnings in 27.13s`); the values now
+recorded in `docs/v2/LIVE_ARBS_REPORT.md`'s Results table; the full-suite re-run's unchanged count.
+
+**Alternative considered:** none — this was a direct, explicit user instruction for the exact action
+the project's own documentation said only the user could authorize; no autonomous judgment call was
+needed here.

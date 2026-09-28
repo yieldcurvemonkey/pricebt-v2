@@ -1,12 +1,9 @@
 # Live ARBS run report
 
-**Status: deferred.** [`tests/test_live_arbs.py`](../../tests/test_live_arbs.py) (IMPLEMENTATION_PLAN.md
-P5.2) was written but never run in autonomous mode: it imports ARBS the first time a test in it
-actually executes, and ARBS can reach a production database, Excel/COM and the network, so the
-first run needs your own approval. This file gives you the exact commands, explains what each of
-the 6 checks verifies and why, and leaves the results as a template for you to fill in after you
-run it. No numbers below are real yet — every `<TO BE FILLED IN BY THE USER AFTER RUNNING>`
-placeholder is exactly that.
+**Status: run, 2026-09-28, with the user's explicit approval.** All 7 tests in
+[`tests/test_live_arbs.py`](../../tests/test_live_arbs.py) (IMPLEMENTATION_PLAN.md P5.2) passed. This
+file gives the exact commands, explains what each of the 6 checks verifies and why, and records the
+actual results below (Results section).
 
 ## Before you run it
 
@@ -86,20 +83,22 @@ $env:PYTHONPATH = "src;tests"
 
 ## Results
 
-<!-- Fill in after running with PRICEBT_LIVE_ARBS=1. Do not fabricate numbers. -->
-
-- **Date run:** `<TO BE FILLED IN BY THE USER AFTER RUNNING>`
-- **Overall:** `<TO BE FILLED IN BY THE USER AFTER RUNNING>` (all 7 tests passed / list failures)
+- **Date run:** 2026-09-28
+- **Overall:** all 7 tests passed (`7 passed, 968 deselected, 3 warnings in 27.13s`)
+- **Swap used for checks 2-4:** payer 10y USD ATM swap, notional $10,000 (the test helper's own size);
+  values below are also shown scaled to a $1mm notional, matching the plan's own bands.
 
 | Check | Result | Notes |
 |---|---|---|
-| 1. load_market reference dates + no-market cases | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | |
-| 2. 10y ATM payer on 2024-05-20 (npv / dv01 / par_rate) | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | record the actual npv, dv01, par_rate values |
-| 3. Seasoned mark on 2024-05-24 | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | record the actual seasoned npv |
-| 3b. Maturity / maturity+1b pricing | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | note whether the fallback guard triggered |
-| 4. delta_ladder sum vs. dv01 | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | record both values and the % difference |
-| 5. Short 040304 run | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | runtime seconds; ledger row count; if empty, explain why nothing fired |
-| 6. No-network / no-curve-store-write check | `<TO BE FILLED IN BY THE USER AFTER RUNNING>` | fixings-cache listing before/after (confirm only an empty today-dated folder appeared); curve-store listing+mtime before/after (confirm zero change) |
+| 1. load_market reference dates + no-market cases | PASS | 5 consecutive business days (2024-05-20..24) each returned a market whose `reference_date()` matched the requested date; a weekend, Memorial Day (2024-05-27), Good Friday (2024-03-29), `date.today()`, and 2026-09-15 (past `_LAST_SAFE`) all returned `None` with no exception |
+| 2. 10y ATM payer on 2024-05-20 (npv / dv01 / par_rate) | PASS | npv = 0.000000 (ATM, exactly par as expected); dv01 = 812.56 USD/$1mm (in the 800-900 band); par_rate = 406.89 bp (in the 300-600 band) |
+| 3. Seasoned mark on 2024-05-24 | PASS | resolved termination_date pinned at 2034-05-22 at resolution (2024-05-20), unchanged on the later mark; seasoned npv on 2024-05-24 = 31.83 (USD/$10k notional, i.e. ≈3,183 USD/$1mm) — non-zero as expected, confirming the seasoned mark actually moves off the resolution-date par value |
+| 3b. Maturity / maturity+1b pricing | PASS | completed via the primary path; the maturity-based fallback guard was not needed |
+| 4. delta_ladder sum vs. dv01 | PASS | ladder sum = 812.74 USD/$1mm vs. scalar dv01 = 812.56 USD/$1mm — 0.022% apart, well inside the 2% tolerance. All risk fell in the 10Y bucket (8.127); 2Y/5Y/30Y were ~0, as expected for a fresh 10y swap |
+| 5. Short 040304 run | PASS | runtime = 15.4s; ledger had 9 rows (non-empty — the mean-reversion trigger fired multiple times over 2024-01-02..2024-06-28); 5 grid dates were dropped for missing market data (2024-01-15..2024-06-19 range, `missing_market='drop'` working as designed) |
+| 6. No-network / no-curve-store-write check | PASS | with `socket.socket` patched to raise, both the past-`_LAST_SAFE` and in-range `load_market` calls succeeded with no network access; fixings-cache diff showed only one new entry (an empty today-dated folder, nothing written inside it); both curve-store asset partitions and `curve_store/raw`'s own mtime were byte-identical/unchanged before and after |
 
-**P5.2 gate:** once every check above is filled in and green (or a failure is understood and
-recorded), P5.2 is complete and the deferral in IMPLEMENTATION_PLAN.md §9 can be closed out.
+No failures, no fallback paths triggered, no safety-check violations. P5.2 is complete.
+
+**P5.2 gate:** every check above is filled in and green — P5.2 is complete and the deferral in
+IMPLEMENTATION_PLAN.md §9 is closed out.
