@@ -37,7 +37,10 @@ class CalcType(Enum):
 @dataclass
 class CustomDuration:
     durations: tuple[Union[str, dt.date, dt.timedelta], ...]
-    function: Callable[[tuple[Union[str, dt.date, dt.timedelta], ...]], Union[str, dt.date, dt.timedelta]] = None
+    # gs's `function` is required (no default); a pricebt DEV-* default here would need a §11 row,
+    # which decision 0.1 never granted -- get_final_date calls it unconditionally (no None-check),
+    # so a None default only ever produced an object that crashes later anyway.
+    function: Callable[[tuple[Union[str, dt.date, dt.timedelta], ...]], Union[str, dt.date, dt.timedelta]]
 
     def __hash__(self):
         return hash((self.durations, self.function))

@@ -451,3 +451,113 @@ anything P3.5-specific, so any workaround would either duplicate the fix inside 
 (worse: the same latent bug would still exist for any other future caller of
 `_historical_instrument_value`/`_by_date`) or silently produce wrong `.unit` values for hedges
 priced under a `HistoricalPricingContext`.
+
+---
+
+## 2026-09-28 — P4.2: DESIGN.md §6.5 names the wrong property — real gs is `date_range`, not `dates`
+
+**Situation:** DESIGN.md §6.5 spells out `HistoricalPricingContext`'s surface as
+`dates -> tuple[date, ...]  # 'dates' as given; else date_range(start, end or today); ...` — i.e. it
+names the property itself `dates`. P1.2 built it exactly as DESIGN wrote it
+(`src/pricebt/markets/__init__.py`'s `HistoricalPricingContext.dates` property), and every later
+phase (P2.2's `pricing.py`, P3's engine, tests) read `ctx.dates`. P4.2's gs API parity test, run
+against the real installed gs_quant 1.5.4 (not just DESIGN's prose), found gs's actual property is
+named `date_range` — confirmed directly: `inspect.getsource(gs_quant.markets.
+HistoricalPricingContext.date_range.fget)` exists and returns `self.__date_range`; there is no
+`.dates` property on the real class at all.
+
+**Rule applied:** IMPLEMENTATION_PLAN.md §9 row "DESIGN.md vs this plan, or a research note vs
+DESIGN.md" — "On a *fact* about gs or ARBS behaviour, the primary source code wins." This is exactly
+that: DESIGN.md's naming of this one property is simply wrong, confirmed against gs 1.5.4 itself, not
+a deliberate MUST-2 deviation (DESIGN §11 has no DEV row for renaming this property, and decision 0.3
+already confirmed §11 as the complete, closed deviation list — inventing an unapproved exception
+instead of fixing the name would itself be an unmarked deviation).
+
+**Decision:** renamed the property to `date_range` everywhere: `markets/__init__.py`'s property
+definition, every read site in `assets/pricing.py` (`_historical_instrument_value`,
+`_historical_resolve`, `_resolve_portfolio_one_date`'s caller — 3 sites), and `tests/test_contexts.py`'s
+signature/behaviour assertions. `tests/data/gs_api_exceptions.yaml`'s `HistoricalPricingContext`
+`properties` entry documents the resolution inline (quoted verbatim in the entry: "`date_range` is
+not listed here: it is implemented under gs's own name... so there is no mismatch to except"). Grepped
+the full `src/`/`tests/` tree post-rename for any remaining `.dates` read on a
+`HistoricalPricingContext`/`PricingContext` instance specifically (as opposed to the unrelated
+`PortfolioRiskResult.dates`, `ScalingPortfolio.dates`, or `EventTriggerRequirements.dates` properties,
+which are distinct attributes on different classes and were correctly left untouched) — none found.
+
+**Evidence:** DESIGN.md §6.5's `dates -> tuple[date, ...]` line (the wrong spec text); real gs_quant
+1.5.4 `gs_quant/markets/__init__.py` (`HistoricalPricingContext.date_range`, confirmed live via
+`inspect.getsource`); `tests/data/gs_api_1_5_4.json`'s snapshot of the same; `tests/test_gs_api_parity.py`
+now passes with `date_range` and would fail again with `dates` (this is the mismatch the parity test
+exists to catch).
+
+**Alternative considered:** add a `gs_api_exceptions.yaml` entry excepting pricebt's `dates` name as a
+deliberate difference from gs's `date_range` — rejected: there is no DESIGN §11 DEV row authorizing
+this as an intentional deviation, and the whole point of MUST-2 is that an unlisted API difference is
+a defect to fix, not a exception to grant.
+
+---
+
+## 2026-09-28 — Phase 4 gate: 5 full-suite failures the parallel tasks' own scoped acceptance
+commands could not see, all fixed before commit
+
+**Situation:** every P4.1-P4.4 task passed its own scoped acceptance command and its adversarial
+verifier. Running the FULL suite myself at the phase gate (per IMPLEMENTATION_PLAN.md §9 "An agent
+reports 'done'") surfaced 5 failures no single task's own command would ever exercise, because they
+only manifest from cross-file pytest-execution-order interaction:
+
+1/2/3. `test_actions.py::test_action_count_matches_the_pre_session_baseline...`,
+   `...test_action_count_was_reset_between...`, and `test_engine_smoke.py::test_ledger_names_and_dates`
+   (wrong `Action2_...` instead of `Action1_...`) all traced to ONE root cause:
+   `tests/test_040304_toy.py`'s `notebook_ns` fixture is `scope="module"` (changed from the pytest
+   default `function` during P4.3's own fix loop, to fix real Tk-backend flakiness from re-running
+   the notebook 3x per process). Running the toy notebook script calls
+   `PricebtSession.use(assets=[...])` and constructs an unnamed `AddTradeAction`, mutating
+   `PricebtSession.current`/`GsSession.current`/`pricebt.backtests.actions.action_count` — all
+   process-global state `tests/conftest.py`'s `isolation` autouse fixture normally saves/restores
+   PER TEST. A module-scoped fixture's setup runs OUTSIDE that per-test window (pytest sets up
+   higher-scoped fixtures before the function-scoped ones needed by the same test), and this fixture
+   had no teardown at all (a plain `return`, not `yield`) — so the mutation was never undone. Because
+   pytest collects `test_040304_toy.py` first alphabetically (`0` sorts before every letter), every
+   test file that runs afterward in the same process inherited the polluted global state.
+4. `test_instrument.py::test_asset_config_without_session_raises_pricebt_error` ("DID NOT RAISE") —
+   the same root cause: by the time this test ran, `PricebtSession.current` was still the toy
+   notebook's leaked session (not `None`), so `swap.asset_config` found a live session instead of
+   raising `PricebtError`.
+5. `test_gs_api_parity.py::test_datetime_function_parity[prev_business_date]` — a real, structural
+   (not order-dependent) flakiness: both gs 1.5.4 and pricebt write
+   `prev_business_date(dates=date.today(), ...)`, and Python evaluates a default argument value
+   exactly ONCE, at function-definition/module-import time. `tests/data/gs_api_1_5_4.json` froze
+   whatever date `gs_api_snapshot.py`'s process imported on (2026-09-27, per its own header); the
+   session's clock rolled over to 2026-09-28 between Phase 3 and Phase 4, so pricebt's live import
+   now bakes in a different date than the frozen snapshot — guaranteed to diverge on any day after
+   the snapshot date, regardless of test order.
+
+**Rule applied:** IMPLEMENTATION_PLAN.md §9 "An agent reports 'done'" (re-run the acceptance command
+and the phase gate yourself before committing) and "A test cannot pass without skipping, xfailing or
+loosening it" (fix the root cause, never paper over it).
+
+**Decision:**
+- `test_040304_toy.py`'s `notebook_ns` fixture now saves `PricebtSession.current`/
+  `GsSession.current`/`actions.action_count` before running the notebook and restores all three in a
+  `try/finally` after `yield`ing the namespace — the same pattern `conftest.py`'s `isolation` fixture
+  uses, just bracketing the whole module instead of one test. The module-scope optimisation (and the
+  Tk-flakiness fix it was for) is kept; only the missing teardown was the bug.
+- `tests/data/gs_api_exceptions.yaml` gained one `ignore_default: [dates]` entry for
+  `gs_quant.datetime.prev_business_date`'s `signature` aspect (the same mechanism already used for
+  `GsSession.use`'s `EnumBase.__repr__` difference) — the parameter's name/kind and every other
+  parameter's default must still match exactly; only this one wall-clock-dependent default value is
+  excepted, with the mechanism (not the gs behaviour) doing the "fixing". Checked: no other
+  `pricebt.datetime` function has a bare `date.today()`-valued default (grepped the module), so this
+  is the only symbol needing the exception.
+- Re-ran the full suite after both fixes: 948 passed (943 + the 5 that were failing), no new
+  failures, guards still green.
+
+**Evidence:** the 5 failures' tracebacks (captured verbatim in this session's tool output);
+`tests/test_040304_toy.py`'s fixture diff (module-scoped `try/finally` added); the
+`gs_api_exceptions.yaml` entry; `inspect.getsource`/live signature checks confirming both gs 1.5.4
+and pricebt's `prev_business_date` use a bare `date.today()` default.
+
+**Alternative considered:** regenerate `tests/data/gs_api_1_5_4.json` today to make the dates match
+again — rejected: this only defers the same failure to the next day boundary rather than fixing the
+structural flakiness, and the snapshot is meant to be a stable, rarely-regenerated reference
+artifact, not something re-run to chase a moving wall clock.

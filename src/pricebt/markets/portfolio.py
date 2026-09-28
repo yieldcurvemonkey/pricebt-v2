@@ -202,8 +202,9 @@ class Portfolio(Priceable):
         new = (priceables,) if isinstance(priceables, Priceable) else tuple(priceables)
         self._set_priceables(self._priceables + new)
 
-    def extend(self, it: Iterable[Any]) -> None:
-        self._set_priceables(self._priceables + tuple(it))
+    def extend(self, portfolio: Iterable[Any]) -> None:
+        # Param renamed from `it` to `portfolio` to match gs's signature (MUST-2, same as append above).
+        self._set_priceables(self._priceables + tuple(portfolio))
 
     def pop(self, item: Any) -> Any:
         # gs rebuilds from `self.instruments` (DIRECT leaf children only), not `all_instruments`

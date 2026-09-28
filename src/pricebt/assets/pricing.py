@@ -570,7 +570,7 @@ def engine_calc(priceable, measures, fn=None):
     measures_t = tuple(measures) if isinstance(measures, (list, tuple)) else (measures,)
 
     if isinstance(ctx, HistoricalPricingContext):
-        dates, csa = ctx.dates, ctx.csa_term
+        dates, csa = ctx.date_range, ctx.csa_term
         if isinstance(priceable, Portfolio):
             result = _historical_portfolio_result(service, priceable, measures_t, dates, csa)
             return fn(result) if fn is not None else result
@@ -604,7 +604,7 @@ def _resolve_instrument(service: PricingService, inst: Instrument, in_place: boo
         inst._set_resolution(resolved_clone.resolved_terms, resolved_clone.resolution_key, resolved_clone.resolution_csa, pre)
         return None
     if is_historical:
-        return {d: service.resolve(inst, d, ctx.csa_term) for d in ctx.dates}
+        return {d: service.resolve(inst, d, ctx.csa_term) for d in ctx.date_range}
     return service.resolve(inst, ctx.pricing_date, ctx.csa_term)
 
 
@@ -627,7 +627,7 @@ def _resolve_portfolio(service: PricingService, portfolio: Portfolio, in_place: 
                 _resolve_instrument(service, child, True, ctx, is_historical)
         return None
     if is_historical:
-        return {d: _resolve_portfolio_one_date(service, portfolio, d, ctx.csa_term) for d in ctx.dates}
+        return {d: _resolve_portfolio_one_date(service, portfolio, d, ctx.csa_term) for d in ctx.date_range}
     return _resolve_portfolio_one_date(service, portfolio, ctx.pricing_date, ctx.csa_term)
 
 

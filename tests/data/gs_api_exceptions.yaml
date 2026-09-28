@@ -2,15 +2,341 @@
 # (tests/data/gs_api_1_5_4.json / gs_instruments_1_5_4.json), consumed by
 # tests/test_gs_api_parity.py (IMPLEMENTATION_PLAN.md P4.2; DESIGN.md section 12.3).
 #
-# Each entry is {symbol, aspect, reason, dev_id}, with a non-empty reason. Any difference between
-# pricebt and the snapshot that is not listed here fails the parity test. Expected occupants
-# (DESIGN.md section 12.3), added by P4.2:
-#   - the trailing keyword-only pricebt_asset, quantity_ and **kwargs on instrument constructors;
-#   - the stubs;
-#   - the trailing fields 2.1.17 appended to a 1.5.4 signature;
-#   - the 2.1.17-only measures FXDeltaLocalCcy/FXGammaLocalCcy/FXVegaLocalCcy (absent from the
-#     1.5.4 snapshot, so they are extra pricebt symbols, not mismatches).
+# Each entry is {symbol, aspect, reason, dev_id?, ...}, with a non-empty reason. `symbol` is an
+# exact "gs_quant...." key from gs_api_1_5_4.json, or a glob pattern (matched with fnmatch) when the
+# same difference recurs across many symbols. `aspect` is one of: signature, fields, methods,
+# method_signature, properties, members, all (all = skip every aspect for this symbol --
+# existence-only, for a stub whose constructor intentionally does not match gs).
 #
-# Empty for now (P1.6): this file is filled in by P4.2, after pricebt.instrument and
-# pricebt.backtests exist to compare against.
-[]
+# Extra fields, by aspect:
+#   signature/fields/method_signature: insert (pricebt-only names; removing them from pricebt's list
+#                      must reproduce gs's list exactly, same order), missing (gs-only names pricebt's
+#                      list legitimately omits, removed from gs's side before comparing -- the mirror
+#                      image of insert), ignore_default (names whose default_repr may legitimately
+#                      differ; name+kind must still match). A same-position rename (same kind/default,
+#                      different name) is expressed as one `insert` name plus one `missing` name.
+#   method_signature only: method (the method name this entry's insert/missing/ignore_default apply
+#                      to; `symbol` is still the class, so several methods on the same class each get
+#                      their own entry)
+#   methods/properties: missing (gs names pricebt does not implement), extra (pricebt-only names
+#                        gs does not have)
+#   members: subset (true = pricebt's members must be a subset of gs's, not an exact match)
+#
+# Any difference not accounted for by an entry here fails the parity test -- including an in-scope
+# symbol missing from pricebt entirely, a signature mismatch with no entry, or a DEV-marked
+# deviation with no corresponding DESIGN section 11 row. Not listed here at all (need no entry,
+# DESIGN.md section 12.3): the trailing keyword-only pricebt_asset/quantity_/kwargs are documented
+# below anyway for the record, and the 2.1.17-only measures FXDeltaLocalCcy/FXGammaLocalCcy/
+# FXVegaLocalCcy (absent from the 1.5.4 snapshot; the test checks their existence directly, they are
+# never treated as "extra symbol not in snapshot" failures).
+
+# ------------------------------------------------------------------------- instruments (section 5.1)
+- symbol: "gs_quant.instrument.*"
+  aspect: signature
+  insert: [pricebt_asset, quantity_, kwargs]
+  reason: >
+    DESIGN.md section 5.1: every generated instrument class appends the keyword-only
+    pricebt_asset=None, quantity_=1.0, then **kwargs after every real gs field (name last, as in
+    gs). The test additionally asserts this trailing triple is in this exact position (not just
+    present anywhere), which is the stronger check this entry documents.
+
+- symbol: "gs_quant.instrument.*"
+  aspect: fields
+  skip: true
+  reason: >
+    Generated instrument classes are plain classes with an exec-built __init__ (DESIGN.md section
+    5.1), not dataclasses.dataclass -- "kind" (class vs dataclass) and "fields" are not comparable;
+    the real check is the exact constructor signature (see the signature entry above).
+
+- symbol: "gs_quant.instrument.*"
+  aspect: methods
+  missing: [compose, default_instance, from_asset_id, from_asset_ids, from_dict, from_instance,
+            from_json, from_quick_entry, market, properties, properties_init, resolved,
+            scale_in_place, schema, to_json]
+  reason: >
+    GS-server / asset-lookup / JSON-serialization surface: out of scope (section 2.3 non-goals,
+    MUST-1). Only the object contract in DESIGN.md section 5.1 is ported: as_dict, calc, clone,
+    dollar_price, flip, price, resolve, scale, to_dict (all present, verified). scale_in_place is
+    additionally absent from gs's own Cash class, so its absence there is not even a gap.
+
+- symbol: "gs_quant.instrument.*"
+  aspect: properties
+  missing: [metadata, provider, resolution_key, unresolved]
+  extra: [asset_config, kwargs]
+  reason: >
+    DESIGN.md section 5.1 object contract: only kwargs, instrument_quantity and asset_config are
+    properties. gs's metadata/provider are GS-server-only; resolution_key/unresolved are still part
+    of pricebt's contract but as plain instance attributes assigned in __init__ (not @property), so
+    they are invisible to a class-level introspection of either side's snapshot tool.
+
+- symbol: "gs_quant.instrument.*"
+  aspect: method_signature
+  method: calc
+  insert: [risk_measure_or_iterable]
+  missing: [risk_measure]
+  reason: >
+    DESIGN.md section 5.1 object contract literally specs "calc(risk_measure_or_iterable, fn=None)"
+    -- gs's `risk_measure` is renamed because pricebt's calc accepts a single RiskMeasure OR an
+    iterable of them (both call conventions used across the engine); every call site in
+    generic_engine.py passes it positionally, so the name has no behavioural effect.
+
+- symbol: "gs_quant.instrument.*"
+  aspect: method_signature
+  method: clone
+  insert: [kw]
+  missing: [kwargs]
+  reason: >
+    DESIGN.md section 5.1 object contract specs "clone(**kw) -> Instrument"; gs's `**kwargs` is
+    renamed to `**kw` (still VAR_KEYWORD, same position, no default to lose) -- a cosmetic choice
+    with no observable effect (dataclasses.replace-style semantics), always called with keywords only.
+
+- symbol: "gs_quant.instrument.*"
+  aspect: method_signature
+  method: to_dict
+  missing: [encode_json]
+  reason: >
+    DESIGN.md section 5.1 object contract specs "to_dict() -> dict" with no parameters at all (it is
+    as_dict() without 'name'). gs's `encode_json` param exists to interoperate with
+    dataclasses_json's JSON encoding, which pricebt does not depend on or support (MUST-1; see the
+    "backtests: dataclasses_json (MUST-1)" entry above for the same reasoning applied to the
+    from_dict/from_json/schema/to_dict/to_json methods that whole entry excepts).
+
+# ------------------------------------------------------------- backtests: dataclasses_json (MUST-1)
+- symbol: "gs_quant.backtests.*"
+  aspect: methods
+  missing: [from_dict, from_json, schema, to_dict, to_json]
+  reason: >
+    dataclasses_json's dataclass_json mixin methods. pricebt does not depend on dataclasses_json
+    (MUST-1) and does not serialise strategies/results to JSON (section 2.3 non-goal).
+
+# ------------------------------------------------------------------- backtests: trigger reset (DEV-T10)
+- symbol: "gs_quant.backtests.triggers.*TriggerRequirements"
+  aspect: methods
+  extra: [reset]
+  dev_id: DEV-T10
+  reason: >
+    pricebt adds reset() to every trigger requirement (walking Aggregate/Not children) so trigger
+    state does not leak across separate run_backtest() calls; the engine calls it at run start.
+
+# ---------------------------------------------------------- backtests: 2.1.17 additive fields/methods
+- symbol: gs_quant.backtests.actions.AddScaledTradeAction
+  aspect: signature
+  insert: [dated_priceables]
+  reason: >
+    decision 0.1: AddScaledTradeAction.dated_priceables is a 2.1.17 additive feature explicitly
+    included, appended after every 1.5.4 field.
+
+- symbol: gs_quant.backtests.actions.AddScaledTradeAction
+  aspect: fields
+  insert: [dated_priceables]
+  reason: >
+    Same as the signature entry above: dated_priceables is a 2.1.17 additive field (decision 0.1),
+    appended after every 1.5.4 field (just before the init=False class_type field).
+
+- symbol: gs_quant.backtests.triggers.EventTriggerRequirements
+  aspect: signature
+  insert: [country, currency, source, start, end]
+  reason: >
+    2.1.17's real EventTriggerRequirements (verified against gs_quant 2.1.17 backtests/triggers.py)
+    inserts 5 new event-filter fields (country, currency, source, start, end) between offset_days
+    and data_source; decision 0.1 includes 2.1.17's additive fields. No DESIGN section 11 DEV row
+    covers this (it is pre-approved by decision 0.1 / research/01 section 10), so dev_id is omitted.
+
+- symbol: gs_quant.backtests.triggers.EventTriggerRequirements
+  aspect: fields
+  insert: [country, currency, source, start, end]
+  reason: >
+    Same as the signature entry above: the 5 new fields land between offset_days and data_source in
+    both the field list and the constructor, matching real gs_quant 2.1.17 exactly.
+
+- symbol: gs_quant.backtests.backtest_objects.BackTest
+  aspect: methods
+  extra: [pnl_bps, summary_stats]
+  reason: >
+    decision 0.1 / DESIGN.md section 9.3: BackTest.summary_stats() is a 2.1.17 additive feature
+    explicitly included; pnl_bps is a pricebt/DESIGN section 9.3 addition alongside
+    missing_market_dates.
+
+- symbol: gs_quant.backtests.backtest_objects.BackTest
+  aspect: properties
+  extra: [weighted_trades]
+  reason: >
+    Backs AddWeightedTradeAction (a 2.1.17 additive feature, decision 0.1); gs's 1.5.4 BackTest has
+    no such property.
+
+# ------------------------------------------------------------------------------------------- stubs
+- symbol: gs_quant.backtests.backtest_objects.OisFixingCashAccrualModel
+  aspect: all
+  skip: true
+  reason: >
+    Stub (DESIGN.md section 9.3): constructor is (*args, **kwargs) -> NotSupportedError; not
+    structurally comparable to gs's real (start_date, end_date) dataclass.
+
+- symbol: gs_quant.backtests.backtest_objects.PredefinedAssetBacktest
+  aspect: all
+  skip: true
+  reason: >
+    Stub (DESIGN.md sections 2.3 and 9.3): PredefinedAssetEngine is out of scope; constructor raises
+    NotSupportedError. The name exists only because triggers.py imports it.
+
+- symbol: gs_quant.backtests.core.Backtest
+  aspect: all
+  skip: true
+  reason: >
+    Stub (DESIGN.md sections 2.3 and 9.3): gs's server-side backtest handle; constructor raises
+    NotSupportedError. Use GenericEngine.run_backtest(), which returns a real BackTest.
+
+- symbol: gs_quant.backtests.data_sources.DataManager
+  aspect: methods
+  missing: [add_data_source, get_data, get_data_range]
+  reason: >
+    Stub (DESIGN.md sections 2.3 and 9.3): backs PredefinedAssetEngine, out of scope. Its
+    __post_init__ raises NotSupportedError; none of gs's data-registry methods are implemented.
+    (Its dataclass shape happens to already match gs exactly: both have zero declared fields.)
+
+- symbol: gs_quant.backtests.data_sources.GsDataSource
+  aspect: method_signature
+  method: get_data
+  ignore_default: [state]
+  reason: >
+    Stub (DESIGN.md sections 2.3 and 9.3): GsDataSource.__post_init__ raises NotSupportedError
+    unconditionally, so no instance can ever exist to call get_data on. get_data is inherited from
+    the DataSource base class, whose abstract declaration requires `state` (gs's real GsDataSource
+    defaults it to None); harmless since the method is unreachable in practice.
+
+# --------------------------------------------------------------------------- backtest_utils oddities
+- symbol: gs_quant.backtests.backtest_utils.interpolate_signal
+  aspect: signature
+  ignore_default: [method]
+  reason: >
+    backtest_utils.py's own docstring: gs's Interpolate/interpolate dependency is dropped per
+    DESIGN.md section 9.2's import map (its only call site in gs's backtests package always used
+    method=Interpolate.STEP); step-interpolation is inlined directly. `method` is kept in position
+    for constructor-shape parity only, and its default cannot mirror gs's Interpolate.STEP without
+    importing gs_quant (MUST-1), so only its default_repr is excepted here.
+
+# --------------------------------------------------------------------------------------- generic_engine
+- symbol: gs_quant.backtests.generic_engine.GenericEngine
+  aspect: methods
+  missing: [new_pricing_context]
+  reason: >
+    GS-server batch-pricing-context helper (deduplicates is_batch/market_data_location/
+    request_priority across calls). pricebt's PricingContext has no server params to deduplicate;
+    run_backtest builds its context directly (DESIGN.md section 6.5).
+
+# ------------------------------------------------------------------------------------------- markets
+- symbol: gs_quant.markets.PricingContext
+  aspect: properties
+  missing: [active_context, is_batch, is_current, market, market_behaviour, market_data_location,
+            provider, request_priority, set_parameters_only, show_progress, timeout, use_cache,
+            use_historical_diddles_only, use_server_cache, visible_to_gs]
+  reason: >
+    markets/__init__.py's own module docstring: only pricing_date and csa_term actually do anything;
+    every other constructor parameter is accepted for signature parity and ignored (DESIGN.md
+    section 6.5).
+
+- symbol: gs_quant.markets.PricingContext
+  aspect: methods
+  missing: [calc, clone, default_value]
+  reason: >
+    GS-server pricing dispatch/cloning helpers. pricebt's Instrument/Portfolio.calc and .resolve are
+    the real pricing seam (DESIGN.md section 6.5); PricingContext itself does not need its own calc/
+    clone/default_value.
+
+- symbol: gs_quant.markets.HistoricalPricingContext
+  aspect: properties
+  missing: [active_context, is_batch, is_current, market, market_behaviour,
+            market_data_location, provider, request_priority, set_parameters_only, show_progress,
+            timeout, use_cache, use_historical_diddles_only, use_server_cache, visible_to_gs]
+  reason: >
+    Same PricingContext-accepted-and-ignored params as above. `date_range` is not listed here: it is
+    implemented under gs's own name (markets/__init__.py), so there is no mismatch to except -- an
+    earlier draft instead kept pricebt's property named `dates` and excepted the rename, but that
+    rename had no DESIGN section 11 DEV row (decision 0.3 confirmed section 11 as-is), so the
+    property was renamed to match gs exactly instead of inventing an unapproved exception.
+
+- symbol: gs_quant.markets.HistoricalPricingContext
+  aspect: methods
+  missing: [calc, clone, default_value]
+  reason: >
+    Same as gs_quant.markets.PricingContext's methods entry above.
+
+- symbol: gs_quant.markets.portfolio.Portfolio
+  aspect: fields
+  skip: true
+  reason: >
+    Portfolio is a plain class (DESIGN.md section 5, research/04 section 5), not a
+    dataclasses.dataclass; gs's own Portfolio dataclass has zero declared fields anyway (all its gs
+    fields are inherited from the PriceableImpl/dataclasses_json base), so nothing is lost here.
+
+- symbol: gs_quant.markets.portfolio.Portfolio
+  aspect: methods
+  missing: [as_dict, default_instance, from_asset_id, from_asset_name, from_book, from_csv,
+            from_dict, from_eti, from_frame, from_instance, from_json, from_portfolio_id,
+            from_portfolio_name, from_quote, get, market, properties, properties_init, save,
+            save_as_quote, save_to_shadowbook, schema, subset, to_csv, to_dict, to_json]
+  reason: >
+    GS-server / persistence / JSON-serialization surface (save*, from_*, to_csv/to_json/to_dict,
+    schema, market, get, subset, properties*): out of scope (section 2.3 non-goals, MUST-1).
+    Portfolio.as_dict is not ported on Portfolio itself (unlike Instrument.as_dict, which the engine
+    uses directly); Portfolio.to_frame() builds its own rows from each leaf's own as_dict().
+
+- symbol: gs_quant.markets.portfolio.Portfolio
+  aspect: properties
+  missing: [all_paths, id, quote_id]
+  reason: >
+    id/quote_id are GS Marquee persistence ids, never needed for an in-memory Portfolio (research/04
+    section 5; see portfolio.py's Portfolio.__hash__ comment, which cites the same source). all_paths
+    (raw leaf index-tuples) is not exposed publicly; pricebt's paths(key)/_leaf_paths cover the
+    engine's own traversal needs.
+
+- symbol: gs_quant.markets.portfolio.Portfolio
+  aspect: method_signature
+  method: calc
+  insert: [risk_measure_or_iterable]
+  missing: [risk_measure]
+  reason: >
+    Same rename as gs_quant.instrument.*'s calc entry above; portfolio.py's own calc() is grouped
+    under its "pricing (DESIGN.md section 6.5)" comment block with the identical
+    risk_measure_or_iterable parameter name.
+
+# --------------------------------------------------------------------------------------- common enums
+- symbol: gs_quant.common.Currency
+  aspect: members
+  subset: true
+  reason: >
+    common.py's own module docstring: Currency is a deliberately partial subset (P1.1) of gs's
+    341-member enum, covering the research/04 section 4 code list; extended by adding (name, value)
+    pairs as new assets/FX configs need them.
+
+- symbol: gs_quant.common.AssetType
+  aspect: members
+  subset: true
+  reason: >
+    common.py's own module docstring: AssetType is a deliberately partial subset (decision 0.6 /
+    P1.1) of gs's 161-member enum, the research/04 section 4 list pricebt needs today.
+
+# -------------------------------------------------------------------------------------------- session
+- symbol: gs_quant.session.GsSession.use
+  aspect: signature
+  ignore_default: [environment_or_domain]
+  reason: >
+    pricebt.base.EnumBase overrides __repr__ to print the enum's value rather than
+    ClassName.MEMBER (by design, for case-insensitive construction): repr(Environment.PROD) is "3",
+    not gs's "<Environment.PROD: 3>". Name, kind and every other parameter's default match exactly.
+
+# ------------------------------------------------------------------------------------------- datetime
+- symbol: gs_quant.datetime.prev_business_date
+  aspect: signature
+  ignore_default: [dates]
+  reason: >
+    Both gs (gs_quant/datetime/date.py) and pricebt (src/pricebt/datetime/__init__.py) write this
+    parameter's default as a bare `date.today()` call, which Python evaluates exactly ONCE, at
+    function-definition/module-import time, not per call -- a real, intentional quirk this project
+    keeps rather than "fixes" (it is not a DESIGN.md section 11 DEV row, and IMPLEMENTATION_PLAN.md
+    section 9 says keep an unlisted gs behaviour rather than silently changing it). The frozen
+    tests/data/gs_api_1_5_4.json snapshot therefore records whatever date gs_api_snapshot.py's
+    process happened to import on (2026-09-27); pricebt's own live process imports on whatever date
+    the test suite actually runs, so the two reprs are guaranteed to diverge on any day after the
+    snapshot date. Parameter name/kind and every other parameter's default still must match exactly
+    -- only the concrete date value baked into this one default is excepted.

@@ -128,14 +128,15 @@ class HistoricalPricingContext(PricingContext):
             provider=provider,
         )
         # gs computes the date list eagerly in __init__ (it raises there too, e.g. on a weekend
-        # `start` in the (date, date) form): match that rather than deferring to first `.dates` read.
+        # `start` in the (date, date) form): match that rather than deferring to first `.date_range`
+        # read.
         if dates is not None:
             self._dates: Tuple[date, ...] = tuple(dates)
         else:
             self._dates = tuple(date_range(start, end if end is not None else date.today(), calendars=calendars))
 
     @property
-    def dates(self) -> Tuple[date, ...]:
+    def date_range(self) -> Tuple[date, ...]:
         return self._dates
 
 

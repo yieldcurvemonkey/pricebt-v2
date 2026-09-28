@@ -561,8 +561,9 @@ class HistoricalPricingContext(PricingContext):
     def __init__(self, start=None, end=None, calendars=(), dates=None, is_async=None, is_batch=None, use_cache=None,
                  visible_to_gs=None, request_priority=None, csa_term=None, market_data_location=None, timeout=None,
                  show_progress=None, use_server_cache=None, provider=None): ...
-    dates -> tuple[date, ...]        # `dates` as given; else date_range(start, end or today); an int start = last N business days,
-                                     #   DESCENDING (gs). Both or neither of start/dates -> gs ValueErrors.
+    date_range -> tuple[date, ...]   # `dates` as given; else date_range(start, end or today); an int start = last N business days,
+                                     #   DESCENDING (gs). Both or neither of start/dates -> gs ValueErrors. Property is named
+                                     #   `date_range`, matching gs exactly (MUST-2) -- only the constructor kwarg is `dates`.
 
 def _engine_calc(priceable, measures, fn=None): ...     # seam: body = from pricebt.assets import pricing; return pricing.engine_calc(...)
 def _engine_resolve(priceable, in_place: bool): ...     # seam: body = from pricebt.assets import pricing; return pricing.engine_resolve(...)
@@ -995,7 +996,7 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 | Test | What it asserts |
 |---|---|
 | `test_relative_date.py` | every row of R04§8.3 and R01§5.5: rules, schedules, the holiday case, a weekend start kept |
-| `test_contexts.py` | the PricingContext stack, inheritance of pricing_date and csa_term, `HistoricalPricingContext.dates` rules |
+| `test_contexts.py` | the PricingContext stack, inheritance of pricing_date and csa_term, `HistoricalPricingContext.date_range` rules |
 | `test_mean_reversion_golden.py` | the 19-row table of R01§6.5.9 (triggered, scaling, position), fed through `GenericDataSource` + `MeanReversionTriggerRequirements` |
 | `test_generic_data_source.py` | the R01§7.4 v2 spec: fill_forward returns the previous value (2.0, not 5.0), interpolate by position, no mutation, index normalisation, the `get_data_range` rules |
 | `test_risk_results.py` | the PRR contract (§8.2): `.get`, `.futures` rebuild after deleting an index, the `__getitem__` errors, `__add__` overlap and ordered union, `transform`, `to_frame` bucket sums, the 6-column bucketed frame, ';'-keyed points, order preserved |

@@ -128,26 +128,26 @@ def test_neither_start_nor_dates_raises_gs_value_error():
 def test_start_computes_dates_eagerly_at_construction_not_on_first_read():
     # a weekend `start` trips the ported gs date_range quirk (ValueError) as soon as the range
     # needs to step past it (see test_relative_date.py::test_date_range_weekend_begin_raises); gs
-    # raises this from HistoricalPricingContext.__init__ itself, not on first `.dates` read, so
-    # this must raise even though `.dates` is never touched below.
+    # raises this from HistoricalPricingContext.__init__ itself, not on first `.date_range` read, so
+    # this must raise even though `.date_range` is never touched below.
     with pytest.raises(ValueError):
         HistoricalPricingContext(start=date(2024, 6, 1))  # Saturday
 
 
 def test_dates_given_are_used_exactly_as_given():
     given = [date(2024, 1, 3), date(2024, 1, 1), date(2024, 1, 2)]  # deliberately unsorted
-    assert HistoricalPricingContext(dates=given).dates == tuple(given)
+    assert HistoricalPricingContext(dates=given).date_range == tuple(given)
 
 
 def test_start_and_end_dates_are_ascending():
     ctx = HistoricalPricingContext(start=date(2024, 5, 30), end=date(2024, 6, 4))
-    assert ctx.dates == (date(2024, 5, 30), date(2024, 5, 31), date(2024, 6, 3), date(2024, 6, 4))
+    assert ctx.date_range == (date(2024, 5, 30), date(2024, 5, 31), date(2024, 6, 3), date(2024, 6, 4))
 
 
 def test_start_as_int_is_the_last_n_business_days_descending():
     ctx = HistoricalPricingContext(start=3, end=date(2024, 6, 4))
-    assert ctx.dates == (date(2024, 6, 4), date(2024, 6, 3), date(2024, 5, 31))
-    assert ctx.dates[0] > ctx.dates[-1]
+    assert ctx.date_range == (date(2024, 6, 4), date(2024, 6, 3), date(2024, 5, 31))
+    assert ctx.date_range[0] > ctx.date_range[-1]
 
 
 def test_end_none_defaults_to_today_date_form():
@@ -157,12 +157,12 @@ def test_end_none_defaults_to_today_date_form():
     # would make this test flaky depending on which weekday it runs on.
     start = business_day_offset(date.today(), -10, roll="preceding")
     ctx = HistoricalPricingContext(start=start)
-    assert ctx.dates == tuple(date_range(start, date.today()))
+    assert ctx.date_range == tuple(date_range(start, date.today()))
 
 
 def test_end_none_defaults_to_today_int_form():
     ctx = HistoricalPricingContext(start=5)
-    assert ctx.dates == tuple(date_range(5, date.today()))
+    assert ctx.date_range == tuple(date_range(5, date.today()))
 
 
 def test_historical_context_is_a_pricing_context_and_can_be_entered():

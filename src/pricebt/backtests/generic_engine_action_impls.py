@@ -664,9 +664,17 @@ class ExitTradeActionImpl(ActionHandler):
                         else:
                             cp.effective_date = s
                             backtest.cash_payments[s].append(cp)
-                        backtest.transaction_cost_entries[s].append(cp.transaction_cost_entry)
-                        backtest.transaction_cost_entries[cp_date].remove(cp.transaction_cost_entry)
-                        cp.transaction_cost_entry.date = s
+                        # pricebt (P4.1 finding, Phase 3 regression): an initial_portfolio position's
+                        # own CashPayments (_resolve_initial_portfolio, generic_engine.py) are created
+                        # with no TransactionCostEntry at all (transaction_cost_entry=None), unlike
+                        # every action-created trade. Exiting such a position (a normal use of
+                        # ExitTradeAction()/ExitAllPositionsAction(), e.g. rebalancing out of a
+                        # starting book) previously crashed here with `list.remove(x): x not in
+                        # list` -- there was nothing to move/date-stamp in the first place.
+                        if cp.transaction_cost_entry is not None:
+                            backtest.transaction_cost_entries[s].append(cp.transaction_cost_entry)
+                            backtest.transaction_cost_entries[cp_date].remove(cp.transaction_cost_entry)
+                            cp.transaction_cost_entry.date = s
                         del backtest.cash_payments[cp_date][index]
 
                     if not backtest.cash_payments[cp_date]:
