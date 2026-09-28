@@ -1,0 +1,90 @@
+# pricebt strategy spec: the single hand-off document between intake -> implementation -> review -> report.
+# Every field has a default. An agent running autonomously fills what the idea states, keeps defaults
+# for the rest, and lists every default it relied on under `assumptions:`. Interactive agents ask the
+# follow-up questions in skills/pricebt-strategy-intake/references/question-bank.md first.
+# Units: rates in bp, risk in currency per 1bp (IRDelta / dv01), money in the report currency.
+
+spec_version: 1
+name: usd-10y-mean-reversion            # kebab-case; used for the report folder
+idea: >                                  # the user's plain-English idea, verbatim
+  Fade big moves in the 10y swap rate: pay when it is unusually low, receive when it is unusually high.
+hypothesis: >                            # WHY it should work, and in which regime it should fail (one or two sentences)
+  The 10y par rate mean-reverts over weeks; the trade fails in trending regimes (e.g. a hiking cycle).
+assumptions: []                          # filled by the agent: every default relied on, one line each
+
+# --- what is traded -----------------------------------------------------------------------------
+assets:                                  # asset configs (paths from the repo root) to register in PricebtSession
+  - tests/assets/toy_usd_irs.yaml
+fx: null                                 # FX config path, required only if >1 currency or result_ccy is set
+result_ccy: null                         # e.g. USD; null = local currency (gs semantics)
+instruments:                             # named instrument templates; kwargs are gs constructor kwargs, passed verbatim
+  primary:
+    class: IRSwap
+    kwargs: {pay_or_receive: Pay, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+  # second:                              # e.g. the other leg of a curve trade
+  #   class: IRSwap
+  #   kwargs: {pay_or_receive: Receive, termination_date: 2y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+  # hedge:
+  #   class: IRSwap
+  #   kwargs: {pay_or_receive: Receive, termination_date: 5y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+
+# --- when ---------------------------------------------------------------------------------------
+dates:
+  start: 2024-01-02
+  end: 2025-01-02
+  in_sample_end: null                    # e.g. 2024-09-30: parameters may be tuned only before this date
+  frequency: 1b                          # pricing grid (gs frequency string)
+  holiday_calendar: []                   # extra holidays (list of dates); weekends are always holidays
+
+# --- the rule -----------------------------------------------------------------------------------
+archetype: mean_reversion                # periodic_roll | mean_reversion | momentum | curve_trade | delta_hedged
+                                         # | risk_band | event | custom   (see skills/pricebt-strategy-recipes)
+signal:
+  type: par_rate_zscore                  # none | par_rate_zscore | rate_momentum | custom
+  instrument: primary                    # which named instrument's measure feeds the signal (a fresh, unresolved copy)
+  measure: par_rate                      # asset-config function name (bp for rates)
+  lookback: 30                           # observations (business days) in the rolling window
+  lag: 0                                 # robustness: shift the signal series by N observations (a look-ahead check); keep 0 for real runs
+  params:
+    z_entry: 2.0                         # mean_reversion: |z| above this opens a trade
+    # threshold_bp: 0.0                  # momentum: change over lookback above/below this sets direction
+rebalance:
+  frequency: 1m                          # periodic_roll / momentum / curve_trade / delta_hedged cadence
+  trade_duration: next schedule          # gs trade_duration: null (hold forever) | tenor like 1m | 'next schedule' | a date
+event_dates: []                          # archetype event: dates to trade on
+
+# --- how much -----------------------------------------------------------------------------------
+sizing:
+  method: notional                       # notional | dv01_target | nav
+  notional: 10000000                     # method notional: overrides instruments.<name>.kwargs.notional_amount if set
+  dv01_target: null                      # method dv01_target: currency per bp per leg (signed by the leg's direction)
+  nav: null                              # method nav: cash budget spent on entry
+  kelly_cap: null                        # optional cap on size as a fraction of full-Kelly (report only; see research-methodology)
+
+# --- limits -------------------------------------------------------------------------------------
+risk_limits:
+  max_abs_dv01: null                     # currency per bp; enforced with StrategyRiskTrigger + HedgeAction (risk_band)
+  stop_loss_mtm: null                    # currency; exit when book PV < -X (approximation: gs has no P&L trigger)
+  max_positions: null                    # TradeCountTrigger / EarlyExitPositionLimitScaledAction
+  max_drawdown: null                     # report-only threshold (flagged in review; not enforced by gs constructs)
+
+# --- frictions ----------------------------------------------------------------------------------
+costs:
+  model: dv01_bp                         # none | constant | notional_bp | dv01_bp
+  level: 0.25                            # constant: currency per trade; notional_bp: bp of notional; dv01_bp: bp of dv01 per side
+financing:
+  cash_accrual_rate: 0.0                 # annual rate on cash (ConstantCashAccrualModel); 0 = no accrual
+initial_value: 0                         # starting cash (P&L view when 0)
+
+# --- judging it ---------------------------------------------------------------------------------
+risks_to_report: [Price, IRDeltaParallel]   # risk measures recorded every day (names from pricebt.risk)
+benchmark: none                          # none | buy_and_hold | <a named instrument> ; used for IR in the report
+success_criteria:
+  min_sharpe: 0.5                        # of daily P&L, annualised
+  min_oos_sharpe: 0.3                    # if in_sample_end is set
+  max_drawdown: null                     # currency
+  min_trades: 10                         # below this the statistics are not meaningful
+
+deliverables:
+  out_dir: reports/usd-10y-mean-reversion
+  formats: [html, md]

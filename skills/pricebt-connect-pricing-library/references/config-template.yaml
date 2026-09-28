@@ -1,0 +1,116 @@
+# Asset-config TEMPLATE for connecting ANY pricing library to pricebt (vanilla fixed-float swap shape).
+# Copy it to configs/assets/<asset>.yaml and replace every TODO. The file loads as-is
+# (load_asset never runs imports/code), so fill it in step by step and re-run load_asset.
+# Worked, tested version of exactly this shape: skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml
+# Contract: docs/v2/ASSET_CONFIG_GUIDE.md. Conventions: references/convention-conversions.md.
+schema_version: 1
+asset: TODO_asset_name                 # unique; e.g. usd_sofr_irs_<library>
+description: >
+  TODO: instrument, library, curve. State the units: npv <CCY>; dv01 <CCY> per +1bp (payer > 0); rates in bp.
+instrument: IRSwap                     # a class in pricebt.instrument (IRSwap, IRSwaption, ...)
+match: {notional_currency: USD}        # TODO: which instruments this config serves
+currency: USD                          # TODO: the currency your npv/dv01 come back in
+defaults:                              # gs-style defaults for kwargs the user leaves out
+  pay_or_receive: Receive
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+
+imports: |
+  import re
+  import datetime as _dt
+  # TODO: set env vars the library reads AT IMPORT (auth, "no production DB", ...) BEFORE importing it.
+  import yourlib                       # TODO: your library (installed, or add --sys-path for the checker)
+
+code: |
+  _CLIENT = yourlib.connect()          # TODO: ONE session per process (code: runs once per process)
+  _CURVE = "TODO.CURVE.ID"
+  _ATM = re.compile(r"^\s*(?:atm|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25' (bp)
+  _TENOR = re.compile(r"^\s*\d+\s*[dwmy]\s*$", re.I)
+
+  def load_market(d):
+      # pricebt passes a datetime.date. Return the library's market object for that close, or None.
+      # TODO: convert d to the library's date type (ISO string? datetime at EOD? use pricebt_timestamp?)
+      # TODO: catch ONLY the library's "closed / no data" exceptions; let real errors propagate.
+      try:
+          m = _CLIENT.market(d.isoformat(), _CURVE)
+      except (LookupError,):             # TODO: e.g. (yourlib.MarketClosed, yourlib.NoData)
+          return None
+      # TODO: if the library can silently serve the previous day's curve, check its ref date == d here.
+      return m
+
+  def _sign(por):                        # pricebt enum (value 'Pay'/'Rec') or a raw string -> +1 payer / -1 receiver
+      s = str(getattr(por, "value", por)).strip().lower()
+      if s == "pay": return 1.0
+      if s in ("rec", "receive", "receiver"): return -1.0
+      raise ValueError(f"pay_or_receive must be Pay or Receive, got {por!r}")
+
+  def resolve_swap(m, kw):
+      # Runs ONCE at the trade date. Return ONLY plain, ABSOLUTE terms: dates, a decimal strike, a signed notional.
+      start = _CLIENT.spot_date(m)                                   # TODO: library's spot / effective-date helper
+      term = kw["termination_date"]
+      if isinstance(term, str) and _TENOR.match(term):
+          end = _CLIENT.maturity(m, start, term.strip().upper())     # TODO: library's own tenor->date (its calendar)
+      else:
+          end = term
+      notional = float(kw["notional_amount"]) * _sign(kw["pay_or_receive"])
+      fr = kw.get("fixed_rate", "ATM")
+      mm = _ATM.match(fr) if isinstance(fr, str) else None
+      if mm:
+          par = TODO_par_rate_decimal(m, start, end)                  # TODO: par rate at the trade date, as a DECIMAL
+          k = par + float(mm.group(2) or 0.0) * (-1.0 if mm.group(1) == "-" else 1.0) / 1e4
+      else:
+          k = float(fr)                                               # gs fixed_rate is decimal
+      return {"effective_date": _dt.date.fromisoformat(str(start)),   # TODO: convert library dates -> datetime.date
+              "termination_date": _dt.date.fromisoformat(str(end)),
+              "fixed_rate": k, "notional": notional}
+
+  def build_swap(r):
+      # pricebt terms -> the library's trade object. TODO: rate unit (decimal/percent/bp), side convention, date type.
+      return _CLIENT.swap(str(r["effective_date"]), str(r["termination_date"]),
+                          rate=r["fixed_rate"], notional=r["notional"])
+
+  def _risk(m, t):                       # memoise per (market, trade): one library call for all per-trade measures
+      memo = m.__dict__.setdefault("_pricebt_memo", {})   # TODO: if m has no __dict__, use a dict keyed by (date, trade)
+      if t not in memo:
+          memo[t] = _CLIENT.price(t, m)                    # TODO: request every measure the functions need at once
+      return memo[t]
+
+  def delta_ladder(m, trades, weights):
+      out = {"2Y": 0.0, "5Y": 0.0, "10Y": 0.0, "30Y": 0.0}       # TODO: your pillars, as plain tenors
+      live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
+      if not live:
+          return out
+      for (t, w), buckets in zip(live, TODO_batch_bucket_risk(m, [t for t, _ in live])):   # TODO: ONE batched call
+          for key, v in buckets.items():
+              out[TODO_key_to_tenor(key)] += w * v                # TODO: key format + SIGN/UNIT flip as for dv01
+      return out
+
+market:
+  expr: 'load_market(pricebt_date)'
+  key: TODO_market_key                 # share one market between configs only if imports/code/expr are identical
+resolve:
+  expr: 'resolve_swap(market, kwargs)'
+trade:
+  expr: 'build_swap(resolved)'
+  build_on: resolve_date               # TODO: each_market if the trade object holds market state (fixings)
+functions:
+  npv:      {expr: '_risk(market, trade)["TODO_PV"]', unit: ccy}              # TODO: currency, holder's view
+  dv01:     {expr: '_risk(market, trade)["TODO_DV01"]', unit: ccy_per_bp}     # TODO: -> per +1bp, payer > 0
+  par_rate: {expr: '_risk(market, trade)["TODO_PAR"]', unit: bp}              # TODO: -> bp
+portfolio_functions:
+  delta_ladder:
+    expr: 'delta_ladder(market, trades, weights)'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv                           # REQUIRED: the engine books cash with it
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate

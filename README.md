@@ -8,6 +8,15 @@ tradable asset, whose Python expression strings name the library the user choose
 library such as ARBS is named only inside those config files, never in pricebt's own source
 (`src/pricebt`).
 
+## Skills for AI agents
+
+[`skills/README.md`](skills/README.md) is a skills library for AI agents (and people). It covers two jobs:
+
+- **Hook up a pricing/data library and reach a first backtest fast.** You get a fast path, a discovery questionnaire, a fictional bank-SDK worked example and an automated config checker.
+- **Take a plain-English strategy idea to a reviewed tearsheet.** The steps are intake questions, implementation recipes, adversarial review, spot checks and a report generator.
+
+Start with [`skills/pricebt-start-here/SKILL.md`](skills/pricebt-start-here/SKILL.md).
+
 ## Quick start
 
 ```python
