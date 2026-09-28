@@ -8,3 +8,5 @@ dist/
 # run outputs (regenerable)
 /results/
 /results_new/
+# generated study outputs (keep bank data out of this public repo)
+/reports/

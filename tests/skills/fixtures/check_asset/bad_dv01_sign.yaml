@@ -1,0 +1,46 @@
+# Broken on purpose (check_asset fixture): dv01 sign flipped (payer dv01 < 0). Must FAIL swap_dv01_sign.
+# Copy of tests/assets/toy_usd_irs.yaml with ONE thing broken.
+schema_version: 1
+asset: bad_dv01_sign
+description: >
+  Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
+  fixture, never shipped. Exercises build_on: each_market. Units: npv USD; dv01 USD per +1bp
+  (payer > 0); rates in bp.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Receive
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.rates as tr
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+  build_on: each_market
+functions:
+  npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:     {expr: '-tr.pv01(market, trade)', unit: ccy_per_bp}
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate

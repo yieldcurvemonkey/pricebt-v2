@@ -1,0 +1,139 @@
+# DELIBERATE MISTAKE (for skills/pricebt-verify-asset-config): resolve passes the "10Y" tenor through.
+# Meridian resolves a tenor end against the PRICING market spot, so a held swap never ages. See README.md.
+schema_version: 1
+asset: meridian_usd_irs_mistake_maturity
+description: >
+  USD SOFR swap priced by the FICTIONAL Meridian SDK (example/meridian_sdk; not a real vendor API).
+  Worked example for skills/pricebt-connect-pricing-library: every vendor convention is converted to
+  pricebt's. Units: npv USD; dv01 USD per +1bp (payer > 0); par_rate bp; ladder USD per +1bp (payer > 0).
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Receive          # gs default; coerced to the PayReceive enum (value 'Rec')
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+
+imports: |
+  import re
+  import datetime as _dt
+  import meridian_sdk as mdn       # the bank SDK: assumed installed / on sys.path
+
+code: |
+  _CLIENT = mdn.connect(env="SIM")   # ONE session per process: `code:` runs once, so this is module-level
+  _CURVE = "USD.SOFR"
+  _MEASURES = ["PV", "DV01", "PAR_PCT"]   # everything the per-trade functions need, in ONE price call
+  _ATM = re.compile(r"^\s*(?:atm|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25', 'a-10' (bp)
+  _TENOR = re.compile(r"^\s*\d+\s*[dwmy]\s*$", re.I)
+
+  def load_market(d):
+      # vendor: as_of is an ISO string, and closed/missing days RAISE.
+      # pricebt: pricebt_date is a datetime.date, and "no market" must be a None return.
+      try:
+          return _CLIENT.market(d.isoformat(), _CURVE)
+      except (mdn.MarketClosed, mdn.NoData):
+          return None
+
+  def _sign(por):
+      s = str(getattr(por, "value", por)).strip().lower()   # pricebt enum (value 'Pay'/'Rec') or a raw string
+      if s == "pay": return 1.0
+      if s in ("rec", "receive", "receiver"): return -1.0
+      raise ValueError(f"pay_or_receive must be Pay or Receive, got {por!r}")
+
+  def _iso(x):   # tenor/ISO string, date or datetime -> vendor string
+      if isinstance(x, str):
+          return x.strip().upper()
+      return (x.date() if isinstance(x, _dt.datetime) else x).isoformat()
+
+  def resolve_swap(m, kw):
+      # Runs ONCE, on the trade date's market m. Everything relative is pinned here.
+      eff = kw.get("effective_date")
+      spot = _CLIENT.spot_date(m)
+      if eff is None or (isinstance(eff, str) and eff.strip().lower() == "spot"):
+          start = spot
+      elif isinstance(eff, str) and _TENOR.match(eff):
+          start = _CLIENT.maturity(m, spot, _iso(eff))        # forward start, counted from spot
+      else:
+          start = _iso(eff)
+      term = kw["termination_date"]
+      # PIN the maturity: vendor resolves a tenor end against the PRICING market's spot (it floats);
+      # pricebt needs the date fixed at the trade date.
+      end = _iso(term)   # MISTAKE: tenor passed through unpinned (the ATM probe below still prices, on m)
+      notional = float(kw["notional_amount"]) * _sign(kw["pay_or_receive"])   # pricebt: signed, payer > 0
+      fr = kw.get("fixed_rate", "ATM")
+      mm = _ATM.match(fr) if isinstance(fr, str) else None
+      if mm:
+          probe = _CLIENT.swap("USD", start, end, fixed_rate_pct=None, notional=1e6, direction="PAY")
+          par_pct = _CLIENT.price([probe], m, ["PAR_PCT"])[0]["PAR_PCT"]   # vendor: PERCENT
+          spread_bp = float(mm.group(2) or 0.0) * (-1.0 if mm.group(1) == "-" else 1.0)
+          k = par_pct / 100.0 + spread_bp / 1e4                          # pricebt/gs: DECIMAL; 'ATM+x' is bp
+      elif isinstance(fr, str):
+          raise ValueError(f"unsupported fixed_rate {fr!r} (use 'ATM', 'ATM+x' in bp, or a decimal)")
+      else:
+          k = float(fr)                                                  # gs fixed_rate is already decimal
+      return {
+          "effective_date": _dt.date.fromisoformat(start),
+          "termination_date": end if _TENOR.match(end) else _dt.date.fromisoformat(end),   # MISTAKE: may stay "10Y"
+          "fixed_rate": k,              # decimal
+          "notional": notional,         # signed, + = payer
+      }
+
+  def build_swap(r):
+      # pricebt: signed notional, decimal rate, dates.  vendor: positive notional + direction, percent, ISO strings.
+      return _CLIENT.swap(
+          "USD", str(r["effective_date"]), str(r["termination_date"]),   # str(date) is ISO
+          fixed_rate_pct=r["fixed_rate"] * 100.0,                        # decimal -> percent
+          notional=abs(r["notional"]),
+          direction="PAY" if r["notional"] > 0 else "RECEIVE",
+      )
+
+  def _risk(m, t):
+      # memoise per (market, trade): npv/dv01/par_rate on the same date cost ONE vendor call
+      memo = m.__dict__.setdefault("_pricebt_memo", {})
+      if t not in memo:
+          memo[t] = _CLIENT.price([t], m, _MEASURES)[0]
+      return memo[t]
+
+  def delta_ladder(m, trades, weights):
+      out = {"1Y": 0.0, "2Y": 0.0, "5Y": 0.0, "10Y": 0.0, "30Y": 0.0}
+      live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
+      if not live:
+          return out
+      rows = _CLIENT.price([t for t, _ in live], m, ["BUCKET_DV01"])   # ONE batched call for the whole book
+      for (t, w), row in zip(live, rows):
+          for key, v in row["BUCKET_DV01"].items():
+              # vendor: key "USD.SOFR:2Y", PV change per 1bp DOWN (receiver > 0)
+              # pricebt: key "2Y", ccy per +1bp (payer > 0) -> strip the curve prefix and flip the sign.
+              # An unknown pillar raises KeyError on purpose: never drop risk silently.
+              out[key.split(":", 1)[1]] -= w * v
+      return out
+
+market:
+  expr: 'load_market(pricebt_date)'   # -> MarketHandle, or None (weekend, holiday, data gap, outside history)
+  key: meridian_usd_irs_mistake_maturity
+resolve:
+  expr: 'resolve_swap(market, kwargs)'
+trade:
+  expr: 'build_swap(resolved)'
+  build_on: resolve_date              # a TradeSpec holds no market state: build once, price on any market
+functions:
+  npv:      {expr: '_risk(market, trade)["PV"]', unit: ccy}                # vendor PV is ccy, holder's view: same as pricebt
+  dv01:     {expr: '-_risk(market, trade)["DV01"]', unit: ccy_per_bp}      # vendor: per 1bp DOWN, receiver > 0 -> pricebt: per +1bp, payer > 0
+  par_rate: {expr: '_risk(market, trade)["PAR_PCT"] * 100.0', unit: bp}    # vendor: percent -> pricebt: bp (1% = 100bp)
+portfolio_functions:
+  delta_ladder:
+    expr: 'delta_ladder(market, trades, weights)'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: USD-SOFR, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'   # signed by quantity (rebalance netting)
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate

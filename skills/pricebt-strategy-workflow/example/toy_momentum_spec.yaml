@@ -1,0 +1,24 @@
+# A complete, minimal study spec on the deterministic toy market (no pricing library needed).
+# Try the whole pipeline:
+#   $env:PYTHONPATH = "src;tests"
+#   python skills/pricebt-strategy-workflow/scripts/run_study.py skills/pricebt-strategy-workflow/example/toy_momentum_spec.yaml
+# Everything not given here is filled from skills/pricebt-strategy-intake/templates/strategy_spec.yaml and
+# listed under `assumptions:` in the output spec. The toy market is noise-free, so expect the
+# "implausible Sharpe" red flag: that is the check working, not a great strategy.
+spec_version: 1
+name: toy-momentum-demo
+idea: Follow the trend in the 10y rate - pay after it has risen over the last month, receive after it has fallen; rebalance monthly.
+hypothesis: Rates trend over monthly horizons after policy repricing; fails in range-bound regimes.
+archetype: momentum
+assets: [tests/assets/toy_usd_irs.yaml]
+instruments:
+  primary:
+    class: IRSwap
+    kwargs: {pay_or_receive: Pay, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+signal: {type: rate_momentum, instrument: primary, measure: par_rate, lookback: 20, params: {threshold_bp: 0.0}}
+rebalance: {frequency: 1m, trade_duration: next schedule}
+dates: {start: 2024-01-02, end: 2025-01-02, in_sample_end: 2024-09-30, frequency: 1b}
+costs: {model: dv01_bp, level: 0.25}
+risks_to_report: [Price, IRDeltaParallel]
+success_criteria: {min_sharpe: 0.5, min_oos_sharpe: 0.3, min_trades: 10}
+deliverables: {out_dir: reports/toy-momentum-demo, formats: [html, md]}
