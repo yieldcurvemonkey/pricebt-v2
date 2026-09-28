@@ -626,3 +626,48 @@ recorded in `docs/v2/LIVE_ARBS_REPORT.md`'s Results table; the full-suite re-run
 **Alternative considered:** none — this was a direct, explicit user instruction for the exact action
 the project's own documentation said only the user could authorize; no autonomous judgment call was
 needed here.
+
+---
+
+## 2026-09-28 — Safety finding: the ARBS notebook had been executed (uncommitted); reverted
+
+**Situation:** while staging the P5.2-results commit above, `git status` showed an unexpected
+~315-line diff on `notebooks/040304_mean_reversion_usd_sofr_arbs.ipynb`, a file no task in this
+session was asked to touch after P5.1 committed it (`1b9d236`) in its clean, unexecuted state (P5.1's
+own verifier independently confirmed at the time: "every cell has `execution_count=None` and 0
+outputs"). Inspecting the working-tree copy showed cell 1 had `execution_count=1` and a populated
+`outputs` array: a `ModuleNotFoundError: No module named 'pricebt'` traceback, dying at
+`from pricebt.backtests.actions import AddTradeAction` — the SECOND import statement in the first
+cell, well before the `PricebtSession.use(...)` call three lines later, and far before any of the
+config's own lazy `imports:`/`code:` blocks (which only execute on the FIRST evaluation of an
+expression against the ARBS asset, i.e. only after a session using it actually prices something).
+**ARBS was never imported or reached** — the notebook was run with a plain `jupyter`/`nbconvert`-style
+kernel that had no `PYTHONPATH` pointing at `src/`, so it crashed on pricebt's own import chain
+before getting anywhere near the safety boundary. This was never staged or committed by any phase
+commit (verified: `git log --follow -- <path>` shows only the single P5.1 commit).
+
+**Rule applied:** the hard safety limit ("never import or execute ARBS... P5.2 the live ARBS run is
+deferred... do not run this notebook") and IMPLEMENTATION_PLAN.md's general instruction to
+investigate unexpected state rather than silently overwrite it, then restore to the last known-good
+committed state once satisfied it's safe to do so.
+
+**Decision:** ran `git checkout -- notebooks/040304_mean_reversion_usd_sofr_arbs.ipynb`, restoring it
+byte-for-byte to the P5.1 commit's content (confirmed: `execution_count=None`, 0 outputs, on every
+cell, and `git diff` against HEAD empty afterward). Could not determine which of the many subagents
+across P5/P6 ran it, or when, given the number of agents in this session and that the change was
+never committed (so no commit timestamp to anchor it to) — recording this here as a process gap
+rather than leaving it unexplained: task prompts told agents not to run *the config* / not to import
+ARBS, but did not always say, in so many words, "do not execute this specific notebook file" to every
+agent that might have opened it out of general curiosity while reviewing. No actual harm occurred
+(the crash happened before any ARBS-adjacent code ran, so no network/production-DB/filesystem
+boundary was ever approached), but the intent — "built but not executed" — was briefly violated in
+the uncommitted working tree.
+
+**Evidence:** the diff inspected before reverting (cell 1's `execution_count`/`outputs` fields, the
+literal traceback text); `git log --follow` showing only one commit ever touched this file;
+`git status --porcelain` empty after the revert.
+
+**Alternative considered:** leave it and just not commit it — rejected: an uncommitted "notebook was
+executed" artifact sitting in the worktree is itself the kind of state a future session (or a
+careless `git add -A`) could accidentally commit or build on; reverting immediately to the clean
+committed state removes the risk entirely rather than merely deferring it.
