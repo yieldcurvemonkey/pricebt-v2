@@ -116,8 +116,6 @@ need a whole backtest, are copied from the source only.
 
 ## Pitfalls
 
-- **A comprehension inside an `expr`** cannot see injected names (`NameError: name 'market' is not
-  defined`). Move the loop into a `code:` helper.
 - **Declaring a zero-by-convention measure** on a swap or bond breaks mixed books with vol
   attribution. Map `0.0` instead (pattern 15).
 - **Mixed units across one book.** Every asset that can sit in one book must declare the same unit

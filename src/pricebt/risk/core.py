@@ -63,7 +63,8 @@ def aggregate_results(results: Iterable, allow_mismatch_risk_keys=False, allow_h
         if not allow_heterogeneous_types and not isinstance(result, type(results[0])):
             raise ValueError(f"Cannot aggregate heterogeneous types: {type(result)} vs {type(results[0])}")
         result_unit = getattr(result, "unit", None)
-        # `is not None` (gs tests truthiness): pricebt's dimensionless unit is `{}` (DESIGN.md section 4.2)
+        # pricebt DEV-R17: `is not None` (gs tests truthiness, so gs sums a `{}` unit with USD and
+        # labels the total USD): pricebt's dimensionless unit is `{}` (DESIGN.md section 4.2)
         if result_unit is not None:
             if unit is not None and unit != result_unit:
                 raise ValueError(f"Cannot aggregate results with different units for {getattr(result.risk_key, 'risk_measure', None)}")

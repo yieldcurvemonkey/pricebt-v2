@@ -42,6 +42,8 @@ IR_CONFIGS = [
     "skills/pricebt-connect-pricing-library/example/mistakes/maturity_not_pinned.yaml",
     "skills/pricebt-connect-pricing-library/example/mistakes/par_rate_in_percent.yaml",
     "skills/pricebt-connect-pricing-library/references/config-template.yaml",
+    "skills/pricebt-connect-pricing-library/references/config-template-swaption.yaml",
+    "skills/pricebt-connect-pricing-library/references/config-template-bond.yaml",
 ]
 
 

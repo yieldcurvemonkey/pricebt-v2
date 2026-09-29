@@ -1,8 +1,8 @@
 """AssetNamespace: one isolated evaluation namespace per loaded config (DESIGN.md section 4.4).
 
 On the first call to `eval()`, it runs the config's `imports` then its `code` -- lazily, once,
-into a private dict -- then evaluates the requested compiled expression in that dict with a fresh
-set of injected locals. Two instances never share state, even for the same config.
+into a private dict -- then evaluates the requested compiled expression in a per-call copy of that
+dict with the injected names added. Two instances never share state, even for the same config.
 
 Works against anything shaped like `config.AssetConfig` or `fx.FxConfig`: an object exposing
 `.name`, `.imports_code`, `.imports_src`, `.code_code`, `.code_src`, `.code(key)` and
@@ -39,12 +39,15 @@ class AssetNamespace:
         return ns
 
     def eval(self, key: str, **injected: Any) -> Any:
-        """Evaluate the compiled expression stored under `key`, with `injected` as fresh locals."""
+        """Evaluate the compiled expression stored under `key` in a per-call copy of the asset's
+        namespace updated with `injected` (injected names win). Globals, not locals, so a
+        comprehension, generator or lambda inside the expression sees them too; the copy keeps the
+        shared namespace unmutated, and helpers defined in `code` keep their own module globals."""
         date = injected.get("pricebt_date")
         csa = injected.get("pricebt_csa")
         globals_ = self._ready(date, csa)
         code = self._cfg.code(key)
         try:
-            return eval(code, globals_, dict(injected))
+            return eval(code, {**globals_, **injected})
         except Exception as exc:
             raise AssetEvaluationError(self._cfg.name, key, self._cfg.expr_src(key), date, csa) from exc

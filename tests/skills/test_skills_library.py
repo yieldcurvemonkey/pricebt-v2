@@ -16,7 +16,7 @@ SKILL_DIRS = sorted(p for p in SKILLS.iterdir() if p.is_dir() and p.name.startsw
 MD_FILES = sorted(SKILLS.rglob("*.md"))
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 CITED = re.compile(r"`((?:src|tests|skills|docs|configs|tools|notebooks)/[^`\s]+)`")
-ABSOLUTE_USER_PATH = re.compile(r"(?i)([a-z]:\\users\\|/c/users/|/home/[a-z]+/)")
+ABSOLUTE_USER_PATH = re.compile(r"(?i)([a-z]:[\\/]users[\\/]|/c/users/|/home/[a-z]+/)")
 
 
 def _frontmatter(path: Path) -> dict:
@@ -90,6 +90,12 @@ def test_readme_lists_every_skill():
     readme = (SKILLS / "README.md").read_text(encoding="utf-8")
     unlisted = [p.name for p in SKILL_DIRS if f"({p.name}/SKILL.md)" not in readme]
     assert not unlisted, f"skills/README.md does not list {unlisted}"
+
+
+def test_the_path_check_catches_both_slash_forms():
+    for path in ("C:\\Users\\someone\\x", "C:/Users/someone/x", "/c/users/someone/x", "/home/someone/x"):
+        assert ABSOLUTE_USER_PATH.search(path), path
+    assert not ABSOLUTE_USER_PATH.search("src/pricebt/users.py")
 
 
 def test_no_machine_specific_absolute_paths_in_skills():

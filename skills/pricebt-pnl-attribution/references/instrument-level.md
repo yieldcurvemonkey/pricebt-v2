@@ -62,7 +62,7 @@ risk_measures:
 1. **Value every trade on `market`** at the pricing date: the base.
 2. **For each factor k** (curve, vol surface or cube, credit spread, FX): value on `market` with **only factor k** replaced by its value in `market_to`. Row k = that value − base, weighted.
 3. **Value on `market_to`**: the total. `CROSSES` = total − Σ rows.
-4. **Hold the valuation date at `pricebt_date`** in every revaluation, so that no time passes. A library that values on its market object's own date must be given the valuation date explicitly. The toy swaption takes `pricebt_date` for this reason; the toy swap and bond are carry-free at a fixed date, so they do not need it. A memo in such a function keys on the market object **and** `pricebt_date` (and the trade): pricebt hands the same cached market object to its own date's evaluations and to this one.
+4. **Hold the valuation date at `pricebt_date`** in every revaluation, so that no time passes. A library that values on its market object's own date must be given the valuation date explicitly, so that `market_to`'s own date moves no time: no discounting carry, no coupon dropped, no time value lost. The toy swap, swaption and bond all take `pricebt_date` and re-anchor each market's curve there (`at` in `tests/toylib/irrisk.py`); `npv` does the same, so `Price` under a `CloseMarket` override is market moves only too. A memo in such a function keys on the market object **and** `pricebt_date` (and the trade): pricebt hands the same cached market object to its own date's evaluations and to this one.
 
 How to do step 2 depends on your library's shape:
 

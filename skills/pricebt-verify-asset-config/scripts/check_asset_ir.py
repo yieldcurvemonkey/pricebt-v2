@@ -188,8 +188,13 @@ def _is_amount(key: str, spec, inst: Optional[str] = None) -> bool:
     return spec.unit in _AMOUNT_UNITS
 
 
+def _names(code) -> set:
+    """Every name an expression reads, nested scopes included (pricebt's own discovery does the same)."""
+    return set(code.co_names).union(*(_names(c) for c in code.co_consts if hasattr(c, "co_names")))
+
+
 def _is_relative_fn(cfg, fname: str) -> bool:
-    return bool(RELATIVE_NAMES & set(cfg.code(fname).co_names))
+    return bool(RELATIVE_NAMES & _names(cfg.code(fname)))
 
 
 def generic_view(ctx):
@@ -797,7 +802,7 @@ def check_fd_params(ctx) -> List[CheckResult]:
         m = _risk_obj(key)
         if not isinstance(m, FD) or mapping.scalar is None:
             continue
-        names = set(cfg.code(mapping.scalar).co_names)
+        names = _names(cfg.code(mapping.scalar))
         used = [p for p in FD_PROBE if f"pricebt_{p}" in names]
         if not used:
             try:

@@ -23,7 +23,7 @@ market:
 resolve:
   expr: 'tb.resolve_bond(market, kwargs)'
 functions:
-  npv:             {expr: 'tb.npv(market, trade)', unit: ccy}
+  npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # valued on the pricing date (a CloseMarket override passes no time)
   delta:           {expr: 'tb.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
   yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
@@ -57,7 +57,7 @@ portfolio_functions:
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
   pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
-    expr: 'tb.pnl_explain(market, market_to, trades, weights)'
+    expr: 'tb.pnl_explain(market, market_to, trades, weights, pricebt_date)'
     unit: ccy
     returns: buckets
 attributes:

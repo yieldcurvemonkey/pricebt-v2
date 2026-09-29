@@ -228,7 +228,9 @@ python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:ca
 
 - **One client per process**, created in `code:`, never per call.
 - **Memoise a value on (market, `pricebt_date`, trade, `pricebt_*` params):** the memo on `m.__dict__`,
-  keyed `(pricebt_date, trade)`, since `CloseMarket` hands one market to two dates. One call per trade.
+  keyed `(pricebt_date, trade, pricebt_bump_size, ...)` (every `pricebt_*` parameter the function
+  reads), since `CloseMarket` hands one market to two dates and a delta must not ignore its bump size.
+  One call per trade.
 - **Batch portfolio calls.** `portfolio_functions:` receive all of this asset's trades on one date
   (`trades`, `weights`): send them in ONE library call.
 - **`build_on: resolve_date`** when the trade object is market-independent.
@@ -268,9 +270,10 @@ python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:ca
   same unit for each level measure, or attribution is meaningless.
 - **NaN on a dead trade.** `pnl_explain` has no NaN guard: one NaN poisons every later cumulative
   value. Sensitivities go to `0.0`, and levels keep their last live value.
-- **A comprehension inside an `expr`** (`sum(f(market, x) for x in ...)`) raises
-  `NameError: name 'market' is not defined`: injected names are locals of `eval`, and a
-  comprehension's scope cannot see them. Put the loop in a `code:` helper and pass `market` in.
+- **Loops inside an `expr`** (`sum(f(market, x) for x in ...)`) work: injected names reach
+  generators, comprehensions and lambdas (fixed). A `code:` helper sees only its asset's namespace,
+  so pass `market` in as an argument. Name a pass-through parameter (`pricebt_bump_size`) at the
+  expression's top level: pricebt looks for it there.
 - **A bump parameter you did not name.** `IRDelta(bump_size=5)` reaches your function only if its
   expression names `pricebt_bump_size`. Otherwise it raises, which is the honest default.
 - **Raising instead of returning `None`** on a closed day. Catch the library's specific exceptions,

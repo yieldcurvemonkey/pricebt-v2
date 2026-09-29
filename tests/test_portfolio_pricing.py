@@ -176,3 +176,29 @@ def test_one_day_hedge_whose_leg_ladder_is_empty_on_its_only_date_r2_27():
     for d in (D1, D2, D3):
         net = bt.results[d][IRDelta].transform(ResultWithInfoAggregator()).aggregate()
         assert float(net) == pytest.approx(0.0, abs=1e-6)
+
+
+# ------------------------------------------------------------------------------ R2-31: a resolved book round-trips
+
+
+def test_a_resolved_book_round_trips_through_frame_and_csv_to_the_same_trades(tmp_path):
+    """A resolved leaf's to_frame row keeps its gs fields (direction, size) under the library's
+    resolved terms, so from_frame/from_csv rebuild the same trade, not the config's defaults
+    (Receive/Buy, 1e6): each rebuilt leaf prices exactly as the original on the same date."""
+    from pricebt.instrument import Bond, IRSwaption
+
+    PricebtSession.use(assets=[ASSETS / "toy_usd_irs_full.yaml", ASSETS / "toy_usd_swaption.yaml", ASSETS / "toy_usd_bond.yaml"])
+    d = date(2024, 3, 1)
+    book = Portfolio([
+        IRSwap("Pay", "5y", "USD", 5e6, fixed_rate="ATM+50", name="swap"),
+        IRSwaption("Receive", "10y", "USD", notional_amount=2e6, expiration_date="1y", buy_sell="Sell", name="swaption"),
+        Bond(identifier="TOY 4.25 2034-11-15", size=3e6, buy_sell="Sell", settlement_currency="USD", name="bond"),
+    ])
+    with PricingContext(pricing_date=d):
+        book.resolve()
+        before = [float(x) for x in book.calc(Price)]
+    book.to_csv(tmp_path / "book.csv")
+    for rebuilt in (Portfolio.from_frame(book.to_frame()), Portfolio.from_csv(tmp_path / "book.csv")):
+        with PricingContext(pricing_date=d):
+            after = [float(x) for x in rebuilt.calc(Price)]
+        assert after == pytest.approx(before, rel=1e-12)

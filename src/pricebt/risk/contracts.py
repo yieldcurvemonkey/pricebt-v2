@@ -65,8 +65,9 @@ def _req(measure: str, kind: str, forms: str, doc: str) -> MeasureRequirement:
 
 # IR_RISK_DESIGN section 2.2 as amended by section 00 (R2-1..R2-8). Holder-signed, per unit trade
 # (pricebt applies quantity). "s" = scalar form, "b" = bucketed form.
-# pricebt DEV-I12 (own-rate IRDelta/IRGammaParallel/IRFwdRate), DEV-I15 (Theta per day, total
-# return, own rate/vol fixed), DEV-I17 (ExpiryInYears for swaps/bonds): the semantics below.
+# pricebt DEV-I12 (own-rate IRDelta/IRGammaParallel/IRFwdRate), DEV-I13 (diagonal IRGamma
+# ladder), DEV-I15 (Theta per day, total return, own rate/vol fixed), DEV-I17 (ExpiryInYears for
+# swaps/bonds): the semantics below.
 _IR_BASE = (
     _req("Price", "value", "scalar",
          "PV in the function currency, holder-signed; it either drops each flow on its payment date (Cashflows then lists the flows still to drop) or never drops paid flows (total return: Cashflows is empty)."),
@@ -105,9 +106,12 @@ _IR_BASE = (
          "one calendar day of carry holding the own IRFwdRate and IRAnnualImpliedVol fixed: Price(t+1d) + cashflows Price drops in (t, t+1d] - Price(t), ccy PER DAY "
          "(DEV-I15; curve translated DF(x)/DF(t+1d), never rolled). A per-year IRTheta = 365 x Theta: never map Theta to a per-year function."),
     _req("ExpiryInYears", "time", "scalar",
-         "max(final_or_expiry - t, 0).days / 365 (calendar days, ACT/365F): a swaption's expiry, a swap's or bond's final date (DEV-I17). Intensive."),
+         "max(final_or_expiry - t, 0).days / 365 (calendar days, ACT/365F): a swaption's expiry, a swap's or bond's final date (DEV-I17). Intensive. "
+         "It stays 0 from expiry on, so PNL_theta (Theta x change in ExpiryInYears x -365) attributes no carry after it: an exercised swaption's Theta (the underlying swap's, R2-7) lands in the residual."),
     _req("Annuity", "annuity", "scalar",
-         "PV of the fixed leg paying 1.0 per annum (1e4 x the fixed-leg pv01), ccy; bond: PV of 1.0 per annum on its schedule."),
+         "PV of the fixed leg paying 1.0 per annum (1e4 x the fixed-leg pv01), ccy; bond: PV of 1.0 per annum on its schedule. "
+         "Holder-signed like Price: pay-fixed swap > 0, receive-fixed < 0; bought swaption > 0, payer or receiver (the underlying's annuity on the swaption's signed notional); long bond > 0. "
+         "A library whose fixed-leg bp value carries the fixed leg's own sign (negative for a payer) needs Annuity = -1e4 x that value."),
     _req("Cashflows", "table", "frame",
          "the flows still included in Price that Price will drop on their payment date (payment_date > pricing date), holder-signed, one row each; empty for a total-return Price (R2-6). "
          "Required columns payment_date, payment_amount, currency, payment_type; returns: frame with scale_columns including payment_amount."),

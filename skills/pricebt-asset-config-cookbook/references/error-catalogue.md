@@ -73,7 +73,6 @@ Warnings (`UserWarning`; the config still loads, and `python -W error` turns the
 
 | Message contains | Cause | Fix |
 |---|---|---|
-| `NameError: name 'market' is not defined` | a comprehension or generator expression inside an `expr`: injected names are `eval` locals, invisible in a comprehension's own scope | move the loop into a `code:` helper and pass `market` (or `trade`, ...) as an argument |
 | `NotImplementedError: TODO (asset-config template)` | a primitive of a connect-skill template is still a stub | implement that `lib_*` primitive with your library's call |
 
 ## At pricing

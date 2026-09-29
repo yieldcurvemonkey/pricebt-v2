@@ -7,7 +7,7 @@ section 8, R2-30, R2-32; pricebt DEV-M1, DEV-M2).
 - `PnlExplain(CloseMarket(date=T))` maps to a `returns: buckets` portfolio function that also gets
   `market_to` and `pricebt_to_date`; the toys revalue by risk factor (rows `IR`, `IR VOL`/`CREDIT`,
   then `CROSSES` = the rest), so the rows sum to Price on T's market minus Price, pricing date held
-  (only the swaption toy has time value to hold: it values on `pricebt_date`).
+  (every toy values npv and the explain on `pricebt_date`, the other market re-anchored there).
 """
 from __future__ import annotations
 
@@ -150,15 +150,14 @@ def test_close_market_override_prices_on_that_dates_market():
     for name, trade in _toy_trades().items():
         override = float(_calc(trade, Price, market=CloseMarket(date=T1)))
         assert override != pytest.approx(float(_calc(trade, Price)), abs=1.0), name
-        if name == "swaption":
-            # valued on pricebt_date (F): a week more time value than on T1 itself
-            assert override - float(_calc(trade, Price, d=T1)) > 1.0
-        else:
-            # the swap and bond toys never read pricebt_date: T1's market is T1
-            assert override == float(_calc(trade, Price, d=T1)), name
+        # every toy values on pricebt_date (F) with T1's market re-anchored there, so a week of
+        # time (swap and bond carry, swaption time value) separates it from the price on T1 itself
+        assert abs(override - float(_calc(trade, Price, d=T1))) > 1.0, name
     # FX is market data too: a EUR swap's USD price uses T1's EURUSD
     eur = _resolved(IRSwap(notional_currency="EUR", termination_date="10y", pay_or_receive="Pay"))
-    assert float(_calc(eur, Price(currency="USD"), market=CloseMarket(date=T1))) == pytest.approx(float(_calc(eur, Price(currency="USD"), d=T1)), rel=1e-12)
+    fx_t1 = float(_calc(eur, Price(currency="USD"), d=T1)) / float(_calc(eur, Price, d=T1))
+    override_eur = float(_calc(eur, Price, market=CloseMarket(date=T1)))
+    assert float(_calc(eur, Price(currency="USD"), market=CloseMarket(date=T1))) == pytest.approx(override_eur * fx_t1, rel=1e-12)
 
 
 def _ladder_usd(priceable, d, market=None) -> float:
@@ -245,9 +244,9 @@ def test_relative_function_sees_both_markets():
     [("swap", ["IR", "CROSSES"]), ("swaption", ["IR", "IR VOL", "CROSSES"]), ("bond", ["IR", "CREDIT", "CROSSES"])],
 )
 def test_rows_sum_to_the_price_change_holding_the_pricing_date(name, labels):
-    """Rows = Price(F on T1's market) - Price(F): market moves only, no time. Only the swaption toy
-    has time value to hold (it values on pricebt_date); the swap and bond toys are carry-free there
-    (they value on the market's date), so for them Price(F on T1's market) == Price(T1)."""
+    """Rows = Price(F on T1's market) - Price(F): market moves only, no time. Every toy values its
+    npv and its explain on pricebt_date with the other date's market re-anchored there, so no
+    coupon drops and nothing carries (tests/test_toylib_ir.py's frozen-world test pins that)."""
     _toys()
     trade = _toy_trades()[name]
     frame = _calc(trade, PnlExplain(CloseMarket(date=T1)))

@@ -483,3 +483,11 @@ Priorities: **P0** blocks correct swaption/bond configs; **P1** needed for the r
 | D3 | `skills/pricebt-strategy-recipes/scripts/recipes.py:111-123` | `direction_sign`/`flipped` are wrong for swaptions (use option type, ignore `buy_sell`); latent until a swaption momentum/curve spec is run |
 | D4 | `skills/pricebt-strategy-intake/scripts/spec.py:312-314` | `parse_risk` passes every kwarg as a string; harmless while only `aggregation_level`/`currency` are accepted |
 | D5 | `skills/pricebt-verify-asset-config/scripts/check_asset.py:85`, `:123-129` | `_ATM_RE` matches only `atm...`, not the DESIGN §13 option grammar `'A-50'`; an unpinned `'A-50'` strike would pass `resolve_pins_terms` |
+
+## Status after v2-ir-risk (2026-09-29)
+
+Appended note; the body above is the pre-implementation evidence and is left as written.
+
+- **Done:** U1-U18 and U20-U36 (commit `86dfeae`; the skills tests under `tests/skills/` cover them).
+- **Skipped on purpose:** U19 (a swaption and bond extension of the fictional `meridian_sdk` worked example). The runnable contract templates `skills/pricebt-connect-pricing-library/references/config-template-swaption.yaml` and `config-template-bond.yaml`, filled with the toy library by `tests/skills/test_skill_connect_example.py`, carry the same teaching load.
+- **Resolved concern: "a per-year Theta passes every check".** It no longer does. `check_asset_ir.py`'s `ir_theta` row FAILs a theta that "looks per year" against the step's implied one-day carry, `ir_taylor` flags the step whose Taylor sum it dwarfs (`tests/skills/test_skill_check_asset_ir.py`, fixture `bad_swaption_theta_per_year.yaml`), and the P&L-attribution grade (`skills/pricebt-pnl-attribution/scripts/attribution.py`, `grade`/`grade_reason`: "per-year theta, a x100 or x1e4 unit?") fails the residual it leaves in a backtest.

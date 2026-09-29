@@ -277,7 +277,10 @@ class Portfolio(Priceable):
                     # pricebt DEV-I2: as_dict() carries a quantity_ column (see instrument/__init__.py)
                     # that gs's own static-data dict doesn't have, and a leaf that names its asset
                     # adds a pricebt_asset column, so from_frame can rebuild it (IR_RISK_DESIGN R2-31).
-                    d = dict(c.as_dict())
+                    # A resolved leaf's as_dict() is the library's resolved terms, which need not
+                    # hold the gs fields (direction, size): its kwargs fill them underneath, so the
+                    # row rebuilds the same trade rather than the config's defaults.
+                    d = {**c.kwargs, **c.as_dict()}
                     if c.pricebt_asset is not None:
                         d["pricebt_asset"] = c.pricebt_asset
                     d["instrument"] = c

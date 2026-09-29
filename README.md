@@ -59,10 +59,35 @@ units, evaluation rules, `build_on`, FX configs, a toy walkthrough, and the ARBS
 [`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`](configs/assets/usd_sofr_ois_interest_rate_swap.yaml)
 follows. FX configs specifically are covered in [`configs/fx/README.md`](configs/fx/README.md).
 
+## Interest-rate pricing and risk
+
+pricebt ports gs_quant's IR pricing and risk surface for swaps, swaptions and bonds
+([`docs/v2/IR_RISK_DESIGN.md`](docs/v2/IR_RISK_DESIGN.md)):
+
+- **Measures.** The whole gs 2.1.17 catalogue (`IRDelta`, `IRDeltaParallel`, `IRGammaParallel`,
+  `IRVega`, `IRVanna`, `IRVolga`, `IRFwdRate`, `IRAnnualImpliedVol`, `Theta`, `Annuity`,
+  `Cashflows`, ...) importable from `pricebt.risk`, with measure parameters (`bump_size`, ...)
+  passed through to the config functions that name them.
+- **Contracts.** An `IRSwap`, `IRSwaption` or `Bond` asset config must map every measure of its
+  class's contract, or declare it unsupported with a reason; loading fails otherwise. The tables,
+  units and signs are in the guide's
+  ["Measure contracts"](docs/v2/ASSET_CONFIG_GUIDE.md#measure-contracts-irswap-irswaption-bond) section.
+- **Portfolio.** gs `Portfolio` and `PortfolioRiskResult` semantics: nested portfolios, paths,
+  `subset`, `to_frame`, `aggregate`, historical results, `from_frame`/`to_csv`.
+- **P&L decomposition.** `swaption_pnl_definition()`, `bond_pnl_definition()` and
+  `ir_pnl_definition()` for `run_backtest(pnl_explain=...)`; `BackTest.pnl_explain_table()` puts the
+  attribution next to the actual and economic (coupon-inclusive) P&L per step; and
+  `PnlExplain(CloseMarket(date=...))` explains a book between two markets.
+
+A runnable tour on the toy assets:
+[`notebooks/ir_pricing_and_risk_toy.ipynb`](notebooks/ir_pricing_and_risk_toy.ipynb) (source
+[`notebooks/src/ir_pricing_and_risk_toy.py`](notebooks/src/ir_pricing_and_risk_toy.py)).
+
 ## More
 
 - [`docs/v2/README.md`](docs/v2/README.md) — reading order for the full design and research notes.
 - [`docs/v2/DESIGN.md`](docs/v2/DESIGN.md) — requirements, architecture, contracts.
 - [`docs/v2/IMPLEMENTATION_PLAN.md`](docs/v2/IMPLEMENTATION_PLAN.md) — phased build plan and gates.
+- [`docs/v2/IR_RISK_DESIGN.md`](docs/v2/IR_RISK_DESIGN.md) — the IR pricing-and-risk design, and what was built.
 - [`docs/v2/DEVIATIONS.md`](docs/v2/DEVIATIONS.md) — every intentional difference from gs_quant,
   with the test that covers it.

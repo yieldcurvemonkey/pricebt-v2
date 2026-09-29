@@ -113,6 +113,32 @@ def test_getitem_name_and_instrument_first_match_at_any_depth(nested):
         prr["nope"]
 
 
+def test_a_portfolio_of_instruments_indexes_as_the_flat_subset_of_its_children(nested):
+    """gs `is_iterable(item, InstrumentBase)`: a Portfolio iterates its direct children, so one of
+    instruments -- a member sub-portfolio or not -- gives the unnamed flat subset of them."""
+    prr, (s1, s2, s3, s4, s5) = nested
+    loose = prr[Portfolio([s1, s5])]
+    assert list(loose) == [1.0, 5.0] and loose.portfolio.name is None
+    member = prr[prr.portfolio.priceables[1]]  # the USD sub-portfolio
+    assert list(member) == [3.0, 4.0] and member.portfolio.name is None
+
+
+def test_a_resolved_instrument_finds_only_a_leaf_priced_on_its_resolution_date():
+    """gs `__paths`: looked up through its unresolved form, a resolved instrument matches only a
+    result in its own resolution context (pricebt: its resolution date)."""
+    a = _swap("a")
+    resolved = a.clone()
+    resolved._set_resolution({"fixed_rate": 0.03}, RiskKey(None, D0, None, None, None, None), None, a)
+    assert _prr(Portfolio([a]), [_v(2.0, D0)])[resolved] == 2.0
+    with pytest.raises(KeyError, match="resolved in a different pricing context"):
+        _prr(Portfolio([a]), [_v(1.0, D1)])[resolved]
+
+
+def test_result_takes_gs_timeout(nested):
+    prr, _ = nested
+    assert prr.result(timeout=5) is prr
+
+
 def test_list_of_instruments_and_slice_give_subsets(nested):
     prr, (s1, s2, s3, s4, s5) = nested
     flat = prr[[s1, s5]]
@@ -262,6 +288,12 @@ def test_add_of_different_portfolios_and_measures_never_serves_one_measure_for_a
     assert list(c[DollarPrice].to_frame(None, None, None)["instrument_name"]) == ["s2"]  # gs get_records
     frame = c.to_frame()
     assert frame.loc["s1", Price] == 1.0 and frame.loc["s2", DollarPrice] == 5.0 and pd.isna(frame.loc["s1", DollarPrice])
+    # gs's Portfolio == is one-way (Portfolio([s1]) == Portfolio([s1, s2])), so gs takes its
+    # same-portfolio branch, zips one future and silently drops s2; pricebt needs equality both ways
+    wider = _prr(Portfolio([s1, s2]), [_v(2.0, m=DollarPrice), _v(3.0, m=DollarPrice)], (DollarPrice,))
+    assert Portfolio([s1]) == wider.portfolio and not wider.portfolio == Portfolio([s1])
+    kept = _prr(Portfolio([s1]), [_v(1.0)]) + wider
+    assert kept[DollarPrice][s2] == 3.0 and kept[Price][s1] == 1.0
     nested = _prr(Portfolio([s1, Portfolio([s3], name="sub")]), [_v(1.0), [_v(3.0)]]) + b
     with pytest.raises(ValueError, match="not computed"):
         nested[DollarPrice]  # the nested sub-result keeps its own measures (gs)
@@ -291,7 +323,8 @@ def test_scaling_a_table_scales_its_scale_columns_only_dev_r9():
     both = PortfolioRiskResult(Portfolio([a]), (Price, IRDelta), [PricingFuture(MultipleRiskMeasureResult(a, {Price: _v(1.0), IRDelta: table}))])
     doubled = (both * 2)["a"]
     assert doubled[Price] == 2.0 and list(doubled[IRDelta]["payment_amount"]) == [14.0] and doubled[IRDelta].pricebt_table
-    assert list((both["a"] + 1)[IRDelta]["payment_amount"]) == [8.0]
+    with pytest.raises(ValueError, match="Cannot add a number to a table"):
+        both["a"] + 1  # pricebt DEV-R9: + k would shift the amounts, which means nothing
     empty = make_table_frame(pd.DataFrame(columns=["currency"]), scale_columns=["payment_amount"])
     assert (_prr(Portfolio([a]), [empty], (IRDelta,)) * 2)["a"].empty  # no scale column to scale
 
@@ -306,6 +339,9 @@ def test_aggregate_error_contract():
         _prr(port, [_v(1.0), _ladder({"1y": 1.0}, m=Price)]).aggregate()
     with pytest.raises(ValueError, match="Cannot aggregate results with different units for Price"):
         _prr(port, [_v(1.0), _v(2.0, unit={"EUR": 1})]).aggregate()
+    # pricebt DEV-R17: a dimensionless `{}` unit is a unit (gs's truthiness test sums it into USD)
+    with pytest.raises(ValueError, match="Cannot aggregate results with different units"):
+        aggregate_results([_v(1.0, unit={}), _v(2.0)], allow_mismatch_risk_keys=True)
     two_dates = _prr(port, [_v(1.0, D0), _v(2.0, D1)])
     with pytest.raises(ValueError, match="Cannot aggregate results with different pricing keys"):
         two_dates.aggregate()
@@ -341,6 +377,11 @@ def test_aggregate_historical_bucketed_and_tables():
     tables = [make_table_frame([{"payment_amount": x}], risk_key=_key(m=IRDelta)) for x in (1.0, 2.0)]
     rows = _prr(Portfolio([a, b]), tables, (IRDelta,)).aggregate()
     assert rows.pricebt_table is True and list(rows["instrument_name"]) == ["a", "b"] and list(rows["payment_amount"]) == [1.0, 2.0]
+    # pricebt DEV-R11: identical rows of two positions stay two rows (gs's aggregate_risk groupby
+    # merges them into one)
+    same = [make_table_frame([{"payment_date": D1, "payment_amount": 100.0}], risk_key=_key(m=IRDelta)) for _ in (a, b)]
+    twin = _prr(Portfolio([a, b]), same, (IRDelta,)).aggregate()
+    assert list(twin["payment_amount"]) == [100.0, 100.0] and list(twin["instrument_name"]) == ["a", "b"]
 
 
 def test_a_date_the_history_was_not_priced_on_is_a_key_error_dev_r16():
@@ -364,13 +405,18 @@ def test_a_date_the_history_was_not_priced_on_is_a_key_error_dev_r16():
 
 def test_date_indexing_dispatches_per_leaf_so_an_all_empty_history_still_slices():
     """gs has no up-front `dates` check: ladders empty on every date (no dates) still slice by a
-    priced date; a single-date ladder still raises."""
+    priced date. A single-date frame is gs's `.loc` on its row index: a KeyError (so `get` gives
+    the default), or the frame itself when empty; a single-date scalar raises RuntimeError."""
     a = _swap("a")
     hv = _prr(Portfolio([a]), [DataFrameWithInfo.compose([_ladder({}, D0), _ladder({}, D1)])], (IRDelta,))
     assert hv.dates == ()
     assert hv[D0]["a"].empty and hv[D0]["a"].risk_key.date == D0
-    with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
-        _prr(Portfolio([a]), [_ladder({"1y": 1.0})], (IRDelta,))[D0]
+    single = _prr(Portfolio([a]), [_ladder({"1y": 1.0})], (IRDelta,))
+    with pytest.raises(KeyError):
+        single[D0]
+    assert single.get(D0, "dflt") == "dflt"
+    empty = _ladder({})
+    assert _prr(Portfolio([a]), [empty], (IRDelta,))[D0]["a"] is empty
     with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
         _prr(Portfolio([a]), [_v(1.0)])[D0]
 
@@ -381,7 +427,7 @@ def test_a_table_is_historical_by_its_priced_dates_never_by_a_date_column():
     own = make_table_frame([{"date": june, "amount": 5.0}], risk_key=_key(m=IRDelta))  # a single-date table
     single = _prr(Portfolio([a]), [own], (IRDelta,))
     assert single.dates == ()
-    with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
+    with pytest.raises(KeyError, match="single-date result"):
         single[june]
     day = [make_table_frame([{"amount": x}], risk_key=_key(d, IRDelta), scale_columns=["amount"]) for x, d in ((1.0, D0), (2.0, D1))]
     hist = _prr(Portfolio([a]), [day[0]], (IRDelta,)) + _prr(Portfolio([a]), [day[1]], (IRDelta,))
@@ -426,7 +472,7 @@ def test_mrmr_to_frame():
 def test_float_with_info_arithmetic_follows_gs():
     a, b = _v(3.0), _v(1.0, D1)
     assert type(a * 2) is FloatWithInfo and (a * 2).unit == USD and (a * 2).risk_key == a.risk_key
-    assert type(2 * a) is float and type(a - b) is float and type(a / 2) is float and type(-a) is float
+    assert type(a - b) is float and type(a / 2) is float and type(-a) is float
     s = a + b
     assert s == 4.0 and s.risk_key.date is None and s.risk_key.risk_measure is Price  # combine_risk_key
     assert a.to_frame() is a
@@ -438,6 +484,11 @@ def test_float_with_info_keeps_its_type_under_sum_and_a_none_unit_adds_dev_r14()
     assert (a + FloatWithInfo(1.0)).unit == USD and (FloatWithInfo(1.0) + a).unit == USD
     with pytest.raises(ValueError, match="FloatWithInfo unit mismatch"):
         a + _v(1.0, unit={"EUR": 1})
+    # `k * x` keeps the unit too (gs: a plain float, which `+ usd` would then label USD)
+    eur = _v(1.0, unit={"EUR": 1})
+    assert type(2 * eur) is FloatWithInfo and (2 * eur).unit == {"EUR": 1} and (2 * eur).risk_key == eur.risk_key
+    with pytest.raises(ValueError, match="FloatWithInfo unit mismatch"):
+        2 * eur + a
 
 
 def test_aggregate_of_no_leaves_is_zero_and_plain_floats_sum_dev_r15():

@@ -14,8 +14,9 @@ underlying swap (value and sensitivities); an unexercised leg is worth 0 with 0 
 Levels continue after expiry: the live F, the vol at expiry (R2-7).
 
 Only `npv` and `pnl_explain` take a `value_date` (the config passes `pricebt_date`, so under a
-CloseMarket override they value on the pricing date with the override's market); every other
-function values on the market's own date (`curve.ref_date`).
+CloseMarket override they value on the pricing date with the override's market re-anchored there,
+toylib.irrisk.at: no time value lost, no discounting carry); every other function values on the
+market's own date (`curve.ref_date`).
 """
 from __future__ import annotations
 
@@ -124,13 +125,13 @@ def _exercised(curve, trade, is_call: bool) -> bool:
     return F > K if is_call else F < K
 
 
-def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False, value_date: Optional[date] = None) -> float:
+def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False) -> float:
     """`exercise_on_curve`: at T == 0 decide exercise on this curve's F (intrinsic value) rather
-    than the toy world's expiry F -- theta's frozen-F step onto expiry (R2-4). `value_date`: the
-    date time to expiry is measured from (default: the curve's own date)."""
+    than the toy world's expiry F -- theta's frozen-F step onto expiry (R2-4). Time to expiry is
+    measured from the curve's own date."""
     exp, term, K = trade["expiration_date"], trade["termination_date"], trade["strike"]
     ann, F = tr._annuity(curve, exp, term), _fwd(curve, trade)
-    T = (exp - (value_date or curve.ref_date)).days / 365.0
+    T = (exp - curve.ref_date).days / 365.0
     total = 0.0
     for is_call in _legs(trade["pay_or_receive"]):
         if T > 0.0 or (T == 0.0 and exercise_on_curve):
@@ -142,10 +143,10 @@ def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False, va
 
 def npv(market, trade: dict, value_date: Optional[date] = None) -> float:
     """`value_date` (the config passes `pricebt_date`): under a CloseMarket override the swaption
-    is valued on the pricing date with the override's market, so it keeps its time value (the
-    swap and bond toys value on the market's date: they have no carry-free time component)."""
+    is valued on the pricing date with the override's market re-anchored there (as the swap and
+    bond toys), so no time passes: it keeps its time value and its discounting does not carry."""
     tr.EVAL_COUNTS["npv"] += 1
-    return _value(market.curve, market.sigma, trade, value_date=value_date)
+    return _value(ir.at(market.curve, value_date), market.sigma, trade)
 
 
 def vega(market, trade: dict) -> float:
@@ -256,13 +257,13 @@ def pnl_explain(market, market_to, trades, weights, value_date: Optional[date] =
     """PnlExplain by full revaluation, weighted, every value on `value_date` (the pricing date, as
     `npv`) so no time passes: IR = the curve moved with sigma held, IR VOL = sigma moved with the
     curve held, CROSSES = the rest of the whole move."""
-    c0, s0, c1, s1 = market.curve, market.sigma, market_to.curve, market_to.sigma
+    c0, s0, c1, s1 = ir.at(market.curve, value_date), market.sigma, ir.at(market_to.curve, value_date), market_to.sigma
     parts, total = {"IR": 0.0, "IR VOL": 0.0}, 0.0
     for trade, w in zip(trades, weights):
-        base = _value(c0, s0, trade, value_date=value_date)
-        parts["IR"] += w * (_value(c1, s0, trade, value_date=value_date) - base)
-        parts["IR VOL"] += w * (_value(c0, s1, trade, value_date=value_date) - base)
-        total += w * (_value(c1, s1, trade, value_date=value_date) - base)
+        base = _value(c0, s0, trade)
+        parts["IR"] += w * (_value(c1, s0, trade) - base)
+        parts["IR VOL"] += w * (_value(c0, s1, trade) - base)
+        total += w * (_value(c1, s1, trade) - base)
     return ir.explain_rows(c0.ccy, parts, total)
 
 

@@ -28,7 +28,7 @@ trade:
   expr: 'tr.build_swap(market, resolved)'
   build_on: each_market
 functions:
-  npv:             {expr: 'tr.npv(market, trade)', unit: ccy}
+  npv:             {expr: 'tri.npv(market, trade, pricebt_date)', unit: ccy}   # valued on the pricing date (a CloseMarket override passes no time)
   dv01:            {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}   # annuity pv01: the own-rate delta only at the money (R2-1)
   par_rate:        {expr: 'tr.par_rate(market, trade)', unit: bp}
   delta:           {expr: 'tri.delta(market, trade)', unit: ccy_per_bp}
@@ -59,7 +59,7 @@ portfolio_functions:
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
   pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
-    expr: 'tri.pnl_explain(market, market_to, trades, weights)'
+    expr: 'tri.pnl_explain(market, market_to, trades, weights, pricebt_date)'
     unit: ccy
     returns: buckets
 attributes:

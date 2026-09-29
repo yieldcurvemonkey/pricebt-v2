@@ -4,7 +4,7 @@ Each pattern is a fragment of an asset config. Names such as `platform`, `client
 
 Patterns 1-13 are config mechanics. Patterns 14-27 are the **measure recipes** for the IR contract (`src/pricebt/risk/contracts.py`). Each one is implemented, as tested code, in the contract templates of [`pricebt-connect-pricing-library`](../../pricebt-connect-pricing-library/SKILL.md) (`skills/pricebt-connect-pricing-library/references/config-template.yaml`, `config-template-swaption.yaml`, `config-template-bond.yaml`). The recipe names below (`own_rate_delta`, `theta_one_day`, ...) are those templates' helpers.
 
-**Injected names are `eval` locals.** A comprehension or generator expression inside an `expr` (`'sum(f(market, x) for x in trade.legs)'`) has its own scope and raises `NameError: name 'market' is not defined`. Put the loop in a `code:` helper and pass `market` in.
+**Injected names reach nested scopes.** A generator, comprehension or lambda inside an `expr` (`'sum(lib.pv(market, t) * w for t, w in zip(trades, weights))'`) sees every injected name (fixed on v2-ir-risk: an expression is evaluated with the injected names as globals). A `code:` helper does not: it sees only its asset's namespace, so pass `market` (or `trade`, ...) in as an argument. pricebt finds a pass-through parameter (`pricebt_bump_size`, ...), `market_to`/`pricebt_to_date` and an attribute's `market` anywhere in the expression, a lambda or generator included.
 
 ## 1. A service library: a market handle by date
 

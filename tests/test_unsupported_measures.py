@@ -171,6 +171,17 @@ def test_a_local_ccy_key_serves_both_forms_of_its_base():
     assert float(bucketed_only.pricing.value(_inst(), D, IRDelta(aggregation_level="Type"), None)) == 3.0  # rule 5: the buckets summed
 
 
+def test_an_aggregation_level_scalar_uses_the_preset_scalar_before_summing_a_ladder():
+    """IRDelta maps only a ladder (summing to 3.0, not the scalar: R2-2 allows it) and IRDeltaParallel
+    the scalar (1.0). The contract counts IRDeltaParallel as IRDelta's scalar, so every scalar
+    request agrees with it; summing the ladder would give HedgeAction(IRDelta(aggregation_level=
+    'Type')) a different number from ir_pnl_definition's IRDeltaParallel."""
+    session = PricebtSession.use(assets=[_asset({"IRDelta": {"bucketed": "ladder"}, "IRDeltaParallel": "one"}, {})])
+    for risk in (IRDelta(aggregation_level="Type"), IRDelta(aggregation_level="Asset"), IRDeltaParallel):
+        assert float(session.pricing.value(_inst(), D, risk, None)) == 1.0, risk
+    assert isinstance(session.pricing.value(_inst(), D, IRDelta, None), LazyFuture)  # bare: the ladder
+
+
 def test_an_alias_mapping_wins_over_a_declaration_of_its_base():
     """The load warning says the mapping is used (R2-9); the request agrees."""
     with pytest.warns(UserWarning, match=r"IRGammaParallel is declared unsupported \(every form\) but mapped \(scalar via IRGammaParallelLocalCcy\)"):

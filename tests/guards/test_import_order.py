@@ -47,8 +47,9 @@ def test_module_imports_alone_and_pulls_in_nothing_from_a_later_dag_tier(module_
 def test_named_must_not_import_at_top_level_clauses(module_suffix):
     """DESIGN.md section 3.2's own explicit clauses: `markets` must not top-level-import portfolio,
     instrument, session or assets; `instrument` imports session and markets only inside method
-    bodies; `risk.results` must not import `risk.transform`. These are stronger than the generic
-    tier rule, which alone would allow an earlier-tier sibling to be pulled in eagerly."""
+    bodies; `risk.results` must not import `risk.transform`; `risk` must not import
+    `risk.contracts` (IR_RISK_DESIGN R2-22). These are stronger than the generic tier rule, which
+    alone would allow an earlier-tier (or same-tier) sibling to be pulled in eagerly."""
     p = _import_alone(module_suffix)
     assert p.returncode == 0, p.stderr
     loaded = _loaded_suffixes(p.stdout)

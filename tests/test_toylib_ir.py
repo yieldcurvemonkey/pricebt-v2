@@ -275,6 +275,22 @@ def test_swap_levels_and_ladders():
         assert buckets["2Y"] == pytest.approx(3.0 * fn(m, s2), rel=1e-12)
 
 
+def test_swap_after_its_final_date_is_dead_with_finite_levels():
+    """IR_RISK_DESIGN section 2.2: every sensitivity 0.0 on and after the final date (a 1y swap
+    traded 2023-03-01), levels finite. The total-return toy Price itself lives in toylib.rates,
+    which this branch never edits (decision 0.12)."""
+    _, s = _swap(term="1y", d=date(2023, 3, 1))
+    for d in (s.termination_date, date(2024, 6, 3)):
+        m = tr.market(d, "USD")
+        for fn in (tri.delta, tri.ir_gamma, tri.discount_delta, tri.theta_1d, tri.annuity):
+            assert fn(m, s) == 0.0, (d, fn.__name__)
+        for ladder_fn in (tri.delta_ladder, tri.gamma_ladder):
+            assert set(ladder_fn(m, [s], [1.0], ("2Y", "5Y")).values()) == {0.0}
+        assert math.isfinite(tri.spot_rate(m, s)) and tri.expiry_in_years(m, s) == 0.0
+    live = tr.market(s.termination_date - timedelta(days=1), "USD")
+    assert tri.delta(live, s) != 0.0 and tri.annuity(live, s) != 0.0
+
+
 # ------------------------------------------------------------------------------------ the bond
 
 
@@ -380,6 +396,23 @@ def test_frozen_world_theta_identity_bond_including_a_coupon_step(frozen):
         assert tb.theta_1d(m0, b) == pytest.approx(tb.npv(m1, b) + cash - tb.npv(m0, b), rel=1e-9)
     m0 = tb.market(date(2024, 5, 14), "USD")
     assert tb.npv(tb.market(date(2024, 5, 15), "USD"), b) < tb.npv(m0, b)  # the dirty PV drops the coupon
+
+
+def test_frozen_world_pnl_explain_and_override_price_have_no_time_component(frozen):
+    """PnlExplain (IR_RISK_DESIGN section 8) is market moves only, and so is npv under a
+    CloseMarket override (DEV-M1): valued on the pricing date F. With every level frozen the
+    target market moves nothing, so every row is 0 and npv on the target's market is npv on F's --
+    across the bond's 2024-05-15 coupon too (valued on the target's own date, the coupon would
+    drop and the discounting would carry)."""
+    f, t = date(2024, 5, 14), date(2024, 5, 16)
+    _, s = _swap(fixed_rate=0.02, term="5y", d=f)
+    _, o = _swaption(d=f)
+    _, b = _bond("TOY 4.25 2034-11-15", d=f)
+    for mod, market, trade in ((tri, tr.market, s), (ts, ts.market, o), (tb, tb.market, b)):
+        m0, m1 = market(f, "USD"), market(t, "USD")
+        rows = mod.pnl_explain(m0, m1, [trade], [1.0], f)
+        assert all(r["value"] == pytest.approx(0.0, abs=1e-9 * N) for r in rows), (mod.__name__, rows)
+        assert mod.npv(m1, trade, f) == pytest.approx(mod.npv(m0, trade, f), abs=1e-9 * N), mod.__name__
 
 
 # ------------------------------------------------------------------------------------ one-step Taylor (R2-18 spirit)

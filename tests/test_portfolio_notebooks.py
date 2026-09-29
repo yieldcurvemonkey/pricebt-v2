@@ -400,9 +400,9 @@ def test_030007_pnl_explain():
     assert (from_date, to_date) == (dt.date(2023, 12, 26), TOY_TODAY)
     # the swap's and the swaption's rows, summed by factor (first appearance); CROSSES is the rest
     assert list(explain_all.mkt_type) == ['IR', 'CROSSES', 'IR VOL'] and set(shown.mkt_type) <= set(explain_all.mkt_type)
-    # the toy swaption values on pricebt_date, so time passes between the two prices (the toy swap is
-    # carry-free): a time/market mix-up in the explain rows breaks the identity below
-    assert float(time_value) < -1.0
+    # the toys value on pricebt_date, so time passes between the two prices (the swaption's time
+    # value, the swap's carry): a time/market mix-up in the explain rows breaks the identity below
+    assert abs(float(time_value)) > 1.0
     assert float(explained) == pytest.approx(float(price_diff), rel=1e-6)  # section 8.3: full revaluation by factor
 
 

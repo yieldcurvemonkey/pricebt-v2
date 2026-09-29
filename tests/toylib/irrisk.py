@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 from datetime import date, timedelta
+from typing import Optional
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
@@ -49,6 +50,14 @@ class _TranslatedCurve:
 
     def discount_factor(self, d: date) -> float:
         return self.base.discount_factor(d) / self.base.discount_factor(self.ref_date)
+
+
+def at(curve, value_date: Optional[date]):
+    """`curve` (a ToyCurve) re-anchored at `value_date`, its zero rate and csa kept: another date's
+    market seen from the pricing date, no time passed. Under a CloseMarket override the market is
+    another date's, so a value that must not carry (npv, PnlExplain) is taken on it re-anchored at
+    `pricebt_date` (DEV-M1, IR_RISK_DESIGN section 8). None or the curve's own date: unchanged."""
+    return curve if value_date is None else dataclasses.replace(curve, ref_date=value_date)
 
 
 def bumped(curve, dz: float):
@@ -131,25 +140,36 @@ def _par_bp(curve, trade) -> float:
     return tr._par_rate(curve, trade.effective_date, trade.termination_date) * 1e4
 
 
+def _dead(market, trade) -> bool:
+    """On or after the final date every flow is paid: each sensitivity is 0.0 (IR_RISK_DESIGN
+    section 2.2 dead-instrument rule); levels continue."""
+    return market.ref_date >= trade.termination_date
+
+
+def npv(market, trade, value_date: Optional[date] = None) -> float:
+    """tr.npv valued on `value_date` (the config passes `pricebt_date`: see `at`)."""
+    return tr.npv(at(market, value_date), trade)
+
+
 def delta(market, trade) -> float:
     """IRDelta scalar: total derivative of npv w.r.t. the swap's own par rate, ccy per bp. Equals
     the annuity pv01 (`tr.pv01`) only at the money (R2-1)."""
-    return greeks_on(market, lambda c: tr.npv(c, trade), lambda c: _par_bp(c, trade))[0]
+    return 0.0 if _dead(market, trade) else greeks_on(market, lambda c: tr.npv(c, trade), lambda c: _par_bp(c, trade))[0]
 
 
 def ir_gamma(market, trade) -> float:
     """IRGammaParallel: d2 npv / d par^2 per bp^2 by the chain rule (R14 gamma finding)."""
-    return greeks_on(market, lambda c: tr.npv(c, trade), lambda c: _par_bp(c, trade))[1]
+    return 0.0 if _dead(market, trade) else greeks_on(market, lambda c: tr.npv(c, trade), lambda c: _par_bp(c, trade))[1]
 
 
 def discount_delta(market, trade) -> float:
-    return discount_delta_on(market, lambda c: tr.npv(c, trade))
+    return 0.0 if _dead(market, trade) else discount_delta_on(market, lambda c: tr.npv(c, trade))
 
 
 def theta_1d(market, trade) -> float:
     """pricebt DEV-I15: one calendar day, forwards fixed, ccy per day. The toy npv never drops a
     paid coupon (total return), so there is no cash term."""
-    return tr.npv(_TranslatedCurve(market, 1), trade) - tr.npv(market, trade)
+    return 0.0 if _dead(market, trade) else tr.npv(_TranslatedCurve(market, 1), trade) - tr.npv(market, trade)
 
 
 def expiry_in_years(market, trade) -> float:
@@ -162,13 +182,15 @@ def spot_rate(market, trade) -> float:
 
 def annuity(market, trade) -> float:
     """N * A: PV of the fixed leg paying 1.0 p.a. (1e4 x tr.pv01), holder-signed."""
-    return trade.notional * tr._annuity(market, trade.effective_date, trade.termination_date)
+    return 0.0 if _dead(market, trade) else trade.notional * tr._annuity(market, trade.effective_date, trade.termination_date)
 
 
-def pnl_explain(market, market_to, trades, weights) -> list:
-    """PnlExplain by full revaluation from `market` to `market_to`, weighted: the curve is the swap's
-    only factor, so IR is the whole move and CROSSES is 0."""
-    total = sum(w * (tr.npv(market_to, t) - tr.npv(market, t)) for t, w in zip(trades, weights))
+def pnl_explain(market, market_to, trades, weights, value_date: Optional[date] = None) -> list:
+    """PnlExplain by full revaluation from `market` to `market_to`, weighted, both on `value_date`
+    (the pricing date: no time passes, `at`): the curve is the swap's only factor, so IR is the
+    whole move and CROSSES is 0."""
+    m0, m1 = at(market, value_date), at(market_to, value_date)
+    total = sum(w * (tr.npv(m1, t) - tr.npv(m0, t)) for t, w in zip(trades, weights))
     return explain_rows(market.ccy, {"IR": total}, total)
 
 

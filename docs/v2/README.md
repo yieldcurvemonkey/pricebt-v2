@@ -7,6 +7,7 @@ pricebt v2 is a gs_quant-compatible, event-driven backtester with **no pricing o
 1. `DESIGN.md` §0 (the decisions), §2 (the five MUSTs), then the rest of `DESIGN.md` in full.
 2. `IMPLEMENTATION_PLAN.md` §0 (ground rules, DO-NOT list, commands) and §1 (phases, gates, the ultracode workflow recipe).
 3. For each task: the research sections it cites in `research/`.
+4. The interest-rate pricing and risk extension (branch `v2-ir-risk`): `IR_RISK_DESIGN.md` (§00 first), then `ASSET_CONFIG_GUIDE.md` "Measure contracts". Merging the concurrent swap P&L-explain branch: `MERGE_NOTES_pnl_explain.md`.
 
 ## Research notes (evidence; cite by section, e.g. R02§4)
 
@@ -22,6 +23,7 @@ The notes are **evidence about gs_quant, ARBS and v1**. Where a note *proposes* 
 | `research/06-arbs-pricing-api.md` | ARBS `IRSwapsMDP` / `RLIRSwapCurve`: sources, request rules, the method table with units and signs, re-marking, the ladder recipe, FX (none offline), **safety hazards**, a draft config |
 | `research/07-pricebt-v1-engine-strategy-results.md` | v1 engine/strategy/results inventory (mostly stripped in v2; useful for what NOT to repeat) |
 | `research/08-pricebt-v1-strip-inventory.md` | v1 strip inventory: what to delete and the few files to salvage (yamlio, progress, errors, nb_build, mutcheck) |
+| `research/09..15-*.md` | The IR risk work's evidence (gs IR measures, Portfolio and results, swaption/bond instruments and contexts, pricebt extension points, the skills inventory, the in-flight P&L branch, gs swaption backtest notebooks); indexed in `IR_RISK_DESIGN.md` |
 
 ## Key locations
 

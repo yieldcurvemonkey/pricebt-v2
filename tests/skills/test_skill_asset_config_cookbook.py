@@ -113,8 +113,6 @@ _EXPLAIN = {"pnl": {"expr": "[]", "unit": "ccy", "returns": "buckets"},
             "pnl_to": {"expr": "[] if market_to is None else []", "unit": "ccy", "returns": "buckets"}}
 
 PRICING = {
-    "NameError: name 'market' is not defined": lambda: _pricing_error(
-        _session({"bad": {"expr": "sum(market for _ in (1,))", "unit": "ccy_per_bp"}}, {"IRBasis": "bad"}), IRBasis(aggregation_level="Type")),
     "NotImplementedError: TODO (asset-config template)": lambda: _raised(
         lambda: PricebtSession.use(assets=[TEMPLATE]).pricing.resolve(IRSwap("Pay", "10y", "USD", 1e6), D, None)),
     "is declared unsupported (every form)": lambda: _pricing_error(_session(unsupported={"IRVega": "no vol model"}), IRVega(aggregation_level="Type")),
@@ -190,6 +188,13 @@ def test_catalogue_quotes_the_raised_message(fragment):
     message = (LOAD.get(fragment) or PRICING.get(fragment) or P_AND_L[fragment])()
     assert fragment in message, f"the code now says: {message}"
     assert fragment in CATALOGUE, "add the fragment to skills/pricebt-asset-config-cookbook/references/error-catalogue.md"
+
+
+def test_the_fixed_nested_scope_name_error_is_gone():
+    """Injected names reach generators and lambdas in an expression (tests/test_namespace_scopes.py)."""
+    assert "NameError: name 'market' is not defined" not in CATALOGUE
+    s = _session({"gen": {"expr": "sum(market for _ in (1,))", "unit": "ccy_per_bp"}}, {"IRBasis": "gen"})
+    assert float(s.pricing.value(ConfigInstrument(pricebt_asset="decl", name="x"), D, IRBasis(aggregation_level="Type"), None)) == 1.0
 
 
 def test_the_stale_dev_i8_text_is_gone():

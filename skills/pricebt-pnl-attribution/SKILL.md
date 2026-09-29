@@ -51,6 +51,7 @@ Per step t−1 → t, per instrument held at t−1: `k · R(t−1) · Δm` (firs
 
 - **f** = 1 for a level declared in `bp`, 100 in `pct`, 1e4 in `decimal`. `attribution.definition_for` reads them from the configs' `unit:`.
 - **Unit check.** A level read in a different unit raises `ValueError` (DEV-E21). Theta has no unit check.
+- **After expiry.** `ExpiryInYears` stays 0 from expiry on, so `PNL_theta` is 0 then. An exercised (physically settled) swaption still carries like its underlying swap (non-zero `Theta`, R2-7): that carry lands in the residual.
 
 ## What your library must return, per measure
 

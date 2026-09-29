@@ -111,9 +111,12 @@ def _yield_greeks(market, trade, pvs):
 # --------------------------------------------------------------------- IR measure contract
 
 
-def npv(market, trade) -> float:
+def npv(market, trade, value_date: Optional[date] = None) -> float:
+    """Valued on `value_date` (the config passes `pricebt_date`): under a CloseMarket override,
+    the override's curve and spread seen from the pricing date, so no coupon drops and nothing
+    carries (toylib.irrisk.at)."""
     tr.EVAL_COUNTS["npv"] += 1
-    return _pv(market.curve, market.spread, trade)
+    return _pv(ir.at(market.curve, value_date), market.spread, trade)
 
 
 def yield_bp(market, trade) -> float:
@@ -189,10 +192,11 @@ def clean_price(market, trade) -> float:
     return dirty_price(market, trade) - 100.0 * accrued(market, trade) / trade["face"]
 
 
-def pnl_explain(market, market_to, trades, weights) -> list:
-    """PnlExplain by full revaluation, weighted: IR = the curve moved with the spread held, CREDIT =
-    the spread moved with the curve held, CROSSES = the rest of the whole move."""
-    c0, s0, c1, s1 = market.curve, market.spread, market_to.curve, market_to.spread
+def pnl_explain(market, market_to, trades, weights, value_date: Optional[date] = None) -> list:
+    """PnlExplain by full revaluation, weighted, every value on `value_date` (the pricing date, as
+    `npv`: no coupon drops, no carry): IR = the curve moved with the spread held, CREDIT = the
+    spread moved with the curve held, CROSSES = the rest of the whole move."""
+    c0, s0, c1, s1 = ir.at(market.curve, value_date), market.spread, ir.at(market_to.curve, value_date), market_to.spread
     parts, total = {"IR": 0.0, "CREDIT": 0.0}, 0.0
     for trade, w in zip(trades, weights):
         base = _pv(c0, s0, trade)

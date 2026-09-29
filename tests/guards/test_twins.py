@@ -103,6 +103,33 @@ def test_twin_asset_agnostic_scan_must_pass_a_neutral_module(tmp_path):
     assert scan.scan_asset_agnostic_tokens(src / "pricebt" / "assets" / "a.py", src) == []
 
 
+# The word lists of DESIGN.md section 12.2 items 2 and 4, copied here (not read from the scanner),
+# so dropping a word from either regex fails its twin.
+VENDOR_WORDS = ("arbs", "rateslib", "quantlib", "irswapsmdp", "mdp", "rlirswapcurve", "bulk_get_data", "build_irswap",
+                "ignore_cache_miss", "supabase", "nojumps", "eris", "erisfutures", "bloomberg", "refinitiv", "marquee")
+ASSET_WORDS = ("notional", "tenor", "swaption", "swap", "fixed_rate", "termination_date", "expiration_date",
+               "pay_or_receive", "strike", "dv01", "pv01", "par_rate", "sofr", "libor", "estr")
+
+
+@pytest.mark.parametrize("word", VENDOR_WORDS)
+def test_twin_token_scan_must_fail_every_listed_word(tmp_path, word):
+    src = tree(tmp_path, {"pricebt/a.py": f'x = "{word}"\n'})
+    assert [h.token for h in scan.scan_vendor_tokens(src / "pricebt" / "a.py", src)] == [word]
+
+
+@pytest.mark.parametrize("word", ASSET_WORDS)
+def test_twin_asset_agnostic_scan_must_fail_every_listed_word(tmp_path, word):
+    src = tree(tmp_path, {"pricebt/assets/a.py": f'x = "{word}"\n'})
+    assert [h.token for h in scan.scan_asset_agnostic_tokens(src / "pricebt" / "assets" / "a.py", src)] == [word]
+
+
+def test_twin_both_scans_must_fail_a_docstring(tmp_path):
+    """Items 2 and 4 scan docstrings too (only the gs_quant scan exempts them)."""
+    src = tree(tmp_path, {"pricebt/assets/a.py": '"""Prices a swaption."""\n', "pricebt/b.py": '"""Reads ARBS."""\n'})
+    assert [h.token for h in scan.scan_asset_agnostic_tokens(src / "pricebt" / "assets" / "a.py", src)] == ["swaption"]
+    assert [h.token for h in scan.scan_vendor_tokens(src / "pricebt" / "b.py", src)] == ["arbs"]
+
+
 def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_three_risk_files(tmp_path):
     pkg = (
         tree(

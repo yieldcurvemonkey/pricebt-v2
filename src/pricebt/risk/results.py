@@ -90,6 +90,10 @@ class FloatWithInfo(float):
             key = combine_risk_key(key, other.risk_key)
         return FloatWithInfo(product, risk_key=key, unit=self.unit)
 
+    # pricebt DEV-R14: `k * x` keeps the type and unit like `x * k` (gs: a plain float, which a
+    # later `+` would then label with the other operand's unit)
+    __rmul__ = __mul__
+
     def to_frame(self):
         return self
 
@@ -402,8 +406,8 @@ def _value_for_date(result, date):
     """One date's (or a list of dates') slice of a historical value (gs `_value_for_date`), carrying
     the selected date(s) in its risk key; a date the value was not priced on is a KeyError (gs
     `.loc`). A bucketed frame is selected with `df[df.index == date]` and a table on its `date`
-    column (IR_RISK_DESIGN R2-27); a single date drops the index/column. A single-date frame raises
-    gs's RuntimeError."""
+    column (IR_RISK_DESIGN R2-27); a single date drops the index/column. A single-date frame is
+    returned as is when empty and is otherwise a KeyError (gs: `.loc` on its row index)."""
     if result.empty and not isinstance(result, pd.DataFrame):
         return result
     single = isinstance(date, dt.date)
@@ -413,7 +417,9 @@ def _value_for_date(result, date):
     if isinstance(result, pd.DataFrame):
         priced = _priced_dates(result)
         if priced is None:
-            raise RuntimeError("Can only index by date on historical results")
+            if result.empty:
+                return result
+            raise KeyError(f"{date}: this frame is a single-date result, not indexed by date")
         missing = [d for d in ((date,) if single else date) if d not in priced]
         if missing:
             raise KeyError(f"{missing} not among the dates this result was priced on")
@@ -565,6 +571,10 @@ class MultipleRiskMeasureResult(dict):
 
     def __add__(self, other):
         if isinstance(other, (int, float)):
+            # pricebt DEV-R9: gs adds per value, which raises AttributeError on a historical Series;
+            # pricebt adds a number to every value but a table (adding to its amounts means nothing)
+            if any(_is_table(v) for v in self.values()):
+                raise ValueError("Cannot add a number to a table (frame-valued) result")
             return self._map(lambda v: v + other)
         if not isinstance(other, MultipleRiskMeasureResult):
             raise ValueError("Can only add instances of MultipleRiskMeasureResult or int, float")
@@ -844,7 +854,7 @@ class PortfolioRiskResult:
         name = getattr(self.portfolio, "name", None)
         return f"{self.risk_measures} Results" + (f" for {name}" if name else "") + f" ({len(self)})"
 
-    def result(self):
+    def result(self, timeout=None):
         return self
 
     def done(self) -> bool:
@@ -874,11 +884,18 @@ class PortfolioRiskResult:
         paths = _find_paths(self.portfolio, items)
         unresolved = None if isinstance(items, str) else getattr(items, "unresolved", None)
         if not paths and unresolved is not None:
-            # a resolved instrument looked up in a result over its unresolved form (gs also checks
-            # the resolution context; pricebt's RiskKey carries none to compare)
+            # a resolved instrument looked up in a result over its unresolved form: only a leaf
+            # priced on the date it was resolved on (gs compares the whole key but the measure;
+            # pricebt's resolution key carries only the date). A historical leaf (no single date)
+            # is kept, as before.
             paths = _find_paths(self.portfolio, unresolved)
             if not paths:
                 raise KeyError(f"{items} not in portfolio")
+            resolved_on = getattr(getattr(items, "resolution_key", None), "date", None)
+            if resolved_on is not None:
+                paths = tuple(p for p in paths if _future_date(p(self.futures)) in (None, resolved_on))
+            if not paths:
+                raise KeyError(f"Cannot slice {items} which is resolved in a different pricing context")
         return paths
 
     def _results(self, items=None):
@@ -908,6 +925,10 @@ class PortfolioRiskResult:
             return self._result(item)
         if isinstance(item, (list, tuple)) and len(item) > 0 and all(_is_instrument(i) for i in item):
             return self.subset(item)
+        if _is_portfolio(item) and all(_is_instrument(i) for i in item.priceables):
+            # gs `is_iterable(item, InstrumentBase)`: a Portfolio iterates its direct children, so
+            # one of instruments (a member or not) is the flat subset of those instruments
+            return self.subset(item.priceables)
         if isinstance(item, list) and len(item) == 1:
             return self._results(item[0])
         return self._results(item)
@@ -1007,7 +1028,9 @@ class PortfolioRiskResult:
         # pricebt DEV-E14: an ordered union (self's measures first, then other's new ones), not the
         # gs `set(chain(self.risk_measures, other.risk_measures))`, whose column order is non-deterministic.
         risk_measures = tuple(dict.fromkeys((*self.risk_measures, *other.risk_measures)))
-        if self.portfolio is other.portfolio or self.portfolio == other.portfolio:
+        # pricebt DEV-R13: equal both ways (gs's Portfolio == is one-way, so Portfolio([a]) equals
+        # Portfolio([a, b]) and gs's zip silently drops b)
+        if self.portfolio is other.portfolio or (self.portfolio == other.portfolio and other.portfolio == self.portfolio):
             portfolio = self.portfolio
             futures = [
                 self._add_futures(fs, fo, other.risk_measures, priceable)

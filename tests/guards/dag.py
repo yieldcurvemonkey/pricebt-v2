@@ -135,10 +135,13 @@ TIER_OF: Dict[str, int] = {name: i for i, tier in enumerate(DAG_TIERS) for name 
 #   "markets... MUST NOT import portfolio, instrument, session or assets at top level."
 #   "instrument. It imports session and markets only inside method bodies."
 #   "risk.results MUST NOT import transform[.]"
+#   IR_RISK_DESIGN R2-22: risk/__init__ must not import risk.contracts (same tier, so the tier rule
+#   alone would allow it).
 FORBIDDEN_TOP_LEVEL = {
     "markets": {"markets.portfolio", "instrument", "session", "assets"},
     "instrument": {"session", "markets"},
     "risk.results": {"risk.transform"},
+    "risk": {"risk.contracts"},
 }
 
 ALL_MODULE_NAMES = sorted(m for tier in DAG_TIERS for m in tier if m)

@@ -91,6 +91,16 @@ def _bucket_total(raw) -> float:
     return sum(r["value"] for r in raw) if _is_rows(raw) else sum(raw.values())
 
 
+def _all_names(code) -> set:
+    """Every global name a compiled expression reads, nested scopes (comprehension, generator,
+    lambda) included: they see the injected names too (DESIGN.md section 4.4)."""
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if hasattr(const, "co_names"):
+            names |= _all_names(const)
+    return names
+
+
 def _unit_dict(spec, target_ccy: str) -> Dict[str, int]:
     """DESIGN.md section 4.2's units table, verbatim: a convertible (ccy*) unit reports the target
     currency; `number` is dimensionless (`{}`); every other unit (bp/pct/decimal) reports itself.
@@ -378,7 +388,7 @@ class PricingService:
             "resolved": dict(resolved_terms),
             "pricebt_quantity": inst.quantity_,
         }
-        if "market" in code.co_names:
+        if "market" in _all_names(code):
             injected["market"] = self.market(asset, res_date, res_csa)
         value = self._ns(asset).eval(field, **injected)
         self._attribute_cache[key] = value
@@ -410,7 +420,7 @@ class PricingService:
         params = risk.parameters
         if params is None:
             return
-        names = asset.code(fname).co_names
+        names = _all_names(asset.code(fname))
         if isinstance(params, MarketParameter):
             # pricebt DEV-M2: a relative measure needs a function that compares two markets; one
             # that reads neither injected name would silently ignore the target
@@ -424,7 +434,8 @@ class PricingService:
             if f.name in _PASS_THROUGH_PARAMS:
                 # pricebt DEV-I10: gs sends these to its server; pricebt injects them as
                 # pricebt_<name>, and a function supports one iff its expression names that
-                # variable (top-level co_names: a nested scope cannot see injected names anyway).
+                # variable anywhere, a comprehension, generator or lambda included (they see the
+                # injected names, DESIGN.md section 4.4).
                 if f"pricebt_{f.name}" not in names:
                     raise NotSupportedError(f"asset {asset.name}: {risk!r} sets {f.name}; function {fname!r} does not reference pricebt_{f.name}")
                 continue
@@ -539,6 +550,12 @@ class PricingService:
                 )
         else:
             fname, is_bucketed = mapping.scalar, False
+            if fname is None and has_agg_level:
+                # IR_RISK_DESIGN R2-10: a key the contract counted as this measure's scalar (e.g.
+                # IRDeltaParallel for IRDelta) serves an aggregation-level request before any
+                # bucket sum, so IRDelta(aggregation_level='Type') and IRDeltaParallel agree
+                alt = asset.risk_measures.get(asset.provided_forms.get((mname, "scalar")))
+                fname = alt.scalar if alt is not None else None
             if fname is None:
                 fname = mapping.bucketed
                 if fname is None:
@@ -757,7 +774,8 @@ def _current_service() -> PricingService:
 def _market_date(ctx: PricingContext, d: _date) -> Optional[_date]:
     """pricebt DEV-M1: the date of the context's CloseMarket override, the date markets are
     evaluated on; None when there is none or it is the pricing date itself (one cache key per
-    market). Resolution never uses it (it stays on the pricing date's own market, gs)."""
+    market). Resolution never uses it: it stays on the pricing date's own market (gs resolves
+    under the context's market, the override; DEV-M1)."""
     t = None if ctx.market is None else ctx.market.date
     return None if t == d else t
 

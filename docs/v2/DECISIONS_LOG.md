@@ -671,3 +671,67 @@ literal traceback text); `git log --follow` showing only one commit ever touched
 executed" artifact sitting in the worktree is itself the kind of state a future session (or a
 careless `git add -A`) could accidentally commit or build on; reverting immediately to the clean
 committed state removes the risk entirely rather than merely deferring it.
+
+---
+
+## 2026-09-29 — v2-ir-risk: interest-rate pricing and risk (swaps, swaptions, bonds), key decisions
+
+**Situation:** the user asked to port gs_quant's interest-rate pricing and risk surface for
+backtests nearly 1:1, to require that the external library defines every IR measure gs supports,
+to treat Portfolios with extra care, and to cover swaptions and bonds, with full design authority.
+The design is [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) (§00, the adversarial-review resolutions,
+overrides §0-§12); its "What was built" table maps each section to commits, files and tests.
+
+**Decisions (pointers, not restatements):**
+- **Port the whole gs 2.1.17 measure catalogue as data** (117 instances + 7 presets) with gs names,
+  `measure_type`, asset class, unit and parameter class; the numbers still come from configs
+  (IR_RISK_DESIGN §1; DEV-I9 vanna/volga as finite-difference measures, DEV-I16 LocalCcy fallbacks).
+- **Per-instrument measure contracts enforced at config load** for `IRSwap`, `IRSwaption`, `Bond`:
+  map every measure and form with an allowed unit, or declare it under `unsupported_measures:` with
+  a reason; one `ConfigError` lists every gap with a paste-ready block; a mapping wins over a stale
+  declaration with a warning (DEV-I11, R2-9..R2-13). Chosen over gs's silent `UnsupportedValue`
+  because a silent NaN or fake zero is a wrong-number path. The tables in `ASSET_CONFIG_GUIDE.md`
+  are generated from `src/pricebt/risk/contracts.py` and a test keeps them equal.
+- **Own-rate semantics** (DEV-I12): the `IRDelta` scalar is the total derivative of `Price` in the
+  instrument's own quoted rate (`IRFwdRate`: swap par, swaption forward, bond yield) and
+  `IRGammaParallel` its chain-rule second derivative (R2-1); a fixed-annuity pv01 is
+  at-the-money-exact only. `Theta` is per calendar day with the own rate and vol held fixed on a
+  translated curve (DEV-I15); `ExpiryInYears` is defined for every class (DEV-I17); `Annuity` is
+  holder-signed like `Price`.
+- **Parameters pass through** as `pricebt_bump_size`, ... and are refused loudly when a function does
+  not name them (DEV-I10); **frames** (`returns: frame`) carry `Cashflows` and are skipped by the
+  summary views (DEV-R11).
+- **Portfolio and results parity** as a first-class phase, accepted against transcriptions of gs's
+  03_portfolios notebooks (IR_RISK_DESIGN §5; DEV-R6..R16, DEV-P1).
+- **Swaption and bond P&L decomposition in `src`** (`ir_pnl_definition`, `swaption_pnl_definition`,
+  `bond_pnl_definition`, `BackTest.pnl_explain_table()`), with a cross-term attribute (DEV-E19) and a
+  level-unit check (DEV-E21); **no engine coupon booking** (decision 0.10: gs parity; the table
+  reconciles economic P&L from `Cashflows`).
+- **`CloseMarket` is a market-date override and `PnlExplain(CloseMarket(...))` a relative measure**
+  (DEV-M1, DEV-M2); any other `PricingContext(market=...)` raises instead of being ignored.
+- **Merge-friendliness with `v2-pnl-explain`**: the swap P&L explain stays theirs; our swap configs
+  got declaration blocks only (R2-20); the full-contract swap is a new `toy_usd_irs_full.yaml`.
+  Procedure: [`MERGE_NOTES_pnl_explain.md`](MERGE_NOTES_pnl_explain.md).
+- **Injected names are evaluation globals** (DESIGN §4.4, phase F): a generator or lambda inside an
+  expression now sees `market`, `trades`, `weights`, ... (they were eval locals and raised
+  `NameError`); a per-call copy of the namespace keeps assets isolated (about 1 µs per call for a
+  160-name namespace). After the final review, name discovery (a pass-through parameter,
+  `market_to`, an attribute's `market`) walks nested code objects too, so such an expression is no
+  longer refused.
+- **Final review fixes** (four lenses): the toys value `npv` and `PnlExplain` on `pricebt_date`
+  with the other date's curve re-anchored there, so neither carries time (the frozen-world test);
+  a resolved book round-trips `to_frame`/`from_frame` to the same trades; an aggregation-level
+  scalar prefers a preset's scalar to a ladder sum; new DEV-R17. Not changed: `ExpiryInYears`
+  stays floored at 0 (post-exercise carry lands in the residual, documented) and an extensive
+  function may still be marked non-scaling (R2-11 keeps it a checker row, not a load error).
+
+**Evidence:** research notes R09-R15 (`docs/v2/research/`); `tests/test_contracts.py`,
+`tests/test_pnl_ir.py`, `tests/test_results_parity.py`, `tests/test_portfolio_notebooks.py`,
+`tests/test_pnl_explain_measure.py`, `tests/test_namespace_scopes.py`; the demo
+`notebooks/src/ir_pricing_and_risk_toy.py` (run by `tests/test_ir_pricing_and_risk_demo.py`).
+
+**Alternatives considered:** answering inapplicable measures with a silent `UnsupportedValue` or
+NaN (rejected: the user asked that the library define every measure, and NaN poisons
+`pnl_explain`); curve-delta semantics for the scalar `IRDelta` (rejected: P&L decomposition needs a
+sensitivity to the level it is multiplied by); editing the in-flight branch's files (rejected: the
+branches must merge by union, decision 0.12). Later work is IR_RISK_DESIGN §12.
