@@ -266,15 +266,15 @@
 # ------------------------------------------------------------------------------------------- markets
 - symbol: gs_quant.markets.PricingContext
   aspect: properties
-  missing: [active_context, is_batch, is_current, market, market_behaviour, market_data_location,
+  missing: [active_context, is_batch, is_current, market_behaviour, market_data_location,
             provider, request_priority, set_parameters_only, show_progress, timeout, use_cache,
             use_historical_diddles_only, use_server_cache, visible_to_gs]
   dev_id: DEV-M1
   reason: >
-    markets/__init__.py's own module docstring: only pricing_date and csa_term actually do anything;
-    a non-None market raises NotSupportedError (DEV-M1, IR_RISK_DESIGN R2-30), so there is no
-    market to expose; every other constructor parameter is accepted for signature parity and
-    ignored (DESIGN.md section 6.5). The `PricingContext.current` getter and setter (gs) are on the
+    markets/__init__.py's own module docstring: only pricing_date, csa_term and market actually do
+    anything; a market other than None or a CloseMarket raises NotSupportedError (DEV-M1,
+    IR_RISK_DESIGN R2-30, section 8); every other constructor parameter is accepted for signature
+    parity and ignored (DESIGN.md section 6.5). The `PricingContext.current` getter and setter (gs) are on the
     metaclass, like gs's ContextMeta.
 
 - symbol: gs_quant.markets.PricingContext
@@ -287,7 +287,7 @@
 
 - symbol: gs_quant.markets.HistoricalPricingContext
   aspect: properties
-  missing: [active_context, is_batch, is_current, market, market_behaviour,
+  missing: [active_context, is_batch, is_current, market_behaviour,
             market_data_location, provider, request_priority, set_parameters_only, show_progress,
             timeout, use_cache, use_historical_diddles_only, use_server_cache, visible_to_gs]
   reason: >
@@ -302,6 +302,23 @@
   missing: [calc, clone, default_value]
   reason: >
     Same as gs_quant.markets.PricingContext's methods entry above.
+
+- symbol: gs_quant.markets.CloseMarket
+  aspect: fields
+  skip: true
+  reason: >
+    gs's CloseMarket inherits a dataclass decorator from its Market base but declares no fields
+    (date/location are properties over private attributes); pricebt's is a plain class with the
+    same constructor signature, properties and to_dict, compared below.
+
+- symbol: gs_quant.markets.CloseMarket
+  aspect: properties
+  missing: [market]
+  dev_id: DEV-M1
+  reason: >
+    gs's `market` is the GS server-side request object (gs_quant.common.CloseMarket); pricebt sends
+    no requests: the pricing layer reads only `date` (the market-date override, IR_RISK_DESIGN
+    section 8).
 
 - symbol: gs_quant.markets.portfolio.Portfolio
   aspect: fields
@@ -351,34 +368,31 @@
     Same as gs_quant.risk.IRVanna above: 2.1.17's finite-difference class, so
     IRVolga(aggregation_level=Type) works as in gs's vanna/volga notebook.
 
-# ------------------------------------------------------------------ risk helpers and classes (R2-23)
-- symbol: gs_quant.risk.PnlExplain
-  aspect: all
-  pending: Phase E
+# ------------------------------------------------------------------ the PnlExplain family (IR_RISK_DESIGN section 8)
+- symbol: "gs_quant.risk.Pnl*"
+  aspect: fields
+  insert: [base_name]
   reason: >
-    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
-    Delete this row then.
+    Every pricebt measure class inherits RiskMeasure's pricebt-only base_name field (compare=False,
+    repr=False; DESIGN.md section 8.1 rule 3); gs's six fields follow in gs order.
 
-- symbol: gs_quant.risk.PnlExplainClose
-  aspect: all
-  pending: Phase E
+- symbol: "gs_quant.risk.Pnl*"
+  aspect: methods
+  missing: [as_dict, clone, default_instance, from_dict, from_instance, from_json, properties,
+            properties_init, schema, to_dict, to_json]
   reason: >
-    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
-    Delete this row then.
+    gs's Base/dataclasses_json serialisation helpers. pricebt measures are plain frozen dataclasses,
+    never serialised for a GS server-side request (as for every other pricebt measure).
 
-- symbol: gs_quant.risk.PnlExplainLive
-  aspect: all
-  pending: Phase E
+- symbol: "gs_quant.risk.Pnl*"
+  aspect: properties
+  missing: [pricing_context]
+  dev_id: DEV-M2
   reason: >
-    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
-    Delete this row then.
-
-- symbol: gs_quant.risk.PnlPredictLive
-  aspect: all
-  pending: Phase E
-  reason: >
-    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
-    Delete this row then.
+    gs prices a relative measure in a cloned context whose market is RelativeMarket(from, to) for
+    its server. pricebt has no market objects to clone into: the target is the measure's
+    parameters (a MarketParameter, so equality, hashing and cache keys see it) and the pricing layer
+    injects market_to and pricebt_to_date into the asset's function (IR_RISK_DESIGN R2-32).
 
 # --------------------------------------------------------------------------------------- common enums
 - symbol: gs_quant.common.Currency

@@ -69,8 +69,8 @@ def aggregate_results(results: Iterable, allow_mismatch_risk_keys=False, allow_h
                 raise ValueError(f"Cannot aggregate results with different units for {getattr(result.risk_key, 'risk_measure', None)}")
             unit = result_unit
         result_key = getattr(result, "risk_key", None)
-        # pricebt's RiskKey carries only date and risk_measure (params/market are always None), so
-        # the whole key is gs's `ex_historical_diddle`
+        # pricebt's RiskKey carries date, market (a CloseMarket override's date, else None; DEV-M1)
+        # and risk_measure (params is always None), so the whole key is gs's `ex_historical_diddle`
         if not allow_mismatch_risk_keys and risk_key and risk_key != result_key:
             raise ValueError("Cannot aggregate results with different pricing keys")
         risk_key = risk_key or result_key

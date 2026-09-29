@@ -111,6 +111,14 @@ def spot_par_bp(curve, term: date) -> float:
     return (curve.discount_factor(t) - curve.discount_factor(term)) / ann * 1e4
 
 
+def explain_rows(ccy: str, parts: dict, total: float) -> list:
+    """PnlExplain buckets as per-row dicts (IR_RISK_DESIGN R2-14): one row per risk factor
+    (`mkt_type` -> value, `mkt_asset` the currency as gs's IR rows), then `CROSSES` = the rest of
+    the full revaluation `total` (gs: no asset on that row, no time row at all)."""
+    rows = [{"mkt_type": k, "mkt_asset": ccy, "value": v} for k, v in parts.items()]
+    return rows + [{"mkt_type": "CROSSES", "value": total - sum(parts.values())}]
+
+
 def empty_cashflows() -> pd.DataFrame:
     """A total-return Price never drops a paid flow, so there is nothing left to drop (R2-6)."""
     return pd.DataFrame(columns=list(CASHFLOW_COLUMNS))
@@ -155,6 +163,13 @@ def spot_rate(market, trade) -> float:
 def annuity(market, trade) -> float:
     """N * A: PV of the fixed leg paying 1.0 p.a. (1e4 x tr.pv01), holder-signed."""
     return trade.notional * tr._annuity(market, trade.effective_date, trade.termination_date)
+
+
+def pnl_explain(market, market_to, trades, weights) -> list:
+    """PnlExplain by full revaluation from `market` to `market_to`, weighted: the curve is the swap's
+    only factor, so IR is the whole move and CROSSES is 0."""
+    total = sum(w * (tr.npv(market_to, t) - tr.npv(market, t)) for t, w in zip(trades, weights))
+    return explain_rows(market.ccy, {"IR": total}, total)
 
 
 def delta_ladder(market, trades, weights, tenors) -> dict:

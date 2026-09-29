@@ -34594,6 +34594,38 @@
         ]
       ]
     },
+    "gs_quant.markets.CloseMarket": {
+      "fields": [],
+      "kind": "dataclass",
+      "method_signatures": {
+        "to_dict": []
+      },
+      "methods": [
+        "to_dict"
+      ],
+      "properties": [
+        "date",
+        "location",
+        "market"
+      ],
+      "signature": [
+        [
+          "date",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "location",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "check",
+          "POSITIONAL_OR_KEYWORD",
+          "True"
+        ]
+      ]
+    },
     "gs_quant.markets.HistoricalPricingContext": {
       "kind": "class",
       "method_signatures": {
@@ -34853,6 +34885,26 @@
           "provider",
           "POSITIONAL_OR_KEYWORD",
           "None"
+        ]
+      ]
+    },
+    "gs_quant.markets.close_market_date": {
+      "kind": "function",
+      "signature": [
+        [
+          "location",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "date",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "roll_hr_and_min",
+          "POSITIONAL_OR_KEYWORD",
+          "(24, 0)"
         ]
       ]
     },

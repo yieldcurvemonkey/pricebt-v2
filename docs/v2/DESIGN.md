@@ -341,6 +341,7 @@ Requesting a currency conversion of a non-currency unit raises `ConfigError("mea
 | `trades`, `weights` | `list`, `list[float]` | portfolio_functions | trade objects of this asset on this market, and their weights (same length and order) |
 | `pricebt_quantity` | `float` | attributes | the instrument's signed quantity multiplier (§5.4) |
 | `pricebt_bump_size`, `pricebt_finite_difference_method`, `pricebt_local_curve`, `pricebt_scale_factor` | the measure's parameter value, or `None` when unset (`finite_difference_method` is a `FiniteDifferenceMethod`, a `str`) | functions, portfolio_functions | the requested measure's pass-through parameters (DEV-I10, §8.1 rule 3a) |
+| `market_to`, `pricebt_to_date` | the market of the target date (the context's csa) and that date, or `None` for a measure that is not relative | functions, portfolio_functions | a relative measure's target (`PnlExplain(CloseMarket(date=...))`, DEV-M2); the mapped function must name one of them. Under `PricingContext(market=CloseMarket(date=t))`, `market` is the market of `t` and `pricebt_date` stays the pricing date (DEV-M1) |
 | `base`, `quote` | `str` | FX config `rate` only | ISO codes |
 
 `market.expr` receives only `pricebt_date`, `pricebt_timestamp`, `pricebt_datetime` and `pricebt_csa`. Names defined by `imports` and `code` are visible to every expression of that asset. Injected names shadow config names of the same spelling, so do not define helpers named `market`, `trade`, `kwargs`, and so on.
@@ -561,7 +562,7 @@ The seams `pricebt.markets._engine_calc` and `pricebt.markets._engine_resolve` (
 ### 6.5 gs-shaped contexts, return conventions and futures
 
 ```python
-class PricingContext:                # pricebt.markets — gs signature (R04§6); only pricing_date and csa_term are used
+class PricingContext:                # pricebt.markets — gs signature (R04§6); only pricing_date, csa_term and market are used
     def __init__(self, pricing_date=None, market_data_location=None, is_async=None, is_batch=None, use_cache=None,
                  visible_to_gs=None, request_priority=None, csa_term=None, timeout=None, market=None, show_progress=None,
                  use_server_cache=None, market_behaviour='ContraintsBased', set_parameters_only=False,
@@ -569,6 +570,11 @@ class PricingContext:                # pricebt.markets — gs signature (R04§6)
     current: ClassVar                # the innermost entered context, else a default context (pricing_date = date.today())
     pricing_date -> date             # own value, else inherited from the enclosing context, else date.today()
     csa_term -> Optional[str]        # own value, else inherited
+    market -> Optional[CloseMarket]  # own value only (never inherited, gs); None or a CloseMarket, anything else raises
+                                     #   NotSupportedError (DEV-M1). CloseMarket(date=t): every market (and FX) of functions,
+                                     #   portfolio_functions and each_market trades is evaluated on t, pricebt_date stays the
+                                     #   pricing date, resolve uses the pricing date's own market; t is in every cache/group key
+                                     #   and is the results' risk_key.market; a t after date.today() raises ValueError (gs)
     is_entered -> bool; is_async -> bool
     __enter__/__exit__               # a stack; nothing is deferred
 
@@ -579,6 +585,15 @@ class HistoricalPricingContext(PricingContext):
     date_range -> tuple[date, ...]   # `dates` as given; else date_range(start, end or today); an int start = last N business days,
                                      #   DESCENDING (gs). Both or neither of start/dates -> gs ValueErrors. Property is named
                                      #   `date_range`, matching gs exactly (MUST-2) -- only the constructor kwarg is `dates`.
+
+class CloseMarket:                   # pricebt.markets — gs CloseMarket(date=None, location=None, check=True)
+    date -> date                     # own date if given and not check, else close_market_date(location, own date)
+    location -> str; check; to_dict(); __eq__/__hash__ on (date, location)   # location: the code string, default 'LDN' (DEV-M1);
+                                     #   it picks only the close-roll timezone; an unknown one raises ValueError (gs)
+
+def close_market_date(location=None, date=None, roll_hr_and_min=(24, 0)) -> date:
+    ...                              # gs: date (default: the current pricing date), the previous business day while now in
+                                     #   the location's timezone (default LDN, DEV-M1) is before date + roll_hr_and_min
 
 def _engine_calc(priceable, measures, fn=None): ...     # seam: body = from pricebt.assets import pricing; return pricing.engine_calc(...)
 def _engine_resolve(priceable, in_place: bool): ...     # seam: body = from pricebt.assets import pricing; return pricing.engine_resolve(...)
@@ -681,7 +696,7 @@ pricebt reimplements gs's identity semantics exactly (R03§14.1, R04§9):
 
 | Class | Must provide |
 |---|---|
-| `RiskKey` | namedtuple `(provider, date, market, params, scenario, risk_measure)`; pricebt fills `date` and `risk_measure`, the rest are `None` |
+| `RiskKey` | namedtuple `(provider, date, market, params, scenario, risk_measure)`; pricebt fills `date` and `risk_measure`, and `market` with a `CloseMarket` override's date (DEV-M1; `None` without one); the rest are `None` |
 | `FloatWithInfo(float)` | `.risk_key`, `.unit` (dict), `.error` (None), `.raw_value`. `+` with an equal unit gives a `FloatWithInfo`; an unequal unit raises `ValueError('FloatWithInfo unit mismatch')`; a `None` unit adds to any unit, and `+ number` and `sum()` stay `FloatWithInfo` (DEV-R14; gs gives plain floats and raises unless the units are equal). `* k` keeps `risk_key`/`unit`; `-`, `/` and unary `-` give a plain float (gs). `repr` is `1500.0 (USD)`. The constructor takes the value first, `FloatWithInfo(value, risk_key=None, unit=None, error=None)` (DEV-R12); `StringWithInfo`, `DictWithInfo` likewise. |
 | `DataFrameWithInfo(pd.DataFrame)` | `_metadata = ['risk_key', 'unit', 'error']`; `.raw_value`. A bucketed result has **exactly the columns `mkt_type, mkt_asset, mkt_class, mkt_point, mkt_quoting_style, value`**, all six always present. A missing label is `''`, never NaN. Row order is the order of the portfolio function's returned dict (DEV-R5). A **historical bucketed** result is one `DataFrameWithInfo` indexed by `date` (gs `compose`); its `raw_value` moves the index to a `dates` column; per-date selection is `df[df.index == d]`, a `DataFrameWithInfo` carrying `d` in its risk key, empty for a priced date whose ladder had no rows (DEV-R16, IR_RISK_DESIGN R2-27); `pricebt_dates` carries the priced dates, and a date outside them raises `KeyError` (gs). A **table** (`returns: frame`, `pricebt_table = True`, DEV-R11) has its own columns and keeps its `pricebt_scale_columns`; historically it is one table with a `date` column first, marked historical by its `pricebt_dates` (never by a column name). |
 | `SeriesWithInfo(pd.Series)` | the same metadata; historical scalar results are indexed by date |
@@ -992,7 +1007,8 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 
 | ID | File (task) | gs behaviour | pricebt behaviour |
 |---|---|---|---|
-| DEV-M1 | markets (Phase B) | `PricingContext(market=...)` prices on that market | any non-None `market` raises `NotSupportedError` at construction (it was silently ignored: a wrong-number path); the P&L-explain phase relaxes this for `CloseMarket` (IR_RISK_DESIGN §8, R2-30) |
+| DEV-M1 | markets (Phase B, Phase E) + assets/pricing | `PricingContext(market=...)` prices on any `Market` object; with none, `PricingContext.market` is a default `CloseMarket` at the pricing date's close (yesterday's when pricing today) | a `market` other than None or a `CloseMarket` raises `NotSupportedError` at construction (it was silently ignored: a wrong-number path). `CloseMarket(date=t)` is a **market-date override**: every market (and FX) of `functions`/`portfolio_functions` and of `each_market` trades is evaluated on `t` while `pricebt_date` stays the pricing date; `resolve` always uses the pricing date's own market; `t` is in every cache and group key. With no `market`, `PricingContext.market` is None and each asset config's own market for the pricing date is used, never rolled. A result's `risk_key.market` is the override date (`None` without one; gs: the `Market`), so results on different markets never aggregate (gs). `CloseMarket.location` is the location's code string (gs: a `PricingLocation`), `'LDN'` by default (gs: the context's `market_data_location`, which pricebt ignores, else LDN), and `close_market_date(location=None)` uses LDN (gs raises `ValueError` on `PricingLocation(None)`; the gs 030007 notebook calls it with no location) (IR_RISK_DESIGN §8, R2-30) |
+| DEV-M2 | risk + assets/pricing (Phase E) | `PnlExplain(to_market)` keeps the target in a private attribute: equality and hashing ignore it, and the server prices it in a `RelativeMarket` context (`pricing_context`) | the target is the measure's `parameters`, a frozen `MarketParameter(date, location)`, so equality, hashing, DEV-E14 ordering and every cache/group key distinguish targets; no `pricing_context`. The mapped (portfolio) function also receives `market_to` (the market of the target date, the context's csa) and `pricebt_to_date`, and must name one of them. `PnlExplainClose()` (target: the pricing date's own close) raises `NotSupportedError` unless a `CloseMarket` override makes the from-market another date; `PnlExplainLive`/`PnlPredictLive` raise at construction (live markets are GS server-side). The repr names the target (`PnlExplain(date:2024-01-09, location:LDN)`; gs: `PnlExplain` for every target), so two targets get two `to_frame` labels. The result is always the bucketed frame (gs turns a result of at most two rows of a single `mkt_type` into a float) (IR_RISK_DESIGN §8, R2-32) |
 
 **Kept on purpose** (documented in DEVIATIONS.md as "parity kept"):
 - ALL_OF short-circuits, while ANY_OF evaluates every child.

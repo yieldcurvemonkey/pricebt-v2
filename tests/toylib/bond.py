@@ -189,6 +189,19 @@ def clean_price(market, trade) -> float:
     return dirty_price(market, trade) - 100.0 * accrued(market, trade) / trade["face"]
 
 
+def pnl_explain(market, market_to, trades, weights) -> list:
+    """PnlExplain by full revaluation, weighted: IR = the curve moved with the spread held, CREDIT =
+    the spread moved with the curve held, CROSSES = the rest of the whole move."""
+    c0, s0, c1, s1 = market.curve, market.spread, market_to.curve, market_to.spread
+    parts, total = {"IR": 0.0, "CREDIT": 0.0}, 0.0
+    for trade, w in zip(trades, weights):
+        base = _pv(c0, s0, trade)
+        parts["IR"] += w * (_pv(c1, s0, trade) - base)
+        parts["CREDIT"] += w * (_pv(c0, s1, trade) - base)
+        total += w * (_pv(c1, s1, trade) - base)
+    return ir.explain_rows(c0.ccy, parts, total)
+
+
 def _flow_ladder(market, trade, tenors, which: int) -> dict:
     """Per-flow own-rate delta (which=0) or diagonal gamma (1, pricebt DEV-I13) at the pillar
     nearest each flow; linear in the flow PVs, so the buckets sum to the scalar."""

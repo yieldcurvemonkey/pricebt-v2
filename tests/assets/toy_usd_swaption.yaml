@@ -26,7 +26,7 @@ market:
 resolve:
   expr: 'ts.resolve_swaption(market, kwargs)'
 functions:
-  npv:             {expr: 'ts.npv(market, trade)', unit: ccy}
+  npv:             {expr: 'ts.npv(market, trade, pricebt_date)', unit: ccy}   # valued on the pricing date (a CloseMarket override keeps the time value)
   vega:            {expr: 'ts.vega(market, trade)', unit: ccy_per_bp}
   delta:           {expr: 'ts.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'ts.discount_delta(market, trade)', unit: ccy_per_bp}
@@ -60,6 +60,10 @@ portfolio_functions:
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+  pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
+    expr: 'ts.pnl_explain(market, market_to, trades, weights, pricebt_date)'
+    unit: ccy
+    returns: buckets
 attributes:
   expiration_date: 'resolved["expiration_date"]'
 risk_measures:
@@ -82,4 +86,5 @@ risk_measures:
   ExpiryInYears: expiry_in_years
   Annuity: annuity
   Cashflows: cashflows
+  PnlExplain: pnl_explain
   ProbabilityOfExercise: prob_exercise

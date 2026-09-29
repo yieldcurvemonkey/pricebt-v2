@@ -18,6 +18,7 @@ from typing import Any, Optional
 import pandas as pd
 
 from pricebt.common import AggregationLevel, AssetClass, FiniteDifferenceMethod, RiskMeasureUnit
+from pricebt.errors import NotSupportedError
 from pricebt.risk.results import (  # noqa: F401
     DataFrameWithInfo,
     DictWithInfo,
@@ -48,6 +49,11 @@ __all__ = [
     "RiskMeasureWithFiniteDifferenceParameter",
     "CurrencyParameter",
     "FiniteDifferenceParameter",
+    "MarketParameter",
+    "PnlExplain",
+    "PnlExplainClose",
+    "PnlExplainLive",
+    "PnlPredictLive",
     "Annuity",
     "BaseCPI",
     "CDATMSpread",
@@ -199,6 +205,18 @@ class FiniteDifferenceParameter:
     parameter_type: str = "FiniteDifference"
 
 
+@dataclass(frozen=True)
+class MarketParameter:
+    """pricebt DEV-M2: the target market of a relative measure (`PnlExplain`), as the `date` and
+    `location` given to its `CloseMarket` (`date=None` = the pricing date's own close, resolved when
+    priced). gs keeps the target outside the measure's fields, so two targets compare equal there;
+    here it is part of equality, hashing, ordering and every cache key."""
+
+    date: Optional[Any] = None
+    location: Optional[Any] = None
+    parameter_type: str = "Market"
+
+
 def _params_repr(parameters) -> Optional[str]:
     """`k:v, ...` for every non-`parameter_type` field set on `parameters`, keys sorted
     case-insensitively; `None` if `parameters` is `None` or every field is unset."""
@@ -333,6 +351,48 @@ def _repr_parameterised(self) -> str:
 
 RiskMeasureWithCurrencyParameter.__repr__ = _repr_parameterised
 RiskMeasureWithFiniteDifferenceParameter.__repr__ = _repr_parameterised
+
+
+# --------------------------------------------------------------------------------- relative measures
+# gs_quant/risk/measures.py's PnlExplain family: the change in value from the pricing context's
+# market to `to_market`, by risk factor, with no time component. An asset config maps `PnlExplain`
+# to a portfolio function that also receives `market_to` and `pricebt_to_date` (IR_RISK_DESIGN.md
+# section 8). pricebt DEV-M2: the result is always the bucketed frame (gs turns one of at most two
+# rows of a single mkt_type into a float).
+class PnlExplain(RiskMeasure):
+    """Pnl Explained"""
+
+    # pricebt DEV-M2: the target is in the repr, e.g. 'PnlExplain(date:2024-01-09, location:LDN)',
+    # so two targets get two to_frame labels (gs: 'PnlExplain' for every target)
+    __repr__ = _repr_parameterised
+
+    def __init__(self, to_market):
+        from pricebt.markets import CloseMarket  # IR_RISK_DESIGN R2-22: markets sits after risk
+
+        if not isinstance(to_market, CloseMarket):
+            raise NotSupportedError(f"PnlExplain(to_market={to_market!r}): pricebt explains only to a CloseMarket(date=...), each asset config's own market for that date")
+        # pricebt DEV-M2: the target is the measure's parameters (gs: a private attribute)
+        target = MarketParameter(None if to_market._date is None else to_market.date, to_market.location)
+        super().__init__(measure_type="PnlExplain", name="PnlExplain", parameters=target)
+
+
+class PnlExplainClose(PnlExplain):
+    def __init__(self):
+        from pricebt.markets import CloseMarket
+
+        super().__init__(CloseMarket())
+
+
+class PnlExplainLive(PnlExplain):
+    def __init__(self):
+        raise NotSupportedError("PnlExplainLive explains to the live market, which is GS server-side; use PnlExplain(CloseMarket(date=...))")
+
+
+class PnlPredictLive(RiskMeasure):
+    """Pnl Predicted"""
+
+    def __init__(self):
+        raise NotSupportedError("PnlPredictLive predicts against the live market, which is GS server-side; use PnlExplain(CloseMarket(date=...))")
 
 
 # --------------------------------------------------------------------------------- measure instances

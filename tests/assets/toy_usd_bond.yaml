@@ -56,6 +56,10 @@ portfolio_functions:
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+  pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
+    expr: 'tb.pnl_explain(market, market_to, trades, weights)'
+    unit: ccy
+    returns: buckets
 attributes:
   notional_amount:  'abs(resolved["face"]) * pricebt_quantity'
   termination_date: 'resolved["maturity"]'
@@ -80,6 +84,7 @@ risk_measures:
   ExpiryInYears: expiry_in_years
   Annuity: annuity
   Cashflows: cashflows
+  PnlExplain: pnl_explain
   LightningDV01: yield_dv01
   LightningOAS: spread_bp
   ParSpread: spread_bp

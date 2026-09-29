@@ -247,9 +247,13 @@ def test_engine_seams_raise_without_a_session(monkeypatch):
 def test_any_market_raises_not_supported_dev_m1():
     from pricebt.errors import NotSupportedError
 
+    from pricebt.markets import CloseMarket
+
     with pytest.raises(NotSupportedError, match="market"):
         PricingContext(market="any market object")
-    PricingContext(market=None)  # the default is fine
+    assert PricingContext(market=None).market is None  # the default is fine (no rolled default CloseMarket)
+    close = CloseMarket(date=date(2024, 3, 4))
+    assert PricingContext(market=close).market is close  # IR_RISK_DESIGN section 8: a CloseMarket is the one exception
 
 
 def test_current_setter_is_the_default_while_no_context_is_entered():

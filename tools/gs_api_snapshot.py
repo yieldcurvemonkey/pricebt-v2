@@ -54,7 +54,7 @@ The in-scope symbols (DESIGN section 12.3, IMPLEMENTATION_PLAN.md P1.6):
     combine_risk_key and classes PnlExplain, PnlExplainClose, PnlExplainLive, PnlPredictLive
     (IR_RISK_DESIGN.md R2-23);
   - the gs_quant.common enums;
-  - gs_quant.markets.{PricingContext, HistoricalPricingContext} and
+  - gs_quant.markets.{PricingContext, HistoricalPricingContext, CloseMarket, close_market_date} and
     gs_quant.markets.portfolio.Portfolio;
   - the gs_quant.datetime functions;
   - gs_quant.session.GsSession.use and gs_quant.session.Environment.
@@ -264,7 +264,8 @@ def build_api_snapshot() -> dict:
         if isinstance(obj, type) and issubclass(obj, enum.Enum) and obj.__module__.startswith("gs_quant"):
             symbols[f"gs_quant.common.{name}"] = _describe(obj)
 
-    for name in ("PricingContext", "HistoricalPricingContext"):
+    # IR_RISK_DESIGN.md section 8 / R2-25: CloseMarket and close_market_date (Phase E)
+    for name in ("PricingContext", "HistoricalPricingContext", "CloseMarket", "close_market_date"):
         symbols[f"gs_quant.markets.{name}"] = _describe(getattr(gs_quant.markets, name))
     symbols["gs_quant.markets.portfolio.Portfolio"] = _describe(gs_quant.markets.portfolio.Portfolio)
 

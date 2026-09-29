@@ -17,6 +17,9 @@ Transcription rules (DESIGN.md section 1):
     because 030009 asks every swap for `IRVegaParallel`, which `toy_eur_irs` declares unsupported
     (R2-20) and `toy_usd_irs_full` maps to 0.0 (R2-8); the two USD swap assets cannot be registered
     together (same `match:`);
+  - 030007: the swap `'EUR'` -> `'USD'`: `PnlExplain` has no currency parameter, so pricebt reports it in
+    each asset function's own currency (DEV-I5), and `aggregate()` refuses to add EUR and USD rows (gs's unit
+    check); the notebook's own book is single-currency (EUR swap and swaption);
   - 030011: the CSV's `'27-Jan-15'` dates and `'50,000,000'` notionals are parsed by the GS server;
     the toy resolver takes dates and numbers (DEV-I6), so the `effective_date`, `termination_date` and
     `notional_amount` mappers parse them (the other seven mappers are verbatim).
@@ -32,7 +35,7 @@ SKIPPED cells:
 | 030002 | 0 (`pd.options.display.float_format = ...`) | global pandas display state only; it would leak past the test |
 | 030002 | 19 | empty |
 | 030006 | 0 (matplotlib/seaborn imports), 5 | plotting only (seaborn heatmap); no pricebt call, not a pricebt dependency |
-| 030007 | 4, 5 | `CloseMarket`/`close_market_date`/`PnlExplain` are Phase E (section 8); transcribed in the skipped `test_030007_pnl_explain`; 5 is empty |
+| 030007 | 5 | empty |
 | 030008 | 3, 9 | commented out in the notebook (`pd.read_excel`, `Portfolio.from_csv`) |
 | 030010 | 4, 5 | the cross-leg reference `strike="=[foo].strike + 5bp"` is resolved GS server-side; a config resolves one instrument at a time (R10 section 3), so resolve fails loudly (asserted) |
 | 030011 | 2 (`IRSwap?`) | IPython help magic, no pricebt call |
@@ -350,12 +353,11 @@ def test_030006_portfolio_grid_calc():
 
 # ------------------------------------------------------------------------------ 030007_pnl_explain
 # cells: 0 GsSession.use; 2 swap + swaption Portfolio, resolve(); 4 PnlExplain(CloseMarket) vs dollar
-# prices (Phase E, section 8); 5 empty
+# prices (IR_RISK_DESIGN section 8); 5 empty
 
 
-@pytest.mark.skip(reason='Phase E')
 def test_030007_pnl_explain():
-    swap = IRSwap(notional_currency='EUR', termination_date='10y', pay_or_receive='Pay')
+    swap = IRSwap(notional_currency='USD', termination_date='10y', pay_or_receive='Pay')
     swaption = IRSwaption(notional_currency='USD', termination_date='10y', expiration_date='1y', pay_or_receive='Receive')
 
     portfolio = Portfolio((swap, swaption))
@@ -395,8 +397,12 @@ def test_030007_pnl_explain():
     explain_all = result[explain].aggregate()
     shown = explain_all[explain_all.value.abs() > 1.0].round(0)
 
-    assert from_date < to_date
-    assert {'mkt_type', 'value'} <= set(explain_all.columns) and set(shown.mkt_type) <= set(explain_all.mkt_type)
+    assert (from_date, to_date) == (dt.date(2023, 12, 26), TOY_TODAY)
+    # the swap's and the swaption's rows, summed by factor (first appearance); CROSSES is the rest
+    assert list(explain_all.mkt_type) == ['IR', 'CROSSES', 'IR VOL'] and set(shown.mkt_type) <= set(explain_all.mkt_type)
+    # the toy swaption values on pricebt_date, so time passes between the two prices (the toy swap is
+    # carry-free): a time/market mix-up in the explain rows breaks the identity below
+    assert float(time_value) < -1.0
     assert float(explained) == pytest.approx(float(price_diff), rel=1e-6)  # section 8.3: full revaluation by factor
 
 

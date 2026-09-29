@@ -273,7 +273,7 @@ Acceptance: `tests/test_portfolio_notebooks.py` runs the code cells of gs `03_po
 
 ## 8. `CloseMarket` and `PnlExplain` (Phase E)
 
-1. `pricebt.markets.CloseMarket(date=None, location=None)` (gs signature per R11§4); `PricingContext(market=CloseMarket(date=d))` makes the service evaluate **markets** at `d` while `pricebt_date` stays the pricing date. The cache keys carry the market date. Trades built `each_market` use the override market; `resolve` always uses the pricing date's own market.
+1. `pricebt.markets.CloseMarket(date=None, location=None, check=True)` (gs signature per R11§4, R2-25); `PricingContext(market=CloseMarket(date=d))` makes the service evaluate **markets** at `d` while `pricebt_date` stays the pricing date. The cache keys carry the market date. Trades built `each_market` use the override market; `resolve` always uses the pricing date's own market.
 2. `PnlExplain(to_market)` (class, gs signature), `PnlExplainClose()` (to_market = `CloseMarket()` at the pricing date: raises `NotSupportedError` unless a context date differs), `PnlExplainLive`/`PnlPredictLive` → `NotSupportedError` (live market). Config: `risk_measures: {PnlExplain: pnl_explain}` where the function is a `returns: buckets` **portfolio function** receiving the extra injected `market_to` and `pricebt_to_date`; buckets are risk-factor rows (`mkt_type` values such as `IR`, `IR VOL`, `CROSSES`), ccy. Not in the contract (optional measure).
 3. Toys implement it (full revaluation by factor: rates, vol, cross); test on a swaption and the gs 030007 notebook in `test_portfolio_notebooks.py`.
 

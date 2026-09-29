@@ -69,10 +69,11 @@ The only names pricebt puts into an evaluation (DESIGN §4.3):
 | `trades`, `weights` | `list`, `list[float]` | portfolio_functions | this asset's trade objects on this market, and their weights |
 | `pricebt_quantity` | `float` | attributes | the instrument's signed quantity multiplier |
 | `pricebt_bump_size`, `pricebt_finite_difference_method`, `pricebt_local_curve`, `pricebt_scale_factor` | the value or `None` | functions, portfolio_functions | the requested measure's parameter (e.g. `IRDelta(bump_size=5)`). A function supports a parameter only if its expression names the variable; otherwise requesting it raises `NotSupportedError` (DEV-I10) |
+| `market_to`, `pricebt_to_date` | the market of the target date and that date, or `None` | functions, portfolio_functions | a relative measure's target (`PnlExplain(CloseMarket(date=...))`, DEV-M2); the mapped function must name one of them. Under `PricingContext(market=CloseMarket(date=t))`, `market` is the market of `t` while `pricebt_date` stays the pricing date (DEV-M1) |
 | `base`, `quote` | `str` | FX config `rate` only | ISO codes |
 
 Injected names **shadow** config names of the same spelling — do not define a helper named
-`market`, `trade`, `kwargs`, `resolved`, `trades` or `weights`. `market.expr` itself only ever
+`market`, `market_to`, `trade`, `kwargs`, `resolved`, `trades` or `weights`. `market.expr` itself only ever
 sees `pricebt_date`/`pricebt_timestamp`/`pricebt_datetime`/`pricebt_csa`: no asset name or currency,
 because a shared market (see below) has no single owning asset.
 
