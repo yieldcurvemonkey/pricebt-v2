@@ -225,6 +225,48 @@ Nothing in the engine, the pricing layer or the result objects changed to make t
 asset-agnostic guard (`tests/guards/test_asset_agnostic_scan.py`) fails the build if a later change
 introduces a swap- or swaption-specific token into those layers.
 
+## P&L explain functions
+
+Four optional `functions:` entries let an asset config support `pnl_explain()`/`swap_pnl_definition()`
+(`docs/v2/PNL_EXPLAIN_PLAN.md` §2 has the full derivation; this section is the config-author summary,
+for any pricing library, not just ARBS). None is required — an asset with only `npv`/`dv01`/`par_rate`
+still backtests fine, it just can't be given a gamma/carry attribution.
+
+| Function | Unit | Meaning |
+|---|---|---|
+| `gamma` | `ccy_per_bp2` | `∂²npv/∂par²`, per bp² of this trade's own par rate |
+| `theta` | `ccy` (per **year** — the value already bakes in the "per year", the unit tag is just currency) | `∂npv/∂t` at constant forward rates |
+| `year_fraction` | `decimal` | an intensive time coordinate for the pricing date |
+| `cash_paid_to_date` | `ccy` | cumulative holder-signed cash the trade has paid out so far |
+
+The conventions behind them, each because the obvious alternative is wrong:
+
+- **`gamma` is the second derivative of `npv`, never `dv01` differenced.** With `npv = dv01·(par−K)`,
+  bumping the curve and differencing `dv01` gives *half* the true gamma at the money — the annuity's
+  own convexity is missing. Compute it directly: shift the curve ±1bp, price `npv` at up/down/mid and
+  `par` at up/down on the *same* trade, and divide by the **measured** `((par_up−par_down)/2)²`, not
+  by `1bp²`. A payer's gamma is negative (short convexity); a receiver's is the negative of the payer's.
+- **`theta` is at constant forwards, never a curve roll.** Measure it on a *translated* curve
+  (`DF'(x) = DF(x)/DF(t+1day)`, forward rates held fixed), not a *rolled* one (static shape in tenor
+  space). Under a translation the trade's par rate barely moves, so delta and carry don't double-count
+  the same P&L; under a roll, real roll-down leaks into both theta and delta. One calendar day forward,
+  annualised: `theta = (npv(translated by 1 day) − npv(today)) × 365`.
+- **`year_fraction` must be `unit: decimal` (intensive), never `unit: number` (extensive).** pricebt
+  scales an extensive unit by `quantity_`; a time coordinate must not grow with position size, or
+  `Δyear_fraction` — and therefore carry — comes out wrong for any scaled trade.
+- **`cash_paid_to_date` exists because coupons paid between marks are not booked as cash** (the same gs
+  behaviour `pricebt-architecture`'s engine-semantics table calls out): a swap's PV simply drops on its
+  payment date, so without this function every coupon date leaves a residual equal to minus the coupon.
+  Report the cumulative net cash the trade has paid the holder, from its effective date up to and
+  including the market's reference date, holder-signed. A library whose PV convention never drops paid
+  coupons (for example a toy world with no notion of settled cash) correctly reports `0.0` always —
+  that is not a stub, it is the right answer for that convention.
+- **None of the four may return `NaN` for a held trade.** `pnl_explain()` accumulates with no NaN
+  guard, so one `NaN` poisons every later cumulative value. A trade that has matured between two marks
+  must report `dv01 = gamma = theta = 0.0`; if the library's own `par_rate` goes `NaN` post-maturity,
+  either fix that at the source or add a separate NaN-safe rate function for the P&L explain path and
+  keep the original for anything else that depends on the `NaN`.
+
 ## Security note
 
 **Asset and FX configs are trusted code, not data.** `imports`/`code` are `exec`'d and every

@@ -1,5 +1,11 @@
+# Broken on purpose (check_asset fixture): theta computed per DAY instead of per YEAR (the *365 is
+# dropped). Per PNL_EXPLAIN_PLAN.md 5.3, a per-day theta is SMALLER than the correct one, so it does
+# NOT trip swap_theta's |theta| <= 1000*|dv01| magnitude band -- see
+# tests/skills/test_skill_check_asset.py's test_bad_theta_per_day_slips_past_swap_theta_but_t_theta_1_catches_it
+# for the honest accounting of that blind spot (T1-B's T-THETA-1 catches this exact mutation).
+# Copy of tests/assets/toy_usd_irs.yaml with ONE thing broken.
 schema_version: 1
-asset: toy_usd_irs
+asset: bad_theta_per_day
 description: >
   Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
   fixture, never shipped. Exercises build_on: each_market. Units: npv USD; dv01 USD per +1bp
@@ -28,8 +34,8 @@ functions:
   dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
   par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
   gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
-  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                  # ccy per YEAR
-  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}             # intensive time coordinate
+  theta:             {expr: 'tr.theta(market, trade) / 365.0', unit: ccy}  # BROKEN: per day, not per year
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}
   cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
 portfolio_functions:
   delta_ladder:

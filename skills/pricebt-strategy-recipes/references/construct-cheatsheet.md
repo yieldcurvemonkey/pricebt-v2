@@ -86,3 +86,24 @@ Costs appear (negative) in `result_summary["Transaction Costs"]`; `Total = price
 - Signal data: `GenericDataSource(data_set=None, missing_data_strategy=MissingDataStrategy.fail)` over a pandas
   Series (`fill_forward` never looks ahead, DEV-T13); build the Series with
   `pricebt.data.measure_series(instrument, measure, start, end, frequency='1b')`.
+
+## P&L explain (`swap_pnl.py`)
+
+Not a `pricebt.backtests` construct itself -- a skill script (`scripts/swap_pnl.py`) built on top of
+`BackTest.pnl_explain()`/`PnlDefinition`/`PnlAttribute` (`src/pricebt/backtests/backtest_objects.py`),
+for `IRSwap` books. `PNL_EXPLAIN_PLAN.md` is the full spec; this is the call surface.
+
+| Call | Returns |
+|---|---|
+| `swap_pnl.swap_pnl_definition(rate_unit='bp', gamma=True, carry=True, rate_measure=IRFwdRate)` | a `PnlDefinition`: `PNL_delta` (`IRDeltaParallel` x `rate_measure`), `PNL_gamma` (`IRGammaParallel` x `rate_measure`, `second_order=True`, omitted if `gamma=False`), `PNL_carry` (`swap_pnl.IRTheta` x `swap_pnl.YearFraction`, omitted if `carry=False`). Pass as `run_backtest(pnl_explain=...)`. |
+| `swap_pnl.rate_unit_for(asset_config, rate_measure=IRFwdRate)` | the config's declared unit for `rate_measure` (`'bp'`/`'pct'`/`'decimal'`), to pass as `swap_pnl_definition(rate_unit=...)` instead of hardcoding it. |
+| `swap_pnl.explain_table(bt, cash=True) -> pd.DataFrame` | indexed by date: `actual_dpv, cash, economic, PNL_delta, PNL_gamma, PNL_carry, explained, residual`. Rebuilds the held book's actual P&L independently of `pnl_explain()`'s own loop (the reconciliation ground truth). `cash` needs `CashPaidToDate` in `run_backtest(risks=[...])`, else it is reported as `0.0`. |
+| `swap_pnl.explain_stats(table) -> dict` | `totals` (per-column sums), `r2`, `residual_share = var(residual)/var(economic)`, `abs_residual_total`/`abs_economic_total`/`abs_residual_ratio`, `worst_residual_date`/`worst_residual`. |
+| `swap_pnl.exact_split(bt) -> pd.DataFrame` | the exact per-trade algebraic identity (`PV = pv01*(par-K)`, PNL_EXPLAIN_PLAN.md section 2.7): `delta_term, moneyness_term, convexity_term, total` -- the diagnostic a large or unexpected `residual` is checked against. |
+| `swap_pnl.IRTheta`, `swap_pnl.YearFraction`, `swap_pnl.CashPaidToDate` | the three custom `RiskMeasure` singletons this module defines (plain `RiskMeasure(...)`, never in `src/pricebt`). An asset config maps them under `risk_measures:` to use `swap_pnl_definition()`'s carry term or `explain_table`'s cash column. |
+
+Needs the config's `risk_measures:` to map `IRGammaParallel`/`IRTheta`/`YearFraction` (and, for `cash`,
+`CashPaidToDate`) -- see `skills/pricebt-asset-config-cookbook/references/patterns.md` pattern 14 and
+`docs/v2/ASSET_CONFIG_GUIDE.md`'s "P&L explain functions" section. Without those mappings,
+`gamma=False, carry=False` still gives delta-only attribution on any swap config that maps
+`IRFwdRate`/`IRDelta`.

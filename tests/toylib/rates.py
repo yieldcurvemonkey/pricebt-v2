@@ -13,10 +13,11 @@ HOLES and reset_recorders(). These are module-level, shared with any code that d
 from __future__ import annotations
 
 import collections
+import dataclasses
 import math
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 import numpy as np
@@ -63,10 +64,11 @@ class ToyCurve:
     ccy: str
     zero_rate: float
     csa: Optional[str] = None
+    slope: float = 0.0  # PNL_EXPLAIN_PLAN.md 3.1: sloped-world tests only; 0.0 default is a no-op.
 
     def discount_factor(self, d: date) -> float:
         t = (d - self.ref_date).days / 365.0
-        return math.exp(-self.zero_rate * t)
+        return math.exp(-(self.zero_rate + self.slope * t) * t)
 
 
 def market(d: date, ccy: str, csa: Optional[str] = None) -> Optional[ToyCurve]:
@@ -76,6 +78,18 @@ def market(d: date, ccy: str, csa: Optional[str] = None) -> Optional[ToyCurve]:
     if d in HOLES:
         return None
     return ToyCurve(d, ccy, _zero_rate(d, ccy), csa)
+
+
+def market_sloped(d: date, ccy: str, csa: Optional[str] = None, slope: float = 0.0) -> Optional[ToyCurve]:
+    """Same level as `market()` (the same `_zero_rate(d, ccy)`), plus an explicit curve slope.
+    `_zero_rate` gives the level, `slope` gives the shape. Not wired into `toy_usd_irs.yaml`;
+    PNL_EXPLAIN_PLAN.md 3.1 says the sloped-world tests reach it through a test-only config variant.
+    Tagged as a "market" eval like `market()`, since it is the same market-construction role."""
+    EVAL_COUNTS["market"] += 1
+    CSA_SEEN.append(("market", d, csa))
+    if d in HOLES:
+        return None
+    return ToyCurve(d, ccy, _zero_rate(d, ccy), csa, slope)
 
 
 # --------------------------------------------------------------------- swap resolution and construction
@@ -180,6 +194,56 @@ def pv01(market: ToyCurve, trade: ToySwap) -> float:
 def par_rate(market: ToyCurve, trade: ToySwap) -> float:
     EVAL_COUNTS["par_rate"] += 1
     return _par_rate(market, trade.effective_date, trade.termination_date) * 1e4
+
+
+class TranslatedCurve:
+    """A curve translated forward `days` calendar days: forward rates held fixed (PNL_EXPLAIN_PLAN.md
+    2.2), as opposed to a *rolled* curve (static shape in tenor space). Same duck-typed interface as
+    ToyCurve -- `discount_factor`, plus `ref_date`/`ccy`/`csa` for parity -- so it drops straight into
+    `npv`/`pv01`/`par_rate`/`_annuity`, all of which only ever call `.discount_factor(d)` on a curve."""
+
+    def __init__(self, base: ToyCurve, days: int):
+        self.base = base
+        self.ref_date = base.ref_date + timedelta(days=days)
+        self.ccy = base.ccy
+        self.csa = base.csa
+
+    def discount_factor(self, d: date) -> float:
+        return self.base.discount_factor(d) / self.base.discount_factor(self.ref_date)
+
+
+def gamma(market: ToyCurve, trade: ToySwap) -> float:
+    """PNL_EXPLAIN_PLAN.md 2.1, EXACTLY: second derivative of npv (never the derivative of dv01 --
+    that gives half the gamma, see T-GAMMA-2's half-gamma trap), denominated by this trade's own
+    MEASURED par move under the same +/-1bp shift. Payer < 0; receiver = -payer."""
+    EVAL_COUNTS["gamma"] += 1
+    up = dataclasses.replace(market, zero_rate=market.zero_rate + 1e-4)
+    down = dataclasses.replace(market, zero_rate=market.zero_rate - 1e-4)
+    npv_up, npv_down, npv_mid = npv(up, trade), npv(down, trade), npv(market, trade)
+    par_up, par_down = par_rate(up, trade), par_rate(down, trade)
+    return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+
+
+def theta(market: ToyCurve, trade: ToySwap) -> float:
+    """PNL_EXPLAIN_PLAN.md 2.2, EXACTLY: one-calendar-day forward difference on a TRANSLATED (not
+    rolled) curve, in currency per YEAR. Roll-down that actually happens is real Δpar and belongs to
+    delta, not here (see T-SLOPE-2's double-count test)."""
+    EVAL_COUNTS["theta"] += 1
+    return (npv(TranslatedCurve(market, 1), trade) - npv(market, trade)) * 365.0
+
+
+def year_fraction(market: ToyCurve) -> float:
+    """PNL_EXPLAIN_PLAN.md 2.3: an INTENSIVE time coordinate -- `unit: decimal`, never `unit: number`,
+    or pricebt would scale it by quantity_ (T-YF's mutation)."""
+    EVAL_COUNTS["year_fraction"] += 1
+    return (market.ref_date - date(2000, 1, 1)).days / 365.0
+
+
+def cash_paid_to_date(market: ToyCurve, trade: ToySwap) -> float:
+    """PNL_EXPLAIN_PLAN.md 2.4: always 0.0 on the toy. This is correct, not a stub -- the toy's
+    `_annuity`/`npv` never drop a past coupon out of PV, so no cash ever left it (T-CASH)."""
+    EVAL_COUNTS["cash_paid_to_date"] += 1
+    return 0.0
 
 
 def _tenor_years(t: str) -> float:

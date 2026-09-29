@@ -101,6 +101,14 @@ Every check is documented, with the mistake it catches, in the docstring of `ski
 | `swap_bucket_sum` | FAIL | ladder in a different unit/sign than the scalar, or missing pillars | same convention as the scalar; include every pillar |
 | `swap_pnl_explain` | FAIL negative ratio | npv and dv01 use opposite sign conventions | make npv payer-positive when rates rise |
 | `swap_pnl_explain` | WARN ratio outside [0.5, 1.5] | large carry/roll between the dates, or a scale error | try closer dates; if it persists, check units |
+| `swap_pv_identity` | FAIL | `npv`/`dv01`/`par`/`fixed_rate` disagree on sign or unit (`PV != dv01*(par-K)`), at the ATM date or the off-market one | fix whichever of the four is wrong; the two FAIL details show exactly which date broke |
+| `swap_pv_identity` | WARN "dv01 depends on the strike" | `dv01` is a realistic full-curve PV sensitivity, not the fixed-leg annuity pv01 (PNL_EXPLAIN_PLAN.md 2.1) — a legitimate convention difference, not a bug | nothing to fix; explain the WARN in the config's `description:` if it is expected |
+| `swap_gamma` | FAIL sign/band | payer gamma >= 0, receiver != -payer, or `abs(gamma)/(abs(dv01)*T*1e-4)` outside [0.2, 2] | fix the second-npv-difference formula or its sign |
+| `swap_gamma` | FAIL half-gamma probe | gamma computed from `dv01` differences instead of the true second difference of `npv` (PNL_EXPLAIN_PLAN.md 2.1's "half-gamma trap") | use `npv(up)+npv(down)-2*npv(mid)`, never `dv01(up)-dv01(down)` |
+| `swap_gamma` | SKIP half-gamma probe | no pair of business days within 30 (up to 10 apart) moved the trade's par by >= 3bp | pass `--date`s further apart, or on a more volatile market; never lower the 3bp threshold |
+| `swap_theta` | FAIL | receiver `theta` != `-payer`, or `abs(theta) > 1000*abs(dv01)` (a unit-magnitude check — commonly theta computed per day instead of per year) | fix the sign convention or the time unit (PNL_EXPLAIN_PLAN.md 2.2) |
+| `year_fraction` | FAIL | declared `unit: number` (extensive) instead of `decimal`, so pricebt multiplies it by trade size, or the d1->d2 delta != `(d2-d1).days/365` | declare `decimal`; `year_fraction` must be an intensive time coordinate (PNL_EXPLAIN_PLAN.md 2.3) |
+| `cash_paid_to_date` | FAIL | a fresh ATM trade already shows nonzero cash at d1, or receiver != `-payer` at d2 | fix the sign convention, or the cumulative-cash calculation itself |
 
 ## What the checker cannot prove
 
