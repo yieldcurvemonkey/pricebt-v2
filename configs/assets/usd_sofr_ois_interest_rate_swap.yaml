@@ -155,6 +155,88 @@ code: |
       memo[tenors] = (rh, sv)
       return memo[tenors]
 
+  # ------------------------------------------------------------------- P&L explain (PNL_EXPLAIN_PLAN.md T2)
+  def _explain_memo(m):
+      return m.__dict__.setdefault("_pricebt_explain", {})
+
+  def _bump_curves(m):                # gamma (2.1): +/-1bp PARALLEL shift; same node dates as m, so no
+      memo = _explain_memo(m)         # fixings gap (unlike translate below) -- reuse m's own fixings as-is.
+      if "bump" not in memo:
+          up, down = m.handle().shift(1.0), m.handle().shift(-1.0)
+          meta = dict(m.meta())
+          meta_up = dict(meta); meta_up["id"] = up.id
+          meta_down = dict(meta); meta_down["id"] = down.id
+          memo["bump"] = (
+              RLIRSwapCurve(rl_curve_id=up.id, rl_curve_handle=up, fixings=m.index(), meta_data=meta_up),
+              RLIRSwapCurve(rl_curve_id=down.id, rl_curve_handle=down, fixings=m.index(), meta_data=meta_down),
+          )
+      return memo["bump"]
+
+  def _translated_curve(m):           # theta (2.2): curve translated 1 CALENDAR day, forwards held fixed.
+      memo = _explain_memo(m)
+      if "trans" not in memo:
+          ref = m.reference_date()
+          ref_d = ref.date() if hasattr(ref, "date") else ref
+          new_start = _dt.datetime(ref_d.year, ref_d.month, ref_d.day) + _dt.timedelta(days=1)
+          translated = m.handle().translate(new_start)
+          # PITFALL (plan 3.5): the translated curve starts at new_start, so rateslib cannot forecast
+          # [ref, new_start) off it (Curve.__getitem__ returns DF=0 for a date before its own initial
+          # node) -- and m's own fixings are filtered strictly < ref (ARBS's _asof_fixings), so that one
+          # day is missing from BOTH sources at once. Append the ORIGINAL (untranslated) curve's own
+          # overnight forward for exactly that window -- constant-forwards, matching theta's own
+          # convention -- to a COPY of the fixings; never write to m's own series or ARBS's cache.
+          # Verified live on a seasoned trade (docs/v2/LIVE_ARBS_REPORT.md "P&L explain"): unpatched
+          # theta was -3.7e8 (a missing-fixing division-by-zero symptom inside rateslib); patched, 2.7e3.
+          fwd_pct = m.handle().rate(ref, new_start)   # percent, matching the fixings series' own units
+          fixings = m.index().copy()
+          fixings.loc[pd.Timestamp(ref_d)] = float(fwd_pct)
+          fixings = fixings.sort_index()
+          meta = dict(m.meta()); meta["id"] = translated.id
+          memo["trans"] = RLIRSwapCurve(rl_curve_id=translated.id, rl_curve_handle=translated, fixings=fixings, meta_data=meta)
+      return memo["trans"]
+
+  def _cashflow_sum(m, t, predicate):  # sum of holder-signed Cashflow (both legs) whose Payment date
+      cf = remark(m, t).cashflows(curves=m.handle())   # matches `predicate` (research/06 s251, verified live:
+      pay = cf["Payment"].apply(lambda p: p.date() if hasattr(p, "date") else p)   # columns include
+      return float(cf.loc[pay.apply(predicate), "Cashflow"].sum())                 # Payment/Cashflow;
+      # a payer's fixed leg Cashflow < 0, float leg > 0 -- net is payer-positive when float > fixed, 2.4)
+
+  def gamma(m, t):                     # 2.1: 2nd derivative of NPV, NEVER of dv01 (half-gamma trap)
+      if not alive(m, t):
+          return 0.0
+      rh_up, rh_down = _bump_curves(m)
+      t_up, t_down = remark(rh_up, t), remark(rh_down, t)   # fresh fixings-kwargs per wrapper (fair_rate
+      npv_up, npv_down, npv_mid = rh_up.npv(t_up), rh_down.npv(t_down), m.npv(t)   # does not rebuild)
+      par_up, par_down = rh_up.fair_rate(t_up) * 1e4, rh_down.fair_rate(t_down) * 1e4   # this trade's
+      return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2      # OWN measured move
+
+  def theta(m, t):                     # 2.2: one-calendar-day forward difference at constant forwards
+      if not alive(m, t):
+          return 0.0
+      rh = _translated_curve(m)
+      remarked = remark(rh, t)
+      npv_new = rh.npv(remarked)
+      ref = m.reference_date()
+      ref_d = ref.date() if hasattr(ref, "date") else ref
+      # A coupon paid exactly on today's reference date is STILL inside npv(today) (verified live: npv
+      # is unchanged between Payment-1d and Payment, then drops the day AFTER Payment -- i.e. npv keeps
+      # a coupon while Payment >= reference_date) but has already left tomorrow's (translated) npv. Add
+      # it back so theta measures pure time decay, never the discrete cash transfer explain_table's own
+      # `cash` column (cash_paid_to_date below) already attributes.
+      coupon_today = _cashflow_sum(m, t, lambda d: d == ref_d)
+      return (npv_new + coupon_today - m.npv(t)) * 365.0
+
+  def year_fraction(m):                # 2.3: intensive time coordinate, no trade dependency at all
+      ref = m.reference_date()
+      ref_d = ref.date() if hasattr(ref, "date") else ref
+      return (ref_d - _dt.date(2000, 1, 1)).days / 365.0
+
+  def cash_paid_to_date(m, t):         # 2.4/3.5: holder-signed, cumulative to the market's reference date
+      ref = m.reference_date()         # strict '<' matches npv's own drop point exactly (verified live):
+      ref_d = ref.date() if hasattr(ref, "date") else ref   # a coupon leaves npv (Payment < ref) on the
+      return _cashflow_sum(m, t, lambda d: d < ref_d)        # same date it first counts as paid here --
+      # never a double count (both) or a miss (neither) on the payment step itself.
+
   def delta_ladder(m, trades, weights, tenors):
       tenors = tuple(tenors)
       live = [(t, w) for t, w in zip(trades, weights) if alive(m, t) and w != 0.0]
@@ -179,10 +261,14 @@ trade:
 functions:
   npv:        {expr: '0.0 if not unsettled(market, trade) else market.npv(trade)', unit: ccy}
   dv01:       {expr: '0.0 if not alive(market, trade) else market.pv01(trade)', unit: ccy_per_bp}   # pv01 safe as-is (R06 s3.4)
-  par_rate:   {expr: 'float("nan") if not alive(market, trade) else market.fair_rate(remark(market, trade)) * 1e4', unit: bp}
+  par_rate:   {expr: 'market.fixed_rate(trade) * 1e4 if not alive(market, trade) else market.fair_rate(remark(market, trade)) * 1e4', unit: bp}   # PNL_EXPLAIN_PLAN.md 2.5: dead -> fixed_rate*1e4, not NaN (DECISIONS_LOG.md)
   fixed_rate: {expr: 'market.fixed_rate(trade) * 1e4', unit: bp}
   carry_1m:   {expr: 'float("nan") if not (alive(market, trade) and _carry_ok(market, trade, "1m")) else market.carry_bps_running(remark(market, trade), "1m")', unit: bp}
   roll_1m:    {expr: 'float("nan") if not (alive(market, trade) and _roll_ok(market, trade, "1m")) else market.roll_bps_running(remark(market, trade), "1m")', unit: bp}
+  gamma:             {expr: 'gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'theta(market, trade)', unit: ccy}                    # ccy per YEAR, not per day
+  year_fraction:     {expr: 'year_fraction(market)', unit: decimal}               # intensive time coordinate
+  cash_paid_to_date: {expr: 'cash_paid_to_date(market, trade)', unit: ccy}
 portfolio_functions:
   delta_ladder:
     expr: 'delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
@@ -198,3 +284,7 @@ risk_measures:
   Price: npv
   IRDelta: {scalar: dv01, bucketed: delta_ladder}      # IRDeltaParallel / IRDeltaLocalCcy fall back here (s8.1 rule 3)
   IRFwdRate: par_rate
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date

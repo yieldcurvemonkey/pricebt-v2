@@ -951,3 +951,211 @@ the real `gamma`/`theta` functions against rateslib). A config using a full-curv
 (like Meridian, or conceivably a future non-toy asset in this repo) would need `swap_pnl_definition`
 re-derived against §2.7's general `dPV = pv01*dpar + (par-K)*dpv01 + dpv01*dpar` split rather than
 the simplified `PNL_delta + PNL_gamma` this plan builds — out of scope for T1.
+
+---
+
+## 2026-09-29 — T2-A: dead-trade explain rate — option (a), `par_rate` returns `fixed_rate*1e4` instead
+of `NaN`
+
+**Situation:** §2.5 requires the dead-trade market rate feeding `PNL_delta` to be `fixed_rate*1e4`, not
+`NaN`, and names two options: (a) change ARBS's own `par_rate` function directly (preferred, but only
+after grepping every consumer of the NaN), or (b) a separate `explain_rate` function plus a configurable
+`rate_measure` on `swap_pnl_definition` (already parameterised that way since T1).
+
+**Rule applied:** §2.5's own instruction — grep before choosing (a).
+
+**Decision:** option (a). `grep -rn "par_rate" tests/ notebooks/ skills/ docs/v2/LIVE_ARBS_REPORT.md`
+found no test, fixture, or doc asserting or depending on the ARBS config's dead-trade `NaN`:
+`test_arbs_config_static.py` never evaluates `par_rate` (it only inspects the loaded `AssetConfig`'s
+strings, DESIGN §4.4); `test_live_arbs.py` never prices a dead trade through `par_rate`/`IRFwdRate`;
+every other `par_rate` hit is the TOY config or an unrelated skill. Independently,
+`skills/pricebt-asset-config-cookbook/references/patterns.md:272-275` (written during T1, before this
+config was touched) already documents the rule "for the market rate feeding `PNL_delta`,
+`fixed_rate * 1e4` so the maturity step's delta term correctly equals `-PV(t-1)`" as the *general*
+pattern for any config, not just the toy — option (a) is consistent with T1's own documentation, so no
+`explain_rate`/`rate_measure` plumbing was needed. Changed
+`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s `par_rate:` from
+`float("nan") if not alive(...) else ...` to `market.fixed_rate(trade) * 1e4 if not alive(...) else ...`.
+`dv01`, `npv` and `par_rate` on a LIVE trade are byte-for-byte unchanged (the `alive(...)` branch of
+`par_rate` was not touched).
+
+**Evidence:** the grep above (empty for any NaN-dependent consumer); the cookbook line; A-MATURE's live
+run (`docs/v2/LIVE_ARBS_REPORT.md`) confirms the maturity step's `PNL_delta` equals `-PV(t-1)` exactly
+(`-4487.3252` vs `pv_prev=4487.3252`) with this change in place.
+
+**Alternative considered:** option (b), a separate `explain_rate` — rejected once the grep came back
+empty: it would add a second market-rate function and a `rate_measure=` parameter purely to protect a
+NaN nothing reads, which is the more complex option for no benefit (§9 favours keeping `src`/the public
+surface small when the facts don't require the extra indirection).
+
+---
+
+## 2026-09-29 — T2-B: theta's translated curve needs a manually-patched fixing for the newly-elapsed
+day, confirmed live with a concrete before/after number
+
+**Situation:** §3.5's own pitfall note: `Curve.translate(start)` cannot forecast dates before `start`
+(`TranslatedCurve.__getitem__` returns `DF=0` for `date < start`, read from the installed rateslib 2.7.1
+source), and the market's own fixings series (`m.index()`) is filtered strictly `< reference_date`
+(`MDP/IRSwaps/IRSwapsMDP.py`'s `_asof_fixings`/`bulk_get_data`, read from source) — so the single day
+`[reference_date, reference_date+1d)` has no fixing in either place once the curve is translated one day
+forward.
+
+**Rule applied:** §3.5's own fallback, exactly as written: "Append the curve-implied overnight forward
+for that date to a *copy* of the fixings."
+
+**Decision:** implemented exactly that in `_translated_curve` (`configs/assets/
+usd_sofr_ois_interest_rate_swap.yaml`): `fwd_pct = m.handle().rate(ref, new_start)` (the ORIGINAL,
+untranslated curve's own `[ref, new_start)` forward — constant-forwards, matching theta's own
+convention, not merely a data-availability patch) appended at `pd.Timestamp(ref_d)` to
+`m.index().copy()`, never mutating `m`'s own series. Verified live on a seasoned trade
+(10y payer, 2024-06-03, well inside its first accrual period): **unpatched** theta was
+**-373,119,834.8** (a missing-fixing division-by-zero symptom, confirmed by rateslib's own
+`fixings.py:3426` `RuntimeWarning: invalid value encountered in divide` on every run of this file);
+**patched**, **2,748.67** — sane, and the patched par-under-translation matched the unpatched-market par
+to 6 decimal places (`410.68397120035286` vs `410.6839712003531`), i.e. genuinely at-constant-forwards.
+A *fresh* (forward-starting) trade on its own resolution date did not exercise this path at all (its
+effective date is after `new_start`, so nothing has started accruing yet) — this is why the pitfall was
+easy to miss on a first, naive check; it only bites a seasoned trade.
+
+**A second, related correction found only by running the live A-THETA/A-CASH tests together (not
+anticipated by §3.5's text):** on the exact date a coupon pays, a naive translated-npv difference double-
+counts the coupon. Verified live (10y payer, 2024-01-03, cashflows around its first coupon,
+`Payment=2025-01-08`): `npv` is UNCHANGED between `Payment-1d` and `Payment` (`71142.83` on 2025-01-07,
+`71595.66` on 2025-01-08) and only DROPS the day AFTER `Payment` (`52448.50` on 2025-01-09) — i.e. `npv`
+keeps a coupon while `reference_date <= Payment`. So on `reference_date == Payment`, translating one day
+forward (`new_start == Payment+1`) drops a coupon that is *still in* `npv(today)` but has *already left*
+`npv(translated)`, showing up as a huge, wrong, one-day theta spike equal to roughly `-coupon*365` if
+uncorrected. Fixed by adding back same-day cashflows inside `theta`:
+`(npv_translated + cashflow_sum(Payment == reference_date) - npv_today) * 365`, using the same
+`_cashflow_sum` helper `cash_paid_to_date` uses. This is a refinement of §2.2's formula on a period-based
+(coupon-paying) library that the toy world cannot exercise (§2.4: the toy's `_annuity` never drops a past
+coupon, so `theta` never needs this term there) — §9's "the code wins on facts" rule, applied to a gap in
+the plan's own worked formula rather than a plan/code conflict.
+
+**Evidence:** the numbers above, reproduced by `docs/v2/probe scripts run during development (not
+committed)` and by `tests/test_live_arbs_pnl.py::test_a_theta_*` / `::test_a_cash_*`, whose printed output
+is captured in `LIVE_ARBS_REPORT.md`.
+
+**Alternative considered:** rebuild fixings from ARBS's own historical fixings cache instead of the
+curve-implied forward — rejected: it is the SAME quantity to the precision that matters here (the curve
+was calibrated to be consistent with those fixings) and the curve-implied route needs no second data
+read, matches "constant forwards" more directly than "whatever actually printed", and is what §3.5
+explicitly asked for.
+
+---
+
+## 2026-09-29 — T2-C: on a real (period-based) swap, dv01/pv01/par_rate step down the moment a coupon
+settles — a genuine §2.7 moneyness residual, not a bug, and not toy behaviour
+
+**Situation:** A-CASH's literal plan assertion ("the residual without cash ≈ -Δcash within 2% of the
+coupon") failed hard on the live 10y-payer/2024-01-03/first-coupon window: observed gap **61.2%** of the
+coupon (`resid_no_cash=-7034.22` vs `-coupon=-18106.50`), not noise-sized.
+
+**Diagnosis:** printed `dv01`/`par_rate`/`gamma` day-by-day around the coupon (`docs/v2/LIVE_ARBS_REPORT.md`
+"P&L explain"). `dv01` fell from `847.93` (2025-01-08) to `746.77` (2025-01-09) — an **11.9% one-day drop**
+— and `par_rate` jumped `-14.20bp`, both far larger than any adjacent day's move (typically <1 dv01 unit,
+<1bp), with `gamma` also stepping from `-0.766` to `-0.601`. This is rateslib's own analytic delta: once a
+period's cashflow pays, that period's contribution to the annuity permanently drops out of forward-looking
+`pv01`/`fair_rate` — a real, correct instrument-structural effect of a period-based swap. The toy world
+cannot show this (§2.4: `_annuity` never drops a past coupon, so toy `dv01`/`par_rate` never jump on a
+coupon date). By its first coupon date this specific live trade has also drifted **~84bp off-market**
+(`par=433.33bp` vs `K=348.89bp`, a year of real market path since its ATM start) — §2.7's own text says an
+off-market trade "leaves about 5% of PNL_delta in residual" per 100bp off-market on a 10y trade; here the
+SAME `(par-K)*Δpv01` moneyness term is driven by the coupon-date `Δpv01` rather than a curve move, but it
+is algebraically the identical term, and `exact_split` reconciles it exactly (verified: `residual` with and
+without cash reconciles to `exact_split.total - PNL_delta - PNL_gamma - PNL_carry` [+ coupon], to 1e-6
+relative, on the live coupon step).
+
+**Rule applied:** §9, "the code wins on facts, this plan wins on intent" + §5.6, "if [a target] is
+inherent, document the observed value, the diagnosis and the new bound... never silently loosen".
+
+**Decision:** did not force the plan's literal "2%/p99" bounds (both fail here, and both are tuned for a
+near-ATM book with no coupon-date `Δpv01` step, which is not what this specific live window is). Kept the
+plan's INTENT — "cash_paid_to_date is correctly wired into the reconciliation, and nothing is silently
+mis-explained" — by asserting instead that the residual, with and without cash, reconciles EXACTLY (1e-6
+relative) to `exact_split`'s own decomposition (the same identity A-DAILY already validates generally), and
+by independently re-summing BOTH legs' live `Cashflow` on the payment date (public rateslib methods only,
+never this file's `cash_paid_to_date`/`remark`) to confirm it equals the `cash_paid_to_date` jump exactly
+(`18106.4971` both ways) plus the by-hand fixed-leg coupon `N*K*tau` (`35567.7595`, exact). The naive
+gap-vs-coupon percentage is still printed and recorded (not asserted) in every run, per §5.6.
+
+**Evidence:** `tests/test_live_arbs_pnl.py::test_a_cash_first_coupon_reconciles_and_hand_checked`'s printed
+output, reproduced in `docs/v2/LIVE_ARBS_REPORT.md` "P&L explain"; the day-by-day `dv01`/`par`/`gamma`
+table above (from an ad-hoc development probe, not committed — reproducible by pricing the same trade on
+2025-01-06..2025-01-14).
+
+**Alternative considered:** (a) widen the plan's literal 2% bound to whatever this one trade needs —
+rejected: §5.6 forbids silently widening a magic-number bound with no structural justification, and the
+"right" widened number would be specific to this trade's moneyness, not a stable constant; (b) pick a
+near-ATM window so the coupon date lands with the trade still close to par (avoiding the effect entirely)
+— rejected: A-CASH's own row specifies "10y payer... 2024-01-03 -> 2025-03-31" without a re-strike, and a
+year of real, undoctored market path drifting off-market by the first coupon is exactly the realistic case
+this reconciliation needs to survive, not a case to avoid by picking a friendlier window.
+
+---
+
+## 2026-09-29 — T2-D: `check_asset.py`'s half-gamma probe raised on a real US bond-market holiday
+(`skills/pricebt-verify-asset-config/scripts/check_asset.py`, not a T2-owned file — fixed anyway, see
+below)
+
+**Situation:** the task's own acceptance command,
+`check_asset.py configs/assets/usd_sofr_ois_interest_rate_swap.yaml --date 2024-01-03 --date 2024-02-05`,
+FAILed with `swap_pack | FAIL | MarketDataUnavailable: no market for 'usd_sofr_ois_interest_rate_swap' on
+2024-01-15 (csa=None)` — 2024-01-15 is MLK Day, a US bond-market holiday the ARBS config's own `market()`
+correctly returns `None` for, but `swap_gamma`'s half-gamma probe (§3.4, added in T1) built its 30-business-
+day candidate window with `_bday()`, which only skips WEEKENDS (DEV-T3), never a real exchange calendar's
+holidays, and priced every candidate date directly with no `has_market` guard — unlike every OTHER date-
+probing check in the same file (e.g. `market_weekend`, `run_checks`'s own `d1`/`d2` construction), which
+already do check `has_market` first. The toy config has no such holes at all (`tr.market` has none in this
+range), so this never fired against the toy dates T1 tested against; it only surfaces against a real
+exchange calendar, which is what T2 is for.
+
+**Rule applied:** §9, "the code wins on facts" (a genuine bug in existing code, uncovered by testing
+against real ARBS dates) + the task's own acceptance criterion (this exact CLI invocation must show no
+FAIL).
+
+**Decision:** fixed the half-gamma probe in place: `pars = {d: par(payer, d) for d in bdays if
+svc.has_market(ctx.asset, d, None)}`, and the pair-search loop now skips any `(di, dj)` where either date
+is missing from `pars`, exactly mirroring the `has_market` guard this same file already uses elsewhere.
+Minimal, surgical — no other check, no other file, touched. Not in T2's file-ownership table (§3), but
+`check_asset.py` is a skill script, not `src/pricebt` ("the engine is frozen" applies to `src/pricebt`, not
+this), and leaving a known, reproducible FAIL in place to satisfy a "don't touch files outside my table"
+reading would have meant the acceptance command specified for this tier could never pass on this asset.
+Verified no regression: `tests/skills/test_skill_check_asset.py` (T1's own suite, toy-only) still 30/30
+green after the change.
+
+**Evidence:** the FAIL detail line above (first live run); `tests/test_live_arbs_pnl.py::
+test_a_check_check_asset_cli_no_fail_new_rows_present`'s captured markdown output in
+`LIVE_ARBS_REPORT.md` shows `swap_gamma | PASS | ... half-gamma probe: 2024-02-01->2024-02-13 (gap 8bd)
+dpar=45.67bp, Gamma/Gamma_est=0.939` after the fix; `tests/skills/test_skill_check_asset.py` 30 passed.
+
+**Alternative considered:** pick different `--date`s for the acceptance command that happen to dodge every
+holiday in the probe's 30-business-day window — rejected: fragile (the probe's window is `d1`-relative and
+already needs a real `|dpar|>=3bp` pair within it, so "just change the date" is not obviously always
+possible), and it leaves the same crash waiting for the next user who runs this checker on ANY date whose
+30-business-day window contains a holiday — the root cause is in the probe's own date construction, so the
+fix belongs there (this session's own CLAUDE.md: "the lazy fix IS the root-cause fix: one guard in the
+shared function... fix it once, where all callers route through").
+
+---
+
+## 2026-09-29 — T2-E: `R2_TARGET_ARBS`/`RS_TARGET_ARBS` calibrated per §5.6
+
+**Situation:** §5.6's literal ARBS targets (`R2_TARGET_ARBS >= 0.999`, `RS_TARGET_ARBS <= 1e-2`) are floors,
+not fixed values — the plan's own procedure is "run once, set the assertion at 2x headroom over the
+observed value, never looser than the target."
+
+**Decision:** A-ROLL (periodic monthly ATM-10y roll, daily 2024, live) observed `r2=0.999902`,
+`residual_share=9.7276e-05`. Per §5.6 step 2: `1-r2=9.8e-5` → 2x headroom → `r2 >= 1-1.96e-4 = 0.99980`,
+recorded as `R2_TARGET_ARBS = 0.9998` (tighter than the plan's 0.999 floor); `residual_share`: `2x
+observed = 1.9455e-4`, recorded as `RS_TARGET_ARBS = 2e-4` (tighter than the plan's 1e-2 floor). Both
+values are set in `tests/test_live_arbs_pnl.py` module constants, with the observed numbers cited in a
+comment next to them.
+
+**Evidence:** `tests/test_live_arbs_pnl.py::test_a_roll_periodic_monthly_roll_r2_residual_share_ledger_tie_out`'s
+printed output, reproduced in `LIVE_ARBS_REPORT.md`.
+
+**Alternative considered:** leave the assertions at the plan's literal floor (0.999/1e-2) — rejected: §5.6
+explicitly asks for 2x headroom over the observed value when the observed value beats the floor, not the
+floor itself, so this run's actual quality (a near-ATM monthly roll reconciling to 99.99%) stays visible
+and enforced, rather than silently permitting a 10-100x regression before the test would ever catch it.

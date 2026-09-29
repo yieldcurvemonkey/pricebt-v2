@@ -630,11 +630,19 @@ def swap_pack(ctx: _Ctx) -> List[CheckResult]:
         bdays = [d1]
         for _ in range(30):
             bdays.append(_bday(bdays[-1] + timedelta(days=1)))
-        pars = {d: par(payer, d) for d in bdays}
+        # _bday only skips WEEKENDS (DEV-T3), never a real exchange calendar's holidays -- a live
+        # ARBS config's own market() correctly returns None for a US bond-market holiday (e.g.
+        # 2024-01-15, MLK Day) that still lands on a weekday here. Skip those, matching every other
+        # date-probing check in this file (line 247, 787): svc.value()/unit_value() otherwise raises
+        # MarketDataUnavailable and turns the whole swap_pack into one FAIL, not a SKIPped date.
+        pars = {d: par(payer, d) for d in bdays if svc.has_market(ctx.asset, d, None)}
         best_pair = None  # (abs_dpar, i, gap)
         for gap in range(1, 11):
             for i in range(len(bdays) - gap):
-                dpar_probe = pars[bdays[i + gap]] - pars[bdays[i]]
+                di, dj = bdays[i], bdays[i + gap]
+                if di not in pars or dj not in pars:
+                    continue
+                dpar_probe = pars[dj] - pars[di]
                 if abs(dpar_probe) >= 3.0 and (best_pair is None or abs(dpar_probe) > best_pair[0]):
                     best_pair = (abs(dpar_probe), i, gap)
         if best_pair is None:
