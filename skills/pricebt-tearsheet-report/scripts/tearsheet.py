@@ -41,6 +41,29 @@ PRICEBT_CAVEATS = [
     "Grid dates with no market data are dropped (missing_market='drop'); exits landing on them are rolled forward.",
 ]
 
+# PNL_EXPLAIN_PLAN.md section 7: the "P&L attribution" section flags when residual_share is above a
+# target. swap_pnl.py's own `RS_TARGET` (plan section 5.6's generic near-ATM-roll ceiling, 1e-3) is
+# the SINGLE canonical default -- spot_check.py's `check_pnl_attribution` falls back to the same
+# import, so the two don't drift into "two numbers meaning the same thing" (see that function's own
+# docstring). Reached lazily, via the same cross-skill sys.path pattern this file already uses for
+# pricebt-spot-checks in `main()` below, so importing tearsheet.py never requires swap_pnl.py's own
+# imports to resolve. A tearsheet runs on an ARBITRARY strategy/book, which section 2.7 says can
+# carry a much larger *inherent* first-order residual (off-market trades, moneyness) than a
+# per-scenario calibration (RS_TARGET_TOY_ROLL/RS_TARGET_ARBS, both 2e-4) assumes -- this generic
+# ceiling is deliberately looser than those, but tighter than the plan's ARBS acceptance floor
+# (RS_TARGET_ARBS <= 1e-2), so a borderline run is more likely to be FLAGGED than silently passed.
+def _swap_pnl_rs_target() -> float:
+    """swap_pnl.py's `RS_TARGET`, reached with the same cross-skill sys.path pattern
+    spot_check.py's own `_swap_pnl_rs_target()` uses for the same constant. Called lazily (only
+    from inside `_blocks`, when a P&L attribution section is actually being rendered) so importing
+    tearsheet.py itself never requires swap_pnl.py's own imports to resolve."""
+    try:
+        import swap_pnl
+    except ImportError:
+        sys.path.insert(0, str(REPO_ROOT / "skills" / "pricebt-strategy-recipes" / "scripts"))
+        import swap_pnl
+    return swap_pnl.RS_TARGET
+
 
 # ------------------------------------------------------------------------------------------ metrics
 
@@ -157,9 +180,11 @@ def _ts(s: pd.Series) -> pd.Series:
     return s
 
 
-def make_figures(backtest, risk=None, signal: Optional[pd.Series] = None) -> Dict[str, plt.Figure]:
+def make_figures(backtest, risk=None, signal: Optional[pd.Series] = None,
+                 pnl_table: Optional[pd.DataFrame] = None) -> Dict[str, plt.Figure]:
     """Matplotlib figures keyed by name. risk: a scalar result_summary column; signal: a date-indexed
-    series (e.g. the par rate or z-score the trigger reads), drawn with the ledger's entry dates."""
+    series (e.g. the par rate or z-score the trigger reads), drawn with the ledger's entry dates.
+    pnl_table: swap_pnl.explain_table(bt) output (skipped, no KeyError, when None)."""
     rs = backtest.result_summary
     total = _ts(rs[backtest.TOTAL_COLUMN])
     daily = total.diff().dropna()
@@ -219,6 +244,21 @@ def make_figures(backtest, risk=None, signal: Optional[pd.Series] = None) -> Dic
     ax.axvline(0, color=MUTED, linewidth=0.8)
     figs["pnl_histogram"] = fig
 
+    if pnl_table is not None:
+        # Lines, not a stackplot: PNL_gamma and residual are routinely negative (plan section 2.7),
+        # and matplotlib's stackplot baseline convention isn't meaningful for a mixed-sign stack --
+        # it would draw a misleading shape rather than an honest one. Plain cumulative lines follow
+        # the same "one Figure, ax.plot + legend" convention already used by the signal chart above.
+        fig, ax = _ax("Cumulative P&L attribution")
+        idx = pd.to_datetime(pnl_table.index)
+        cols = ["PNL_delta", "PNL_gamma", "PNL_carry", "residual"]
+        palette = [SERIES, ACCENT, "#4f9d69", "#8a5fbf"]  # extends the file's SERIES/ACCENT pair to 4 series
+        for col, color in zip(cols, palette):
+            ax.plot(idx, pnl_table[col].astype(float).cumsum().values, color=color, linewidth=1.5, label=col)
+        ax.axhline(0, color=MUTED, linewidth=0.8)
+        ax.legend(frameon=False, fontsize=8, labelcolor=MUTED, loc="upper left")
+        figs["pnl_attribution"] = fig
+
     for f in figs.values():
         f.tight_layout()
     return figs
@@ -256,7 +296,8 @@ def _git_commit() -> str:
         return "unavailable"
 
 
-def _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_findings, caveats, notes, generated_at):
+def _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_findings, caveats, notes, generated_at,
+           pnl_table, pnl_stats):
     """The report as a list of (kind, payload) blocks; rendered to both HTML and Markdown."""
     B: List[tuple] = [("h1", title)]
     n_pass = sum(c["status"] == "PASS" for c in criteria)
@@ -310,6 +351,21 @@ def _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_
               ])), ("img", "risk")]
     else:
         B.append(("p", "No risk measure supplied (pass risk=IRDeltaParallel or similar)."))
+
+    B.append(("h2", "P&L attribution"))
+    if pnl_stats is None:
+        B.append(("p", "P&L explain not enabled for this run (spec pnl_explain.enabled: false, or "
+                       "primary is not an IRSwap). See docs/v2/PNL_EXPLAIN_PLAN.md."))
+    else:
+        totals = pnl_stats["totals"]
+        B.append(("table", pd.DataFrame([{"component": c, "total": _fmt(totals.get(c))}
+                                         for c in ("PNL_delta", "PNL_gamma", "PNL_carry", "residual", "economic")])))
+        if pnl_table is not None:
+            B.append(("img", "pnl_attribution"))
+        rs, r2, target = pnl_stats["residual_share"], pnl_stats["r2"], _swap_pnl_rs_target()
+        badge = "  ** WARN: residual share above target **" if rs > target else ""
+        B.append(("p", f"Residual share: {rs:.4g} (target <= {target:.4g}). R2 (explained vs economic): "
+                       f"{r2:.4g}.{badge}"))
 
     B.append(("h2", "Spot checks"))
     if spot_checks:
@@ -384,20 +440,24 @@ def _md_table(df: pd.DataFrame) -> str:
 
 
 def build_tearsheet(backtest, out_dir, title, spec=None, risk=None, signal=None, review_findings=None,
-                    spot_checks=None, caveats=None, notes=None) -> Dict[str, str]:
+                    spot_checks=None, caveats=None, notes=None, pnl_table=None, pnl_stats=None) -> Dict[str, str]:
     """Write tearsheet.html (self-contained), tearsheet.md (+ PNGs), metrics.json, trades.csv and
-    summary.csv into out_dir. Returns {artefact: path}."""
+    summary.csv into out_dir. Returns {artefact: path}.
+
+    pnl_table/pnl_stats: swap_pnl.explain_table(bt) / swap_pnl.explain_stats(table) (PNL_EXPLAIN_PLAN.md
+    section 7). Both None (the default) renders a "not enabled" P&L attribution section instead."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     in_sample_end = ((spec or {}).get("dates") or {}).get("in_sample_end")
     metrics = compute_metrics(backtest, risk=risk, in_sample_end=in_sample_end)
     criteria = evaluate_success(metrics, (spec or {}).get("success_criteria"))
-    figs = make_figures(backtest, risk=risk, signal=signal)
+    figs = make_figures(backtest, risk=risk, signal=signal, pnl_table=pnl_table)
     pngs = {name: _png(f) for name, f in figs.items()}
     for f in figs.values():
         plt.close(f)
     generated_at = dt.datetime.now().isoformat(timespec="seconds")
-    blocks = _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_findings, caveats, notes, generated_at)
+    blocks = _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_findings, caveats, notes,
+                     generated_at, pnl_table, pnl_stats)
 
     h, md = [], []
     for kind, payload in blocks:

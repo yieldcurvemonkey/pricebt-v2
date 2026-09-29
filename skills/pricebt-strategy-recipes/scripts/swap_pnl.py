@@ -36,12 +36,24 @@ __all__ = [
     "IRTheta",
     "YearFraction",
     "CashPaidToDate",
+    "RS_TARGET",
     "rate_unit_for",
     "swap_pnl_definition",
     "explain_table",
     "explain_stats",
     "exact_split",
 ]
+
+# plan section 5.6's own literal number: the default residual-share ceiling for a near-ATM,
+# monthly-roll book. This is the one general-purpose default `check_pnl_attribution`
+# (skills/pricebt-spot-checks/scripts/spot_check.py) and the tearsheet's "P&L attribution" section
+# fall back to when a caller does not supply its own target -- a SINGLE canonical number, so the
+# two don't drift apart (plan section 7). A calibrated run's own target (e.g.
+# tests/skills/test_skill_swap_pnl.py's RS_TARGET_TOY_ROLL, tests/test_live_arbs_pnl.py's
+# RS_TARGET_ARBS) is tighter and specific to that run's book; this constant is deliberately looser
+# because an arbitrary/off-market book carries a real, larger residual that is not a bug (section
+# 2.7) -- do not tighten it to a calibrated value.
+RS_TARGET = 1e-3
 
 # --------------------------------------------------------------------------------- custom measures
 # plan section 3.3: plain RiskMeasure singletons, matching IRGammaParallel/IRFwdRate's style in

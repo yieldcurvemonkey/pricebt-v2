@@ -131,7 +131,8 @@ def validate_spec(spec: dict) -> "list[str]":
     section is reported as an error here."""
     errors: list = []
     err = errors.append
-    for section in ("instruments", "dates", "signal", "rebalance", "sizing", "risk_limits", "costs", "financing"):
+    for section in ("instruments", "dates", "signal", "rebalance", "sizing", "risk_limits", "costs", "financing",
+                    "pnl_explain"):
         if not isinstance(spec.get(section), dict):
             err(f"{section}: missing or not a mapping (run apply_defaults first)")
     if errors:
@@ -292,6 +293,13 @@ def validate_spec(spec: dict) -> "list[str]":
     bench = spec.get("benchmark", "none")
     if bench not in ("none", "buy_and_hold") and bench not in insts:
         err(f"benchmark: {bench!r} must be none, buy_and_hold or a named instrument")
+    pe = spec["pnl_explain"]
+    for k in ("enabled", "gamma", "carry"):
+        if not isinstance(pe.get(k), bool):
+            err(f"pnl_explain.{k}: {pe.get(k)!r} must be true or false")
+    cash = pe.get("cash")
+    if not (isinstance(cash, bool) or cash == "auto"):
+        err(f"pnl_explain.cash: {cash!r} must be true, false or 'auto'")
     return errors
 
 

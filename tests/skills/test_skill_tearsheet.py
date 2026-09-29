@@ -25,22 +25,29 @@ from pricebt.session import PricebtSession
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "skills" / "pricebt-tearsheet-report" / "scripts"))
 import tearsheet  # noqa: E402
+sys.path.insert(0, str(ROOT / "skills" / "pricebt-strategy-recipes" / "scripts"))
+import swap_pnl  # noqa: E402
 
 START, END = date(2024, 1, 2), date(2024, 6, 28)
-HEADINGS = ["Verdict", "Strategy spec", "Key metrics", "Charts", "Trade ledger", "Risk and P&amp;L in bp", "Spot checks",
-            "Adversarial review findings", "Caveats and known limitations", "Reproducibility"]
+HEADINGS = ["Verdict", "Strategy spec", "Key metrics", "Charts", "Trade ledger", "Risk and P&amp;L in bp",
+            "P&amp;L attribution", "Spot checks", "Adversarial review findings", "Caveats and known limitations",
+            "Reproducibility"]
 FINITE_KEYS = ["Total PnL", "Sharpe Ratio", "Max Drawdown", "Total Trades", "t-stat (mean daily PnL)", "Years",
                "Hit Rate (%)", "Average Holding Period (days)", "Trades per Year", "Cost Drag", "Max Abs Risk",
                "Mean Abs Risk", "Total PnL (bp)", "Gross PnL (before costs)"]
 
 
-def _toy():
+def _toy(pnl=False):
+    """Monthly ATM-10y roll (the T-ROLL/A-ROLL shape). pnl=True adds swap_pnl_definition() plus
+    CashPaidToDate, so swap_pnl.explain_table(bt)/explain_stats(table) work on the result."""
     PricebtSession.use(assets=[ROOT / "tests" / "assets" / "toy_usd_irs.yaml"])
     swap = IRSwap(pay_or_receive="Pay", termination_date="10y", notional_currency="USD", notional_amount=1e7, name="swap")
     action = AddTradeAction(swap, "1m", transaction_cost=ScaledTransactionModel(IRDeltaParallel, 0.25))
     trig = PeriodicTrigger(PeriodicTriggerRequirements(frequency="1m", end_date=END), [action])
+    risks = [Price, IRDeltaParallel] + ([swap_pnl.CashPaidToDate] if pnl else [])
+    pnl_def = swap_pnl.swap_pnl_definition() if pnl else None
     return GenericEngine().run_backtest(Strategy(None, trig), start=START, end=END, frequency="1b",
-                                        risks=[Price, IRDeltaParallel], show_progress=False)
+                                        risks=risks, pnl_explain=pnl_def, show_progress=False)
 
 
 def _spec():
@@ -62,6 +69,7 @@ def test_toy_tearsheet_files_sections_images_metrics(tmp_path):
         assert f"<h2>{h}</h2>" in page, h
     assert page.count('src="data:image/png;base64,') >= 4
     assert "coupons paid between marks are not booked" in page.lower()
+    assert "P&amp;L explain not enabled for this run" in page  # pnl_table/pnl_stats default to None
     # success criteria: min_sharpe and min_trades pass, max_drawdown (1.0 currency) fails, null skipped
     assert "FAIL: 2/3 success criteria pass; missed: max_drawdown." in page
     assert '<td class="PASS">PASS</td>' in page and '<td class="FAIL">FAIL</td>' in page
@@ -79,6 +87,46 @@ def test_toy_tearsheet_files_sections_images_metrics(tmp_path):
     md = Path(paths["md"]).read_text(encoding="utf-8")
     assert "## Key metrics" in md and "![cumulative_pnl](cumulative_pnl.png)" in md
     assert (tmp_path / "cumulative_pnl.png").is_file()
+
+
+def test_pnl_attribution_section_enabled(tmp_path):
+    """PNL_EXPLAIN_PLAN.md section 7: pnl_table/pnl_stats given -> component-totals table (values
+    compared against explain_stats directly, not a magic number), the pnl_attribution chart, and
+    the residual_share/R2 line, with the WARN badge firing iff residual_share > swap_pnl.RS_TARGET
+    (tearsheet.py's own target is swap_pnl.RS_TARGET, imported lazily rather than duplicated -- see
+    tearsheet._swap_pnl_rs_target's docstring). (a monthly ATM-10y roll -- T-ROLL's own shape --
+    should land in-target, but this asserts the live consistency rather than assuming a particular
+    observed number)."""
+    bt = _toy(pnl=True)
+    table = swap_pnl.explain_table(bt)
+    stats = swap_pnl.explain_stats(table)
+    paths = tearsheet.build_tearsheet(bt, tmp_path, "Toy roll", spec=_spec(), risk=IRDeltaParallel,
+                                      pnl_table=table, pnl_stats=stats)
+    page = Path(paths["html"]).read_text(encoding="utf-8")
+
+    assert "<h2>P&amp;L attribution</h2>" in page
+    for component in ("PNL_delta", "PNL_gamma", "PNL_carry", "residual", "economic"):
+        assert tearsheet._fmt(stats["totals"][component]) in page, component
+    assert f"{stats['residual_share']:.4g}" in page and f"{stats['r2']:.4g}" in page
+    fires = "** WARN: residual share above target **" in page
+    assert fires == (stats["residual_share"] > swap_pnl.RS_TARGET)
+
+    assert (tmp_path / "pnl_attribution.png").is_file()
+    assert 'alt="pnl_attribution"' in page
+
+
+def test_pnl_attribution_warn_badge_on_inflated_residual(tmp_path):
+    """A hand-built pnl_stats with residual_share well above RS_TARGET fires the WARN badge, even
+    though the underlying backtest/table is the same in-target run as the test above."""
+    bt = _toy(pnl=True)
+    table = swap_pnl.explain_table(bt)
+    stats = swap_pnl.explain_stats(table)
+    bad_stats = dict(stats, residual_share=swap_pnl.RS_TARGET * 10)  # well above target regardless of the real value
+
+    paths = tearsheet.build_tearsheet(bt, tmp_path, "Toy roll", spec=_spec(), risk=IRDeltaParallel,
+                                      pnl_table=table, pnl_stats=bad_stats)
+    page = Path(paths["html"]).read_text(encoding="utf-8")
+    assert "** WARN: residual share above target **" in page
 
 
 def test_output_is_deterministic_apart_from_generated_at(tmp_path):

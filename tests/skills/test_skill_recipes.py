@@ -15,7 +15,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "skills" / "pricebt-strategy-recipes" / "scripts"))
 import recipes  # noqa: E402
+import swap_pnl  # noqa: E402
 
+from pricebt.backtests.backtest_objects import PnlDefinition  # noqa: E402
+from pricebt.errors import ConfigError  # noqa: E402
 from pricebt.risk import IRDelta, Price  # noqa: E402
 
 DV01 = IRDelta(aggregation_level="Type")
@@ -269,6 +272,103 @@ def test_stop_loss_overlay_exits_all_positions():
     assert rs.loc[:stop_day, Price].iloc[:-1].min() >= -stop  # no earlier breach went unnoticed
     assert rs.loc[stop_day, Price] == pytest.approx(0.0, abs=1e-6)  # flat after the exit (DEV-R1)
     assert any("APPROXIMATION" in n for n in built.notes)
+
+
+# --------------------------------------------------------------------------------- pnl_explain (T3-B)
+# PNL_EXPLAIN_PLAN.md section 7: recipes.build() wires swap_pnl.swap_pnl_definition() into
+# run_kwargs when spec.pnl_explain.enabled and the primary is an IRSwap; recipes.run() then hands
+# it straight to GenericEngine.run_backtest(pnl_explain=...) (src/pricebt untouched either way).
+
+
+def test_pnl_explain_disabled_by_default_has_no_run_kwarg():
+    built = recipes.build(spec("periodic_roll"))
+    assert "pnl_explain" not in built.run_kwargs  # absent, not explicitly None (recipes.py's own choice)
+    assert "P&L explain not enabled" in built.notes
+
+
+def test_pnl_explain_enabled_builds_a_real_definition_with_gamma_and_carry_toggles():
+    full = recipes.build(spec("periodic_roll", pnl_explain={"enabled": True, "gamma": True, "carry": True, "cash": False}))
+    pnl_def = full.run_kwargs["pnl_explain"]
+    assert isinstance(pnl_def, PnlDefinition)
+    assert {a.attribute_name for a in pnl_def.attributes} == {"PNL_delta", "PNL_gamma", "PNL_carry"}
+    assert len(pnl_def.attributes) == 3
+    # describe() must summarise the PnlDefinition, not dump its full dataclass repr (recipes.py's
+    # own _short()/describe() -- see the "risks" column it already gets the same treatment)
+    assert "PnlDefinition(PNL_delta, PNL_gamma, PNL_carry)" in recipes.describe(full)
+
+    delta_only = recipes.build(spec("periodic_roll",
+                                    pnl_explain={"enabled": True, "gamma": False, "carry": False, "cash": False}))
+    pnl_def2 = delta_only.run_kwargs["pnl_explain"]
+    assert {a.attribute_name for a in pnl_def2.attributes} == {"PNL_delta"}
+    assert len(pnl_def2.attributes) == 1
+
+    gamma_no_carry = recipes.build(spec("periodic_roll",
+                                        pnl_explain={"enabled": True, "gamma": True, "carry": False, "cash": False}))
+    assert len(gamma_no_carry.run_kwargs["pnl_explain"].attributes) == 2
+    assert any("P&L explain: swap_pnl_definition(gamma=True, carry=True)" in n for n in full.notes)
+
+
+def test_pnl_explain_cash_auto_adds_cash_paid_to_date_when_the_config_maps_it():
+    # tests/assets/toy_usd_irs.yaml maps CashPaidToDate (PNL_EXPLAIN_PLAN.md section 3.2).
+    built = recipes.build(spec("periodic_roll", pnl_explain={"enabled": True, "gamma": True, "carry": True, "cash": "auto"}))
+    assert swap_pnl.CashPaidToDate in built.run_kwargs["risks"]
+    assert any("cash column included" in n for n in built.notes)
+
+
+def test_pnl_explain_cash_auto_skips_and_does_not_crash_when_the_config_does_not_map_it():
+    # tests/assets/toy_eur_irs.yaml has no gamma/theta/year_fraction/cash_paid_to_date functions at
+    # all (PNL_EXPLAIN_PLAN.md section 3.2: it is the "explain not supported" negative fixture) --
+    # gamma/carry are turned off here so build() only exercises the cash lookup this test targets.
+    eur_primary = {**PAYER_10Y, "kwargs": {**PAYER_10Y["kwargs"], "notional_currency": "EUR"}}
+    s = spec("periodic_roll", assets=["tests/assets/toy_eur_irs.yaml"], instruments={"primary": eur_primary},
+             pnl_explain={"enabled": True, "gamma": False, "carry": False, "cash": "auto"})
+    built = recipes.build(s)  # must not raise
+    assert swap_pnl.CashPaidToDate not in built.run_kwargs["risks"]
+    assert any("cash column not requested/not mapped" in n for n in built.notes)
+
+
+def test_pnl_explain_cash_true_forces_the_risk_even_when_unmapped_and_run_fails_cleanly():
+    # DECISIONS_LOG.md: cash: true is an explicit request, so recipes.py always honours it (adds
+    # CashPaidToDate to risks) rather than silently downgrading it to "not mapped" the way `auto`
+    # does. If the config truly has no mapping, pricebt's own PricingService already raises a clear
+    # ConfigError naming the missing measure (src/pricebt/assets/pricing.py) the moment the engine
+    # tries to price it -- recipes.py does not need to duplicate that check.
+    eur_primary = {**PAYER_10Y, "kwargs": {**PAYER_10Y["kwargs"], "notional_currency": "EUR"}}
+    s = spec("periodic_roll", assets=["tests/assets/toy_eur_irs.yaml"], instruments={"primary": eur_primary},
+             dates={"end": date(2024, 2, 1)},
+             pnl_explain={"enabled": True, "gamma": False, "carry": False, "cash": True})
+    built = recipes.build(s)  # building never raises: it only decides what to ask for
+    assert swap_pnl.CashPaidToDate in built.run_kwargs["risks"]
+    with pytest.raises(ConfigError, match="CashPaidToDate"):
+        recipes.run(s)
+
+
+def test_pnl_explain_enabled_with_a_non_irswap_primary_is_skipped_not_crashed():
+    s = spec("event", assets=["tests/assets/toy_usd_swaption.yaml"], event_dates=[date(2024, 2, 1)],
+             instruments={"primary": {"class": "IRSwaption", "kwargs": {"pay_or_receive": "Pay", "buy_sell": "Buy",
+                                                                        "expiration_date": "1y", "termination_date": "10y",
+                                                                        "notional_currency": "USD", "strike": "ATM",
+                                                                        "notional_amount": 1_000_000}}},
+             rebalance={"trade_duration": None}, risks_to_report=["Price"],
+             pnl_explain={"enabled": True, "gamma": True, "carry": True, "cash": False})
+    built = recipes.build(s)  # must not raise
+    assert "pnl_explain" not in built.run_kwargs
+    assert any("primary is not IRSwap (got 'IRSwaption')" in n for n in built.notes)
+
+
+def test_pnl_explain_actual_run_produces_a_working_pnl_explain_on_the_backtest():
+    s = spec("periodic_roll", dates={"end": date(2024, 4, 2)},
+             pnl_explain={"enabled": True, "gamma": True, "carry": True, "cash": "auto"})
+    bt, built = recipes.run(s)
+    assert swap_pnl.CashPaidToDate in built.run_kwargs["risks"]
+    raw = bt.pnl_explain()
+    assert set(raw) == {"PNL_delta", "PNL_gamma", "PNL_carry"}
+
+    s2 = spec("periodic_roll", dates={"end": date(2024, 4, 2)},
+              pnl_explain={"enabled": True, "gamma": False, "carry": True, "cash": "auto"})
+    bt2, _ = recipes.run(s2)
+    raw2 = bt2.pnl_explain()
+    assert set(raw2) == {"PNL_delta", "PNL_carry"}
 
 
 # --------------------------------------------------------------------------------- errors

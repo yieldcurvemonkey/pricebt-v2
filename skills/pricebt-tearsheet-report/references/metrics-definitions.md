@@ -68,6 +68,30 @@ Every metric in metrics.json, as computed by `compute_metrics` in [`tearsheet.py
 | Monthly P&L | sum of p by calendar month, diverging colour scale symmetric around 0, values in thousands |
 | Daily P&L histogram | distribution of p |
 
+## P&L attribution (pnl_explain)
+
+Present only when the run passed `pnl_table`/`pnl_stats` (`docs/v2/PNL_EXPLAIN_PLAN.md` section 7 — the
+`swap_pnl.explain_table(bt)` / `swap_pnl.explain_stats(table)` outputs, `skills/pricebt-strategy-recipes/scripts/swap_pnl.py`).
+Otherwise the section states plainly that P&L explain was not enabled (`spec.pnl_explain.enabled: false`, or the
+strategy's primary instrument is not an `IRSwap`) and links back to the plan.
+
+| Item | Formula | Units | Notes |
+|---|---|---|---|
+| Component totals | `pnl_stats["totals"][c]` for `c` in `PNL_delta, PNL_gamma, PNL_carry, residual, economic` | ccy | `economic = actual_dpv + cash`; `residual = economic − (PNL_delta + PNL_gamma + PNL_carry)` |
+| Cumulative P&L attribution chart | `.cumsum()` of each per-step `PNL_delta`/`PNL_gamma`/`PNL_carry`/`residual` column, one line each | ccy | plain cumulative lines, not a stacked area: `PNL_gamma` and `residual` are routinely negative (plan section 2.7), and a stackplot's baseline is not meaningful for a mixed-sign stack |
+| Residual share | `pnl_stats["residual_share"]` = `var(residual) / var(economic)` | dimensionless | flagged with `** WARN: residual share above target **` when above `RS_TARGET` |
+| R2 (explained vs economic) | `pnl_stats["r2"]` | dimensionless | daily, `1 - SS_res/SS_tot` around `economic`'s own mean |
+
+**Target: `swap_pnl.RS_TARGET` (`1e-3`), imported lazily** (`tearsheet._swap_pnl_rs_target()`), the same constant
+`spot_check.py`'s `check_pnl_attribution` falls back to, so the two never drift into two numbers meaning the same
+thing (plan section 7). It is the plan's own generic near-ATM-roll ceiling (section 5.6), not either of the
+per-scenario *calibrations* tightened from one specific book's observed residual share — `RS_TARGET_TOY_ROLL = 2e-4`
+(`tests/skills/test_skill_swap_pnl.py`) and `RS_TARGET_ARBS = 2e-4` (`tests/test_live_arbs_pnl.py`) — because a
+tearsheet runs on an arbitrary book, which section 2.7 says can carry a much larger *inherent* residual (off-market
+trades, moneyness) than either calibration assumes. `RS_TARGET <= 1e-3` is looser than the two tightened
+calibrations, but tighter than the plan's ARBS acceptance floor (`RS_TARGET_ARBS <= 1e-2`), so a borderline run is
+more likely to be flagged than silently passed.
+
 ## Success criteria
 
 | Criterion | Metric | PASS when |

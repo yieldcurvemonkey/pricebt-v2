@@ -35,6 +35,8 @@ import research_stats  # noqa: E402
 import robustness  # noqa: E402
 import spec as specmod  # noqa: E402
 import spot_check  # noqa: E402
+import swap_pnl  # noqa: E402 -- PNL_EXPLAIN_PLAN.md section 7; pricebt-strategy-recipes/scripts is
+                  # already on sys.path from the loop above (recipes.py lives there too)
 import tearsheet  # noqa: E402
 
 STANDARD_CAVEATS_BY_ARCHETYPE = {
@@ -137,6 +139,19 @@ def run_study(spec_path, out: Optional[str] = None, with_robustness: bool = True
     specmod.dump_spec(spec, out_dir / "strategy_spec.yaml")
 
     bt, built = recipes.run(spec)
+
+    # P&L explain (PNL_EXPLAIN_PLAN.md section 7): bt.pnl_explain_def is only set when recipes.build()
+    # wired one in (spec pnl_explain.enabled and an IRSwap primary -- see recipes.py). cash= mirrors
+    # what was actually requested/computed: explain_table() would report an all-zero cash column
+    # either way, but this makes the intent visible rather than silently relying on that fallback.
+    if bt.pnl_explain_def is not None:
+        pnl_table = swap_pnl.explain_table(bt, cash=swap_pnl.CashPaidToDate in bt.risks)
+        pnl_stats = swap_pnl.explain_stats(pnl_table)
+        pnl_table.to_csv(out_dir / "pnl_explain.csv")
+        (out_dir / "pnl_explain.json").write_text(json.dumps(pnl_stats, indent=2, default=str), encoding="utf-8")
+    else:
+        pnl_table = pnl_stats = None
+
     from pricebt.session import PricebtSession
 
     session = PricebtSession.current
@@ -149,7 +164,8 @@ def run_study(spec_path, out: Optional[str] = None, with_robustness: bool = True
     PricebtSession.current = session
     (out_dir / "robustness.md").write_text(robustness.to_markdown(robust, tables=True) if robust else "not run\n", encoding="utf-8")
 
-    spots = spot_check.run_spot_checks(bt, session=session, rerun=lambda: recipes.run(spec)[0], risk=risk, rate_measure=_rate_series(spec))
+    spots = spot_check.run_spot_checks(bt, session=session, rerun=lambda: recipes.run(spec)[0], risk=risk,
+                                       rate_measure=_rate_series(spec), pnl_stats=pnl_stats)
     PricebtSession.current = session
     (out_dir / "spot_checks.md").write_text(spot_check.to_markdown(spots) + "\n", encoding="utf-8")
 
@@ -163,7 +179,11 @@ def run_study(spec_path, out: Optional[str] = None, with_robustness: bool = True
     findings.append({"experiment": "adversarial review (checklist)", "status": "PENDING", "result": "see review.md; replace this row with the findings table"})
     caveats = [c for a, c in STANDARD_CAVEATS_BY_ARCHETYPE.items() if a == spec["archetype"]] + [f"Assumed: {a}" for a in spec.get("assumptions") or []][:12]
     paths = tearsheet.build_tearsheet(bt, out_dir, spec["name"], spec=spec, risk=risk, signal=built.signal,
-                                      review_findings=findings, spot_checks=spots, caveats=caveats)
+                                      review_findings=findings, spot_checks=spots, caveats=caveats,
+                                      pnl_table=pnl_table, pnl_stats=pnl_stats)
+    if pnl_table is not None:
+        paths["pnl_explain"] = str(out_dir / "pnl_explain.csv")
+        paths["pnl_stats"] = str(out_dir / "pnl_explain.json")
     failed = [r.name for r in spots if r.status == "FAIL"] + [r.name for r in robust if r.status == "FAIL"]
     return {"out_dir": str(out_dir), "paths": paths, "failed": failed, "significance": sig, "metrics": metrics, "backtest": bt}
 

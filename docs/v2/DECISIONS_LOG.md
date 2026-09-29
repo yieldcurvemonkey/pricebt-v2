@@ -1159,3 +1159,40 @@ printed output, reproduced in `LIVE_ARBS_REPORT.md`.
 explicitly asks for 2x headroom over the observed value when the observed value beats the floor, not the
 floor itself, so this run's actual quality (a near-ATM monthly roll reconciling to 99.99%) stays visible
 and enforced, rather than silently permitting a 10-100x regression before the test would ever catch it.
+
+---
+
+## 2026-09-29 — T3-B: `pnl_explain.cash: true` on a config that does not map `CashPaidToDate`
+
+**Situation:** §7's spec flag has `cash: auto | true | false`. `auto` clearly means "add
+`CashPaidToDate` to `risks` iff the primary's asset config maps it" (§7's own words). The plan does
+not say what `cash: true` should do when the config does **not** map it: silently drop the request
+(matching `auto`'s behaviour), raise from `recipes.build()` itself, or add it anyway and let the
+request fail downstream.
+
+**Decision:** `recipes.build()` treats `cash: true` as an unconditional request and always adds
+`swap_pnl.CashPaidToDate` to `risks`, with no mapping check — only `cash: "auto"` consults the
+config. If the config truly has no mapping, `PricingService.value` (`src/pricebt/assets/
+pricing.py:403`) already raises a clean `ConfigError(f"asset {name} has no mapping for risk measure
+CashPaidToDate; add it under risk_measures:")` the first time the engine tries to price it in
+`recipes.run()`. `recipes.build()` itself never raises for this — it only decides what to *ask*
+for, matching every other risk in `risks_to_report` (an unmapped one there is not validated by
+`recipes.py` either; `validate_spec`'s `parse_risk` only checks the name exists in `pricebt.risk`,
+never that every configured asset maps it).
+
+**Rule applied:** the engine's existing failure mode is already the "clean ConfigError naming the
+missing measure" the plan asks for elsewhere (§2.5, `swap_pnl_definition`'s own T-MISSING test) —
+duplicating that check in `recipes.py` ahead of time would be a second place for the same rule to
+drift out of sync, not a safer design (ponytail: reuse what the engine already does correctly rather
+than re-implementing it one layer up).
+
+**Evidence:** `tests/skills/test_skill_recipes.py::
+test_pnl_explain_cash_true_forces_the_risk_even_when_unmapped_and_run_fails_cleanly` — `cash: true`
+on `toy_eur_irs.yaml` (no `cash_paid_to_date` function at all) builds cleanly with `CashPaidToDate`
+in `risks`, then `recipes.run(spec)` raises `ConfigError` matching `"CashPaidToDate"`.
+
+**Alternative considered:** silently drop the request when unmapped, same as `auto` — rejected: the
+whole point of `true` vs `auto` is that `true` is an explicit, non-negotiable ask; silently
+downgrading it to a no-op would hide a config gap the user asked to be told about, and would make
+`true` and `auto` behaviourally identical whenever the mapping is missing, which defeats having two
+settings at all.

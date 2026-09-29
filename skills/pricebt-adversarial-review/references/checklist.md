@@ -20,6 +20,7 @@ Mark each item PASS, FAIL or N/A, and give evidence. Items are ordered by how of
 | A12 | **Stop-loss approximation.** A `Price`-based stop uses open-position PV, not realised P&L | only if `risk_limits.stop_loss_mtm` is set | Minor (disclose) |
 | A13 | **Market snapshot timing.** EOD stamp, timezone, and the served-date check in `load_market` | read the asset config | Major if the served date is not validated |
 | A14 | **Data envelope.** Does the backtest end where the data ends, or were tail dates dropped silently? | compare `dates.end` with the last kept grid date | Minor |
+| A15 | **P&L attribution residual.** Explain residual large? | Check moneyness (`docs/v2/PNL_EXPLAIN_PLAN.md` §2.7), coupon cash, and gamma units before trusting the attribution | Major if unexplained (only when `pnl_explain.enabled: true`) |
 
 ## B. Look-ahead and data timing
 

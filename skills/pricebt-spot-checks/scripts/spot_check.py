@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import math
 import random
+import sys
+from pathlib import Path
 from typing import Callable, List, NamedTuple, Optional
 
 import numpy as np
@@ -183,6 +185,46 @@ def check_pnl_explain(bt, risk, rate_measure) -> CheckResult:
     return CheckResult("P&L explain", INFO, detail)
 
 
+def _swap_pnl_rs_target() -> float:
+    """swap_pnl.py's `RS_TARGET` (PNL_EXPLAIN_PLAN.md section 5.6), reached with the SAME
+    cross-skill sys.path pattern check_asset.py already uses for the same module (plan section
+    3.4, T1-C) -- try the plain import first (already on sys.path in most invocation contexts,
+    e.g. this file's own tests), else add skills/pricebt-strategy-recipes/scripts and retry."""
+    try:
+        import swap_pnl
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pricebt-strategy-recipes" / "scripts"))
+        import swap_pnl
+    return swap_pnl.RS_TARGET
+
+
+def check_pnl_attribution(pnl_stats: Optional[dict], target: Optional[float] = None) -> CheckResult:
+    """PNL_EXPLAIN_PLAN.md section 7: is `swap_pnl.py`'s delta/gamma/carry attribution
+    (`explain_stats()["residual_share"] = var(residual) / var(economic)`) explaining this book's
+    P&L well enough to trust? PASS if `residual_share <= target`, WARN if `<= 10*target`, FAIL
+    otherwise. INFO -- not a crash, not a silent skip -- when `pnl_stats` is None: P&L explain was
+    not enabled for this run (spec `pnl_explain.enabled: false`), so there is nothing to check.
+
+    `target` defaults to `swap_pnl.RS_TARGET`, the plan's own near-ATM-roll number (section 5.6),
+    the one general default this check and the tearsheet's "P&L attribution" section both fall
+    back to (plan section 7) so a future reader isn't confused by two different numbers meaning the
+    same thing. That default is a near-ATM calibration: an off-market or directional book
+    legitimately carries a larger residual (section 2.7 -- moneyness is a real, first-order cost,
+    not a bug), so WARN/FAIL here is a prompt to check moneyness/cash/gamma units
+    (pricebt-adversarial-review checklist), not proof the attribution is broken.
+    """
+    if pnl_stats is None:
+        return CheckResult("P&L attribution", INFO, "pnl_explain not enabled for this run (spec pnl_explain.enabled: false): nothing to check")
+    if target is None:
+        target = _swap_pnl_rs_target()
+    share = float(pnl_stats["residual_share"])
+    detail = f"residual_share = {share:.2%} of economic P&L variance (target <= {target:.2%}, warn <= {10 * target:.2%})"
+    if share <= target:
+        return CheckResult("P&L attribution", PASS, detail)
+    detail += "; check moneyness (off-market residual is real, section 2.7), coupon cash and gamma units before trusting the attribution"
+    return CheckResult("P&L attribution", WARN if share <= 10 * target else FAIL, detail)
+
+
 def check_missing_market(bt) -> CheckResult:
     """Dates dropped / exits rolled for missing market data. Catches: a data hole silently thinning
     the grid (and the daily-P&L statistics), exits booked a day or more late."""
@@ -256,11 +298,15 @@ def run_spot_checks(
     rerun: Optional[Callable] = None,
     rate_measure: Optional[pd.Series] = None,
     risk=None,
+    pnl_stats: Optional[dict] = None,
 ) -> List[CheckResult]:
     """Run every automated check. `session` defaults to PricebtSession.current (it must hold the
     asset configs the backtest used). `rerun` is a zero-argument callable returning a fresh
     BackTest. `risk` is a scalar ccy/bp result_summary column (e.g. IRDeltaParallel) and
-    `rate_measure` a bp series (e.g. measure_series(..., 'par_rate', ...)) for the P&L explain."""
+    `rate_measure` a bp series (e.g. measure_series(..., 'par_rate', ...)) for the P&L explain.
+    `pnl_stats` is `swap_pnl.explain_stats(...)`'s dict (PNL_EXPLAIN_PLAN.md section 7); omitted or
+    None (the default, so every existing caller keeps working unchanged) means P&L explain was not
+    enabled for this run and the "P&L attribution" check reports INFO."""
     from pricebt.session import PricebtSession
 
     session = session or PricebtSession.current
@@ -272,6 +318,7 @@ def run_spot_checks(
         ("book repricing", lambda: check_book_repricing(backtest, pricing, sample, seed)),
         ("cash roll-forward", lambda: check_cash_rollforward(backtest)),
         ("P&L explain", lambda: check_pnl_explain(backtest, risk, rate_measure)),
+        ("P&L attribution", lambda: check_pnl_attribution(pnl_stats)),
         ("missing market", lambda: check_missing_market(backtest)),
         ("frictions", lambda: check_frictions(backtest)),
         ("determinism", lambda: check_determinism(backtest, rerun)),
