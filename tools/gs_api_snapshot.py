@@ -26,7 +26,8 @@ Output 1: tests/data/gs_api_1_5_4.json
 
 A descriptor is one of:
   {"kind": "enum", "members": [[name, value_repr], ...]}
-  {"kind": "risk_measure", "class": <RiskMeasure subclass name>, "name": ..., "measure_type": ...}
+  {"kind": "risk_measure", "class": <RiskMeasure subclass name>, "name": ..., "measure_type": ...,
+   "asset_class": str(obj.asset_class), "unit": str(obj.unit)}   # "None" when unset
   {"kind": "class" | "dataclass", "signature": [[name, param_kind, default_repr], ...],
    "fields": [[name, init, default_repr], ...],   # dataclass only
    "methods": [...], "properties": [...],
@@ -45,10 +46,13 @@ The in-scope symbols (DESIGN section 12.3, IMPLEMENTATION_PLAN.md P1.6):
   - every public class/function of gs_quant.backtests.{strategy, triggers, actions, data_sources,
     backtest_objects, backtest_utils, generic_engine, core} (name not starting with "_", and
     actually defined in that module rather than merely imported into it);
-  - the 7 generated instrument classes (gs_quant.instrument.{IRSwap, IRSwaption, FXOption,
-    FXForward, EqOption, InflationSwap, Cash});
-  - the gs_quant.risk measures DESIGN section 8.1 lists (some are 2.1.17-only and absent from
-    1.5.4; those land in "requested_not_found", not "symbols");
+  - the 8 generated instrument classes (gs_quant.instrument.{IRSwap, IRSwaption, FXOption,
+    FXForward, EqOption, InflationSwap, Cash, Bond});
+  - every gs_quant.risk measure instance and preset of gs 2.1.17 (IR_RISK_DESIGN.md section 1;
+    the 2.1.17-only ones are absent from 1.5.4 and land in "requested_not_found", not "symbols");
+  - the gs_quant.risk functions aggregate_risk, aggregate_results, subtract_risk, sort_risk,
+    combine_risk_key and classes PnlExplain, PnlExplainClose, PnlExplainLive, PnlPredictLive
+    (IR_RISK_DESIGN.md R2-23);
   - the gs_quant.common enums;
   - gs_quant.markets.{PricingContext, HistoricalPricingContext} and
     gs_quant.markets.portfolio.Portfolio;
@@ -111,16 +115,45 @@ OUT_INSTRUMENTS = ROOT / "tests" / "data" / "gs_instruments_1_5_4.json"
 BACKTEST_MODULE_NAMES = ["strategy", "triggers", "actions", "data_sources", "backtest_objects",
                           "backtest_utils", "generic_engine", "core"]
 INSTRUMENT_CLASS_NAMES = ["IRSwap", "IRSwaption", "FXOption", "FXForward", "EqOption",
-                           "InflationSwap", "Cash"]
-# DESIGN.md section 8.1, all three families flattened; the 2.1.17-only FX*LocalCcy measures are
-# expected to be absent from 1.5.4 and land in "requested_not_found".
+                           "InflationSwap", "Cash", "Bond"]
+# Every measure instance and preset gs_quant.risk exposes in 2.1.17 (117 instances + 7 presets,
+# IR_RISK_DESIGN.md section 1.1; the whole catalogue pricebt.risk ports), sorted. The six 2.1.17-only
+# ones (EqForwardSpot, FXDeltaHedgeLocalCcy, FXDeltaLocalCcy, FXGammaLocalCcy, FXThetaLocalCcy,
+# FXVegaLocalCcy) are absent from 1.5.4 and land in "requested_not_found".
 RISK_MEASURE_NAMES = [
-    "Price", "EqDelta", "EqVega", "Annuity", "FXDeltaLocalCcy", "FXGammaLocalCcy", "FXVegaLocalCcy",
-    "IRDelta", "IRDeltaParallel", "IRDeltaLocalCcy", "IRVega", "IRVegaParallel", "IRVegaLocalCcy",
-    "IRBasis", "IRXccyDelta", "InflationDelta", "FXDelta", "FXGamma", "FXVega",
-    "DollarPrice", "IRGamma", "IRGammaParallel", "IRFwdRate", "IRSpotRate", "IRDailyImpliedVol",
-    "IRAnnualImpliedVol", "FXSpot", "FXAnnualImpliedVol", "EqSpot", "EqGamma", "Cashflows",
-    "ResolvedInstrumentValues",
+    "Annuity", "BaseCPI", "CDATMSpread", "CDDelta", "CDFwdSpread", "CDGamma", "CDIForward",
+    "CDIIndexDelta", "CDIIndexVega", "CDIOptionPremium", "CDIOptionPremiumFlatFwd",
+    "CDIOptionPremiumFlatVol", "CDISpot", "CDISpreadDV01", "CDIUpfrontPrice",
+    "CDImpliedVolatility", "CDIndexVega", "CDTheta", "CDVega", "CRIFIRCurve", "Cashflows",
+    "CommodDelta", "CommodImpliedVol", "CommodTheta", "CommodVega", "CompoundedFixedRate", "Cross",
+    "CrossMultiplier", "Description", "DollarPrice", "EqAnnualImpliedVol", "EqDelta",
+    "EqForwardSpot", "EqGamma", "EqSpot", "EqTheta", "EqVega", "ExpiryInYears",
+    "FX25DeltaButterflyVolatility", "FX25DeltaRiskReversalVolatility", "FXAnnualATMImpliedVol",
+    "FXAnnualImpliedVol", "FXBlackScholes", "FXBlackScholesPct", "FXCalcDelta",
+    "FXCalcDeltaNoPremAdj", "FXDelta", "FXDeltaHedge", "FXDeltaHedgeLocalCcy", "FXDeltaLocalCcy",
+    "FXDiscountFactorOver", "FXDiscountFactorUnder", "FXFwd", "FXGamma", "FXGammaLocalCcy",
+    "FXImpliedCorrelation", "FXPoints", "FXPremium", "FXPremiumPct", "FXPremiumPctFlatFwd",
+    "FXQuotedDelta", "FXQuotedDeltaNoPremAdj", "FXQuotedVega", "FXQuotedVegaBps", "FXSpot",
+    "FXSpotVal", "FXStrikePts", "FXThetaLocalCcy", "FXVega", "FXVegaLocalCcy", "FairPremium",
+    "FairPremiumInPercent", "FairPrice", "FairVarStrike", "FairVolStrike", "ForwardPrice",
+    "IRAnnualATMImpliedVol", "IRAnnualImpliedVol", "IRBasis", "IRBasisParallel",
+    "IRDailyImpliedVol", "IRDelta", "IRDeltaLocalCcy", "IRDeltaParallel",
+    "IRDiscountDeltaParallel", "IRDiscountDeltaParallelLocalCcy", "IRFwdRate", "IRGamma",
+    "IRGammaParallel", "IRGammaParallelLocalCcy", "IRSpotRate", "IRVanna", "IRVega",
+    "IRVegaLocalCcy", "IRVegaParallel", "IRVolga", "IRXccyDelta", "IRXccyDeltaParallel",
+    "InflDeltaParallelLocalCcyInBps", "InflMaturityCPI", "Infl_CompPeriod", "InflationDelta",
+    "InflationDeltaParallel", "LightningDV01", "LightningOAS", "LocalAnnuityInCents", "Market",
+    "MarketData", "MarketDataAssets", "NonUSDOisDomRate", "OisFXSprExSpkRate", "OisFXSprRate",
+    "ParSpread", "PremiumCents", "PremiumSummary", "Price", "PricePips", "ProbabilityOfExercise",
+    "RFRFXRate", "RFRFXSprExSpkRate", "RFRFXSprRate", "ResolvedInstrumentValues", "Theta",
+    "USDOisDomRate",
+]
+# IR_RISK_DESIGN.md R2-23: the gs_quant.risk helper functions (gs_quant.risk.core, re-exported;
+# pricebt.risk.core lands in Phase B, section 1.8) and the PnlExplain measure classes (Phase E,
+# section 8), described like any other class/function.
+RISK_FUNCTION_AND_CLASS_NAMES = [
+    "aggregate_risk", "aggregate_results", "subtract_risk", "sort_risk", "combine_risk_key",
+    "PnlExplain", "PnlExplainClose", "PnlExplainLive", "PnlPredictLive",
 ]
 
 
@@ -187,7 +220,9 @@ def _describe(obj) -> dict:
         cls = type(obj)
         return {"kind": "risk_measure", "class": cls.__name__,
                 "name": getattr(obj, "name", None),
-                "measure_type": str(getattr(obj, "measure_type", None))}
+                "measure_type": str(getattr(obj, "measure_type", None)),
+                "asset_class": str(getattr(obj, "asset_class", None)),
+                "unit": str(getattr(obj, "unit", None))}
     return {"kind": "function", "signature": _sig_list(obj, strip_self=True)}
 
 
@@ -220,6 +255,8 @@ def build_api_snapshot() -> dict:
             requested_not_found.append(f"gs_quant.risk.{name}")
         else:
             symbols[f"gs_quant.risk.{name}"] = _describe(obj)
+    for name in RISK_FUNCTION_AND_CLASS_NAMES:
+        symbols[f"gs_quant.risk.{name}"] = _describe(getattr(gs_quant.risk, name))
 
     for name, obj in inspect.getmembers(gs_quant.common):
         if name.startswith("_"):

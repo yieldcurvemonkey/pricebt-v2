@@ -12,6 +12,7 @@ import pytest
 from pricebt.errors import ConfigError, PricebtError
 from pricebt import instrument as instrument_mod
 from pricebt.instrument import (
+    Bond,
     BuySell,
     Cash,
     ConfigInstrument,
@@ -190,6 +191,20 @@ def test_scale_not_in_place_returns_scaled_deepcopy():
     assert result.quantity_ == 3.0
     assert swap.quantity_ == 1.0
     assert result is not swap
+
+
+def test_bond_is_a_generated_class_that_scales_via_quantity():
+    # IR_RISK_DESIGN.md section 4.1: gs Bond, fields from the 1.5.4 snapshot (the parity test pins
+    # the exact signature); pricebt DEV-I1 scales it through quantity_ (gs Bond.scale() raises).
+    from pricebt.common import AssetClass, AssetType, UnderlierType
+
+    bond = Bond("buy", "US912810TM08", "isin", 1e6, name="ust")
+    assert (bond.buy_sell, bond.identifier_type, bond.size) == (BuySell.Buy, UnderlierType.ISIN, 1e6)
+    assert (Bond.asset_class, Bond.type_) == (AssetClass.Cross_Asset, AssetType.Bond)
+    bond._set_resolution({"size": 1e6}, None, None, None)
+    bond.scale(-2)
+    assert bond.quantity_ == -2.0
+    assert bond.size == 1e6  # size fields are never edited (DEV-I1)
 
 
 def test_flip_is_scale_minus_one():

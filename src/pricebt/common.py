@@ -171,6 +171,15 @@ class RiskMeasureUnit(EnumBase, str, Enum):
     Pips = "Pips"
 
 
+class FiniteDifferenceMethod(EnumBase, str, Enum):
+    """Direction and dimension of finite difference."""
+
+    Up = "Up"
+    Centered = "Centered"
+    Down = "Down"
+    CenteredSecondOrder = "CenteredSecondOrder"
+
+
 class AssetClass(EnumBase, str, Enum):
     """Asset classification of a security."""
 

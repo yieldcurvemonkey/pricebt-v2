@@ -10,6 +10,24 @@ description: >
 instrument: IRSwap                     # a class in pricebt.instrument (IRSwap, IRSwaption, ...)
 match: {notional_currency: USD}        # TODO: which instruments this config serves
 currency: USD                          # TODO: the currency your npv/dv01 come back in
+unsupported_measures:                  # TODO: map each measure your library can compute (and delete it here);
+                                       # give every one you cannot an honest, specific reason (docs/v2/IR_RISK_DESIGN.md section 2)
+  IRDiscountDeltaParallel: "TODO: why your library cannot compute this"
+  IRGammaParallel: "TODO: why your library cannot compute this"
+  IRGamma: "TODO: why your library cannot compute this"
+  IRVega: "TODO: why your library cannot compute this"
+  IRVanna: "TODO: why your library cannot compute this"
+  IRVolga: "TODO: why your library cannot compute this"
+  IRBasis: "TODO: why your library cannot compute this"
+  IRXccyDelta: "TODO: why your library cannot compute this"
+  IRSpotRate: "TODO: why your library cannot compute this"
+  IRAnnualImpliedVol: "TODO: why your library cannot compute this"
+  IRAnnualATMImpliedVol: "TODO: why your library cannot compute this"
+  IRDailyImpliedVol: "TODO: why your library cannot compute this"
+  Theta: "TODO: why your library cannot compute this"
+  ExpiryInYears: "TODO: why your library cannot compute this"
+  Annuity: "TODO: why your library cannot compute this"
+  Cashflows: "TODO: why your library cannot compute this"
 defaults:                              # gs-style defaults for kwargs the user leaves out
   pay_or_receive: Receive
   termination_date: 10y

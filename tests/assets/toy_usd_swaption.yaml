@@ -7,6 +7,26 @@ description: >
 instrument: IRSwaption
 match: {notional_currency: USD}
 currency: USD
+unsupported_measures:   # TEMPORARY (Phase A): Phase C maps the full contract (docs/v2/IR_RISK_DESIGN.md section 6.2)
+  IRDelta: "toylib.swaption has no delta or delta-ladder function yet (Phase C adds them)"
+  IRDiscountDeltaParallel: "toylib.swaption has no discount-only bump function yet (Phase C)"
+  IRGammaParallel: "toylib.swaption has no gamma function yet (Phase C)"
+  IRGamma: "toylib.swaption has no gamma ladder function yet (Phase C)"
+  IRVega: {bucketed: "toylib.swaption has one flat vol per day and no vol-cube function yet (Phase C)"}
+  IRVanna: "toylib.swaption has no vanna function yet (Phase C)"
+  IRVolga: "toylib.swaption has no volga function yet (Phase C)"
+  IRBasis: "single-curve toy world (no basis spread); the 0.0 function is not wired yet (Phase C)"
+  IRXccyDelta: "single-currency toy swaption (no cross-currency basis); the 0.0 function is not wired yet (Phase C)"
+  IRFwdRate: "toylib.swaption has no forward-rate function yet (Phase C)"
+  IRSpotRate: "toylib.swaption has no spot-starting par rate function yet (Phase C)"
+  IRAnnualImpliedVol: "toylib.swaption has no vol-level function yet (Phase C)"
+  IRAnnualATMImpliedVol: "toylib.swaption has no vol-level function yet (Phase C)"
+  IRDailyImpliedVol: "toylib.swaption has no vol-level function yet (Phase C)"
+  Theta: "toylib.swaption has no one-day carry function yet (Phase C)"
+  ExpiryInYears: "toylib.swaption has no years-to-expiry function yet (Phase C)"
+  Annuity: "toylib.swaption has no annuity function yet (Phase C)"
+  Cashflows: "toylib.swaption has no cashflows frame function yet (Phase C)"
+  ProbabilityOfExercise: "toylib.swaption has no exercise-probability function yet (Phase C)"
 defaults:
   pay_or_receive: Pay
   buy_sell: Buy

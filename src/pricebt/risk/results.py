@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import namedtuple
+from collections.abc import Mapping
 from typing import Any, Iterable, Optional
 
 import pandas as pd
@@ -21,6 +22,7 @@ import pandas as pd
 RiskKey = namedtuple("RiskKey", ["provider", "date", "market", "params", "scenario", "risk_measure"])
 
 _BUCKET_COLUMNS = ("mkt_type", "mkt_asset", "mkt_class", "mkt_point", "mkt_quoting_style")
+_BUCKET_ROW_KEYS = frozenset(_BUCKET_COLUMNS) | {"value"}
 
 
 class FloatWithInfo(float):
@@ -85,8 +87,13 @@ class SeriesWithInfo(_InfoFrameMixin, pd.Series):
 
 
 class DataFrameWithInfo(_InfoFrameMixin, pd.DataFrame):
-    """A bucketed (vector) result. Always has exactly the six columns `mkt_type, mkt_asset,
-    mkt_class, mkt_point, mkt_quoting_style, value`; a missing label is `''`, never NaN."""
+    """A bucketed (vector) result, with exactly the six columns `mkt_type, mkt_asset, mkt_class,
+    mkt_point, mkt_quoting_style, value` (a missing label is `''`, never NaN) -- or, when
+    `pricebt_table` is True, a table result (`make_table_frame`, docs/v2/IR_RISK_DESIGN.md R2-15)
+    with the asset function's own columns."""
+
+    _metadata = _InfoFrameMixin._metadata + ["pricebt_table"]
+    pricebt_table = False  # a class default, so a bucketed frame never falls into column lookup
 
     @property
     def _constructor(self):
@@ -113,30 +120,72 @@ class ErrorValue:
         return f"ErrorValue({self.error!r})"
 
 
-def make_bucketed_frame(buckets: dict, labels: Optional[dict] = None, risk_key: Optional[RiskKey] = None, unit: Optional[dict] = None) -> DataFrameWithInfo:
-    """Build a `DataFrameWithInfo` from a portfolio function's returned `{mkt_point: value}` dict and
-    an asset config's static `labels` (DESIGN.md section 4.2). `mkt_point` is used exactly as
-    returned (already `;`-joined by the config's own expression if multi-dimensional) -- pricebt
-    never parses it. Row order is the dict's insertion order.
+def _bucket_row(row, labels: dict) -> dict:
+    """One per-row bucket (docs/v2/IR_RISK_DESIGN.md R2-14) as a full six-column row: a coordinate
+    the row omits comes from `labels`, else `''`."""
+    if not isinstance(row, Mapping) or "value" not in row or not set(row) <= _BUCKET_ROW_KEYS:
+        raise ValueError(f"a bucket row must be a dict with a 'value' and coordinates among {list(_BUCKET_COLUMNS)}, got {row!r}")
+    out = {c: row.get(c, labels.get(c, "")) for c in _BUCKET_COLUMNS}
+    out["mkt_point"] = str(out["mkt_point"])
+    out["value"] = row["value"]
+    return out
+
+
+def make_bucketed_frame(buckets, labels: Optional[dict] = None, risk_key: Optional[RiskKey] = None, unit: Optional[dict] = None) -> DataFrameWithInfo:
+    """Build a `DataFrameWithInfo` from a portfolio function's returned buckets and an asset
+    config's static `labels` (DESIGN.md section 4.2). `buckets` is a `{mkt_point: value}` dict, or
+    a list of per-row dicts whose keys are among the six columns, `value` required, and whose
+    omitted coordinates come from `labels` (docs/v2/IR_RISK_DESIGN.md R2-14). `mkt_point` is used
+    exactly as returned (already `;`-joined by the config's own expression if multi-dimensional)
+    -- pricebt never parses it. Row order is the dict's insertion order (the list's order).
 
     # pricebt DEV-R5: gs sorts bucketed rows with sort_risk/point_sort_order (asset-class regexes
     # over mkt_point, relative to today's date); pricebt keeps the config's own bucket order instead
     # (first appearance), because point labels are opaque strings here, never parsed by pricebt.
     """
     labels = labels or {}
-    rows = [
-        {
-            "mkt_type": labels.get("mkt_type", ""),
-            "mkt_asset": labels.get("mkt_asset", ""),
-            "mkt_class": labels.get("mkt_class", ""),
-            "mkt_point": str(point),
-            "mkt_quoting_style": labels.get("mkt_quoting_style", ""),
-            "value": value,
-        }
-        for point, value in buckets.items()
-    ]
+    if isinstance(buckets, (list, tuple)):
+        rows = [_bucket_row(r, labels) for r in buckets]
+    else:
+        rows = [
+            {
+                "mkt_type": labels.get("mkt_type", ""),
+                "mkt_asset": labels.get("mkt_asset", ""),
+                "mkt_class": labels.get("mkt_class", ""),
+                "mkt_point": str(point),
+                "mkt_quoting_style": labels.get("mkt_quoting_style", ""),
+                "value": value,
+            }
+            for point, value in buckets.items()
+        ]
     df = pd.DataFrame(rows, columns=list(_BUCKET_COLUMNS) + ["value"])
     return DataFrameWithInfo(df, risk_key=risk_key, unit=unit)
+
+
+def make_table_frame(rows, risk_key: Optional[RiskKey] = None, unit: Optional[dict] = None, scale_columns: Iterable[str] = (), factor: float = 1.0) -> DataFrameWithInfo:
+    """Build a table result (docs/v2/IR_RISK_DESIGN.md R2-15) from an asset function's `returns:
+    frame` value -- a DataFrame or a list of per-row dicts -- for one position. Only the
+    `scale_columns` are multiplied by `factor` (the position's quantity, or 1.0); every other
+    column is kept as returned. `rows` is never mutated (the pricing layer caches it). A frame
+    with rows must have every scale column. The result carries `pricebt_table = True`, which is how
+    consumers tell a table from a bucketed frame."""
+    if isinstance(rows, pd.DataFrame):
+        df = pd.DataFrame(rows, copy=True)
+    elif isinstance(rows, (list, tuple)) and all(isinstance(r, Mapping) for r in rows):
+        df = pd.DataFrame(list(rows))
+    else:
+        raise TypeError(f"a frame result must be a DataFrame or a list of dicts, got {type(rows).__name__}")
+    scale_columns = tuple(scale_columns)
+    if len(df):
+        missing = [c for c in scale_columns if c not in df.columns]
+        if missing:
+            raise ValueError(f"scale_columns {missing} are not columns of the frame {list(df.columns)}")
+        if factor != 1.0:
+            for c in scale_columns:
+                df[c] = df[c] * factor
+    out = DataFrameWithInfo(df, risk_key=risk_key, unit=unit)
+    out.pricebt_table = True
+    return out
 
 
 def combine_bucketed_frames(frames: Iterable[pd.DataFrame], risk_key: Optional[RiskKey] = None, unit: Optional[dict] = None) -> DataFrameWithInfo:

@@ -2,10 +2,12 @@
 SeriesWithInfo, DataFrameWithInfo, ErrorValue from risk.results.
 
 Ported from gs_quant.common / gs_quant.target.measures / gs_quant.risk.measures (Apache-2.0; see
-NOTICE): the RiskMeasure identity, call and repr semantics, and every measure instance the in-scope
-2.1.17 backtests modules import. `base_name` is a pricebt addition (not in gs): `__call__(name=...)`
-records the pre-rename name there, so a renamed preset (e.g. IRDeltaParallel) still falls back to
-its parent's config mapping (DESIGN.md section 8.1, rule 3).
+NOTICE): the RiskMeasure identity, call and repr semantics, and the whole 2.1.17 measure catalogue
+(every instance and preset gs_quant.risk exposes; IR_RISK_DESIGN.md section 1). The measures are
+data: pricebt computes none of them itself, an asset config maps each one to a function.
+`base_name` is a pricebt addition (not in gs): `__call__(name=...)` records the pre-rename name
+there, so a renamed preset (e.g. IRDeltaParallel) still falls back to its parent's config mapping
+(DESIGN.md section 8.1, rule 3).
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from pricebt.common import AggregationLevel, AssetClass, RiskMeasureUnit
+from pricebt.common import AggregationLevel, AssetClass, FiniteDifferenceMethod, RiskMeasureUnit
 from pricebt.risk.results import DataFrameWithInfo, ErrorValue, FloatWithInfo, SeriesWithInfo  # noqa: F401
 
 __all__ = [
@@ -28,38 +30,130 @@ __all__ = [
     "RiskMeasureWithFiniteDifferenceParameter",
     "CurrencyParameter",
     "FiniteDifferenceParameter",
-    "Price",
+    "Annuity",
+    "BaseCPI",
+    "CDATMSpread",
+    "CDDelta",
+    "CDFwdSpread",
+    "CDGamma",
+    "CDIForward",
+    "CDIIndexDelta",
+    "CDIIndexVega",
+    "CDIOptionPremium",
+    "CDIOptionPremiumFlatFwd",
+    "CDIOptionPremiumFlatVol",
+    "CDISpot",
+    "CDISpreadDV01",
+    "CDIUpfrontPrice",
+    "CDImpliedVolatility",
+    "CDIndexVega",
+    "CDTheta",
+    "CDVega",
+    "CRIFIRCurve",
+    "Cashflows",
+    "CommodDelta",
+    "CommodImpliedVol",
+    "CommodTheta",
+    "CommodVega",
+    "CompoundedFixedRate",
+    "Cross",
+    "CrossMultiplier",
+    "Description",
     "DollarPrice",
+    "EqAnnualImpliedVol",
     "EqDelta",
+    "EqForwardSpot",
     "EqGamma",
     "EqSpot",
+    "EqTheta",
     "EqVega",
-    "Annuity",
-    "Cashflows",
-    "ResolvedInstrumentValues",
+    "ExpiryInYears",
+    "FX25DeltaButterflyVolatility",
+    "FX25DeltaRiskReversalVolatility",
+    "FXAnnualATMImpliedVol",
+    "FXAnnualImpliedVol",
+    "FXBlackScholes",
+    "FXBlackScholesPct",
+    "FXCalcDelta",
+    "FXCalcDeltaNoPremAdj",
+    "FXDelta",
+    "FXDeltaHedge",
+    "FXDeltaHedgeLocalCcy",
+    "FXDeltaLocalCcy",
+    "FXDiscountFactorOver",
+    "FXDiscountFactorUnder",
+    "FXFwd",
+    "FXGamma",
+    "FXGammaLocalCcy",
+    "FXImpliedCorrelation",
+    "FXPoints",
+    "FXPremium",
+    "FXPremiumPct",
+    "FXPremiumPctFlatFwd",
+    "FXQuotedDelta",
+    "FXQuotedDeltaNoPremAdj",
+    "FXQuotedVega",
+    "FXQuotedVegaBps",
+    "FXSpot",
+    "FXSpotVal",
+    "FXStrikePts",
+    "FXThetaLocalCcy",
+    "FXVega",
+    "FXVegaLocalCcy",
+    "FairPremium",
+    "FairPremiumInPercent",
+    "FairPrice",
+    "FairVarStrike",
+    "FairVolStrike",
+    "ForwardPrice",
+    "IRAnnualATMImpliedVol",
+    "IRAnnualImpliedVol",
+    "IRBasis",
+    "IRBasisParallel",
+    "IRDailyImpliedVol",
     "IRDelta",
-    "IRDeltaParallel",
     "IRDeltaLocalCcy",
+    "IRDeltaParallel",
+    "IRDiscountDeltaParallel",
+    "IRDiscountDeltaParallelLocalCcy",
+    "IRFwdRate",
     "IRGamma",
     "IRGammaParallel",
-    "IRVega",
-    "IRVegaParallel",
-    "IRVegaLocalCcy",
-    "IRBasis",
-    "IRXccyDelta",
-    "InflationDelta",
-    "IRFwdRate",
+    "IRGammaParallelLocalCcy",
     "IRSpotRate",
-    "IRDailyImpliedVol",
-    "IRAnnualImpliedVol",
-    "FXDelta",
-    "FXGamma",
-    "FXVega",
-    "FXSpot",
-    "FXAnnualImpliedVol",
-    "FXDeltaLocalCcy",
-    "FXGammaLocalCcy",
-    "FXVegaLocalCcy",
+    "IRVanna",
+    "IRVega",
+    "IRVegaLocalCcy",
+    "IRVegaParallel",
+    "IRVolga",
+    "IRXccyDelta",
+    "IRXccyDeltaParallel",
+    "InflDeltaParallelLocalCcyInBps",
+    "InflMaturityCPI",
+    "Infl_CompPeriod",
+    "InflationDelta",
+    "InflationDeltaParallel",
+    "LightningDV01",
+    "LightningOAS",
+    "LocalAnnuityInCents",
+    "Market",
+    "MarketData",
+    "MarketDataAssets",
+    "NonUSDOisDomRate",
+    "OisFXSprExSpkRate",
+    "OisFXSprRate",
+    "ParSpread",
+    "PremiumCents",
+    "PremiumSummary",
+    "Price",
+    "PricePips",
+    "ProbabilityOfExercise",
+    "RFRFXRate",
+    "RFRFXSprExSpkRate",
+    "RFRFXSprRate",
+    "ResolvedInstrumentValues",
+    "Theta",
+    "USDOisDomRate",
 ]
 
 
@@ -81,7 +175,7 @@ class FiniteDifferenceParameter:
     currency: Optional[str] = None
     local_curve: Optional[bool] = None
     bump_size: Optional[float] = None
-    finite_difference_method: Optional[str] = None
+    finite_difference_method: Optional[FiniteDifferenceMethod] = None
     scale_factor: Optional[float] = None
     mkt_marking_options: Optional[Any] = None
     parameter_type: str = "FiniteDifference"
@@ -183,6 +277,9 @@ class RiskMeasureWithFiniteDifferenceParameter(ParameterisedRiskMeasure):
             return self
         if isinstance(aggregation_level, str):
             aggregation_level = AggregationLevel(aggregation_level)
+        if isinstance(finite_difference_method, str):
+            # gs coerces through its Base field typing: case-insensitive, invalid -> ValueError
+            finite_difference_method = FiniteDifferenceMethod(finite_difference_method)
         p = self.parameters
         if aggregation_level is None and p is not None:
             aggregation_level = p.aggregation_level
@@ -222,41 +319,142 @@ RiskMeasureWithFiniteDifferenceParameter.__repr__ = _repr_parameterised
 
 # --------------------------------------------------------------------------------- measure instances
 # Values verified against gs_quant 2.1.17 `gs_quant/target/measures.py` and `gs_quant/risk/measures.py`
-# (read-only reference; DESIGN.md section 8.1). Two measures are classified here as gs actually
-# defines them rather than as DESIGN.md section 8.1's prose lists them (a fact-vs-design conflict;
-# see the P1.3 task report): `EqGamma` is `RiskMeasureWithCurrencyParameter`, and `FXGamma` is plain.
+# (read-only reference; DESIGN.md section 8.1, IR_RISK_DESIGN.md section 1), in gs's own (sorted)
+# order. Two measures are classified here as gs actually defines them rather than as DESIGN.md
+# section 8.1's prose lists them (a fact-vs-design conflict; see the P1.3 task report): `EqGamma` is
+# `RiskMeasureWithCurrencyParameter`, and `FXGamma` is plain. gs's `__doc__` strings are not ported.
 
-Price = RiskMeasureWithCurrencyParameter(name="Price", measure_type="PV")
-EqDelta = RiskMeasureWithCurrencyParameter(name="EqDelta", asset_class=AssetClass.Equity, measure_type="Delta")
-EqGamma = RiskMeasureWithCurrencyParameter(name="EqGamma", asset_class=AssetClass.Equity, measure_type="Gamma")
-EqVega = RiskMeasureWithCurrencyParameter(name="EqVega", asset_class=AssetClass.Equity, measure_type="Vega")
 Annuity = RiskMeasureWithCurrencyParameter(name="Annuity", asset_class=AssetClass.Rates, measure_type="AnnuityLocalCcy")
-FXDeltaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXDeltaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Delta Local Ccy")
-FXGammaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXGammaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Gamma Local Ccy")
-FXVegaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXVegaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Vega Local Ccy")
-
-IRDelta = RiskMeasureWithFiniteDifferenceParameter(name="IRDelta", asset_class=AssetClass.Rates, measure_type="Delta")
-IRDeltaParallel = IRDelta(aggregation_level=AggregationLevel.Asset, name="IRDeltaParallel")
-IRDeltaLocalCcy = IRDelta(currency="local", name="IRDeltaLocalCcy")
-IRVega = RiskMeasureWithFiniteDifferenceParameter(name="IRVega", asset_class=AssetClass.Rates, measure_type="Vega")
-IRVegaParallel = IRVega(aggregation_level=AggregationLevel.Asset, name="IRVegaParallel")
-IRVegaLocalCcy = IRVega(currency="local", name="IRVegaLocalCcy")
-IRBasis = RiskMeasureWithFiniteDifferenceParameter(name="IRBasis", asset_class=AssetClass.Rates, measure_type="Basis")
-IRXccyDelta = RiskMeasureWithFiniteDifferenceParameter(name="IRXccyDelta", asset_class=AssetClass.Rates, measure_type="XccyDelta")
-InflationDelta = RiskMeasureWithFiniteDifferenceParameter(name="InflationDelta", asset_class=AssetClass.Rates, measure_type="InflationDelta")
-FXDelta = RiskMeasureWithFiniteDifferenceParameter(name="FXDelta", asset_class=AssetClass.FX, measure_type="Delta")
-FXVega = RiskMeasureWithFiniteDifferenceParameter(name="FXVega", asset_class=AssetClass.FX, measure_type="Vega")
-
+BaseCPI = RiskMeasure(name="BaseCPI", measure_type="BaseCPI")
+CDATMSpread = RiskMeasure(name="CDATMSpread", asset_class=AssetClass.Credit, measure_type="ATM Spread")
+CDDelta = RiskMeasure(name="CDDelta", asset_class=AssetClass.Credit, measure_type="Delta")
+CDFwdSpread = RiskMeasure(name="CDFwdSpread", asset_class=AssetClass.Credit, measure_type="Forward Spread")
+CDGamma = RiskMeasure(name="CDGamma", asset_class=AssetClass.Credit, measure_type="Gamma")
+CDIForward = RiskMeasure(name="CDIForward", asset_class=AssetClass.Credit, measure_type="CDIForward")
+CDIIndexDelta = RiskMeasure(name="CDIIndexDelta", asset_class=AssetClass.Credit, measure_type="CDIIndexDelta")
+CDIIndexVega = RiskMeasure(name="CDIIndexVega", asset_class=AssetClass.Credit, measure_type="CDIIndexVega")
+CDIOptionPremium = RiskMeasure(name="CDIOptionPremium", asset_class=AssetClass.Credit, measure_type="CDIOptionPremium")
+CDIOptionPremiumFlatFwd = RiskMeasure(name="CDIOptionPremiumFlatFwd", asset_class=AssetClass.Credit, measure_type="CDIOptionPremiumFlatFwd")
+CDIOptionPremiumFlatVol = RiskMeasure(name="CDIOptionPremiumFlatVol", asset_class=AssetClass.Credit, measure_type="CDIOptionPremiumFlatVol")
+CDISpot = RiskMeasure(name="CDISpot", asset_class=AssetClass.Credit, measure_type="CDISpot")
+CDISpreadDV01 = RiskMeasure(name="CDISpreadDV01", asset_class=AssetClass.Credit, measure_type="CDISpreadDV01")
+CDIUpfrontPrice = RiskMeasure(name="CDIUpfrontPrice", asset_class=AssetClass.Credit, measure_type="CDIUpfrontPrice")
+CDImpliedVolatility = RiskMeasure(name="CDImpliedVolatility", asset_class=AssetClass.Credit, measure_type="Implied Volatility")
+CDIndexVega = RiskMeasure(name="CDIndexVega", asset_class=AssetClass.Credit, measure_type="Vega")
+CDTheta = RiskMeasure(name="CDTheta", asset_class=AssetClass.Credit, measure_type="Theta")
+CDVega = RiskMeasure(name="CDVega", asset_class=AssetClass.Credit, measure_type="Vega")
+CRIFIRCurve = RiskMeasure(name="CRIFIRCurve", measure_type="CRIF IRCurve")
+Cashflows = RiskMeasure(name="Cashflows", measure_type="Cashflows")
+CommodDelta = RiskMeasure(name="CommodDelta", asset_class=AssetClass.Commod, measure_type="Delta")
+CommodImpliedVol = RiskMeasure(name="CommodImpliedVol", asset_class=AssetClass.Commod, measure_type="Volatility")
+CommodTheta = RiskMeasure(name="CommodTheta", asset_class=AssetClass.Commod, measure_type="Theta")
+CommodVega = RiskMeasure(name="CommodVega", asset_class=AssetClass.Commod, measure_type="Vega")
+CompoundedFixedRate = RiskMeasure(name="CompoundedFixedRate", measure_type="Compounded Fixed Rate")
+Cross = RiskMeasure(name="Cross", asset_class=AssetClass.FX, measure_type="Cross")
+CrossMultiplier = RiskMeasure(name="CrossMultiplier", measure_type="Cross Multiplier")
+Description = RiskMeasure(name="Description", measure_type="Description")
 DollarPrice = RiskMeasure(name="DollarPrice", measure_type="Dollar Price")
+EqAnnualImpliedVol = RiskMeasure(name="EqAnnualImpliedVol", asset_class=AssetClass.Equity, measure_type="Annual Implied Volatility", unit=RiskMeasureUnit.Percent)
+EqDelta = RiskMeasureWithCurrencyParameter(name="EqDelta", asset_class=AssetClass.Equity, measure_type="Delta")
+EqForwardSpot = RiskMeasure(name="EqForwardSpot", asset_class=AssetClass.Equity, measure_type="Forward Price")
+EqGamma = RiskMeasureWithCurrencyParameter(name="EqGamma", asset_class=AssetClass.Equity, measure_type="Gamma")
+EqSpot = RiskMeasure(name="EqSpot", asset_class=AssetClass.Equity, measure_type="Spot")
+EqTheta = RiskMeasureWithCurrencyParameter(name="EqTheta", asset_class=AssetClass.Equity, measure_type="Theta")
+EqVega = RiskMeasureWithCurrencyParameter(name="EqVega", asset_class=AssetClass.Equity, measure_type="Vega")
+ExpiryInYears = RiskMeasure(name="ExpiryInYears", measure_type="ExpiryInYears")
+FX25DeltaButterflyVolatility = RiskMeasure(name="FX25DeltaButterflyVolatility", asset_class=AssetClass.FX, measure_type="FX BF 25 Vol")
+FX25DeltaRiskReversalVolatility = RiskMeasure(name="FX25DeltaRiskReversalVolatility", asset_class=AssetClass.FX, measure_type="FX RR 25 Vol")
+FXAnnualATMImpliedVol = RiskMeasure(name="FXAnnualATMImpliedVol", asset_class=AssetClass.FX, measure_type="Annual ATM Implied Volatility", unit=RiskMeasureUnit.Percent)
+FXAnnualImpliedVol = RiskMeasure(name="FXAnnualImpliedVol", asset_class=AssetClass.FX, measure_type="Annual Implied Volatility", unit=RiskMeasureUnit.Percent)
+FXBlackScholes = RiskMeasure(name="FXBlackScholes", asset_class=AssetClass.FX, measure_type="BSPrice")
+FXBlackScholesPct = RiskMeasure(name="FXBlackScholesPct", asset_class=AssetClass.FX, measure_type="BSPricePct")
+FXCalcDelta = RiskMeasure(name="FXCalcDelta", asset_class=AssetClass.FX, measure_type="FX Calculated Delta")
+FXCalcDeltaNoPremAdj = RiskMeasure(name="FXCalcDeltaNoPremAdj", asset_class=AssetClass.FX, measure_type="FX Calculated Delta No Premium Adjustment")
+FXDelta = RiskMeasureWithFiniteDifferenceParameter(name="FXDelta", asset_class=AssetClass.FX, measure_type="Delta")
+FXDeltaHedge = RiskMeasure(name="FXDeltaHedge", asset_class=AssetClass.FX, measure_type="FX Hedge Delta")
+FXDeltaHedgeLocalCcy = RiskMeasureWithCurrencyParameter(name="FXDeltaHedgeLocalCcy", asset_class=AssetClass.FX, measure_type="FX Hedge Delta Local Ccy")
+FXDeltaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXDeltaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Delta Local Ccy")
+FXDiscountFactorOver = RiskMeasure(name="FXDiscountFactorOver", asset_class=AssetClass.FX, measure_type="FX Discount Factor Over")
+FXDiscountFactorUnder = RiskMeasure(name="FXDiscountFactorUnder", asset_class=AssetClass.FX, measure_type="FX Discount Factor Under")
+FXFwd = RiskMeasure(name="FXFwd", asset_class=AssetClass.FX, measure_type="Forward Rate")
+FXGamma = RiskMeasure(name="FXGamma", asset_class=AssetClass.FX, measure_type="Gamma")
+FXGammaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXGammaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Gamma Local Ccy")
+FXImpliedCorrelation = RiskMeasure(name="FXImpliedCorrelation", asset_class=AssetClass.FX, measure_type="Correlation")
+FXPoints = RiskMeasure(name="FXPoints", asset_class=AssetClass.FX, measure_type="Points")
+FXPremium = RiskMeasure(name="FXPremium", asset_class=AssetClass.FX, measure_type="FX Premium")
+FXPremiumPct = RiskMeasure(name="FXPremiumPct", asset_class=AssetClass.FX, measure_type="FX Premium Pct")
+FXPremiumPctFlatFwd = RiskMeasure(name="FXPremiumPctFlatFwd", asset_class=AssetClass.FX, measure_type="FX Premium Pct Flat Fwd")
+FXQuotedDelta = RiskMeasure(name="FXQuotedDelta", asset_class=AssetClass.FX, measure_type="QuotedDelta")
+FXQuotedDeltaNoPremAdj = RiskMeasure(name="FXQuotedDeltaNoPremAdj", asset_class=AssetClass.FX, measure_type="FX Quoted Delta No Premium Adjustment")
+FXQuotedVega = RiskMeasure(name="FXQuotedVega", asset_class=AssetClass.FX, measure_type="FX Quoted Vega")
+FXQuotedVegaBps = RiskMeasure(name="FXQuotedVegaBps", asset_class=AssetClass.FX, measure_type="FX Quoted Vega Bps")
+FXSpot = RiskMeasure(name="FXSpot", asset_class=AssetClass.FX, measure_type="Spot")
+FXSpotVal = RiskMeasure(name="FXSpotVal", asset_class=AssetClass.FX, measure_type="FXSpotVal")
+FXStrikePts = RiskMeasure(name="FXStrikePts", asset_class=AssetClass.FX, measure_type="StrikePts")
+FXThetaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXThetaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Theta Local Ccy")
+FXVega = RiskMeasureWithFiniteDifferenceParameter(name="FXVega", asset_class=AssetClass.FX, measure_type="Vega")
+FXVegaLocalCcy = RiskMeasureWithCurrencyParameter(name="FXVegaLocalCcy", asset_class=AssetClass.FX, measure_type="FX Vega Local Ccy")
+FairPremium = RiskMeasureWithCurrencyParameter(name="FairPremium", measure_type="FairPremium")
+FairPremiumInPercent = RiskMeasure(name="FairPremiumInPercent", asset_class=AssetClass.FX, measure_type="FairPremiumPct", unit=RiskMeasureUnit.Percent)
+FairPrice = RiskMeasure(name="FairPrice", asset_class=AssetClass.Commod, measure_type="Fair Price")
+FairVarStrike = RiskMeasure(name="FairVarStrike", measure_type="FairVarStrike")
+FairVolStrike = RiskMeasure(name="FairVolStrike", measure_type="FairVolStrike")
+ForwardPrice = RiskMeasure(name="ForwardPrice", measure_type="Forward Price", unit=RiskMeasureUnit.BPS)
+IRAnnualATMImpliedVol = RiskMeasure(name="IRAnnualATMImpliedVol", asset_class=AssetClass.Rates, measure_type="Annual ATMF Implied Volatility", unit=RiskMeasureUnit.Percent)
+IRAnnualImpliedVol = RiskMeasure(name="IRAnnualImpliedVol", asset_class=AssetClass.Rates, measure_type="Annual Implied Volatility", unit=RiskMeasureUnit.Percent)
+IRBasis = RiskMeasureWithFiniteDifferenceParameter(name="IRBasis", asset_class=AssetClass.Rates, measure_type="Basis")
+IRDailyImpliedVol = RiskMeasure(name="IRDailyImpliedVol", asset_class=AssetClass.Rates, measure_type="Daily Implied Volatility", unit=RiskMeasureUnit.BPS)
+IRDelta = RiskMeasureWithFiniteDifferenceParameter(name="IRDelta", asset_class=AssetClass.Rates, measure_type="Delta")
+IRDiscountDeltaParallel = RiskMeasure(name="IRDiscountDeltaParallel", asset_class=AssetClass.Rates, measure_type="ParallelDiscountDelta")
+IRDiscountDeltaParallelLocalCcy = RiskMeasure(name="IRDiscountDeltaParallelLocalCcy", asset_class=AssetClass.Rates, measure_type="ParallelDiscountDeltaLocalCcy")
+IRFwdRate = RiskMeasure(name="IRFwdRate", asset_class=AssetClass.Rates, measure_type="Forward Rate", unit=RiskMeasureUnit.Percent)
 IRGamma = RiskMeasure(name="IRGamma", asset_class=AssetClass.Rates, measure_type="Gamma")
 IRGammaParallel = RiskMeasure(name="IRGammaParallel", asset_class=AssetClass.Rates, measure_type="ParallelGamma")
-IRFwdRate = RiskMeasure(name="IRFwdRate", asset_class=AssetClass.Rates, measure_type="Forward Rate", unit=RiskMeasureUnit.Percent)
+IRGammaParallelLocalCcy = RiskMeasure(name="IRGammaParallelLocalCcy", asset_class=AssetClass.Rates, measure_type="ParallelGammaLocalCcy")
 IRSpotRate = RiskMeasure(name="IRSpotRate", asset_class=AssetClass.Rates, measure_type="Spot Rate", unit=RiskMeasureUnit.Percent)
-IRDailyImpliedVol = RiskMeasure(name="IRDailyImpliedVol", asset_class=AssetClass.Rates, measure_type="Daily Implied Volatility", unit=RiskMeasureUnit.BPS)
-IRAnnualImpliedVol = RiskMeasure(name="IRAnnualImpliedVol", asset_class=AssetClass.Rates, measure_type="Annual Implied Volatility", unit=RiskMeasureUnit.Percent)
-FXSpot = RiskMeasure(name="FXSpot", asset_class=AssetClass.FX, measure_type="Spot")
-FXAnnualImpliedVol = RiskMeasure(name="FXAnnualImpliedVol", asset_class=AssetClass.FX, measure_type="Annual Implied Volatility", unit=RiskMeasureUnit.Percent)
-FXGamma = RiskMeasure(name="FXGamma", asset_class=AssetClass.FX, measure_type="Gamma")
-EqSpot = RiskMeasure(name="EqSpot", asset_class=AssetClass.Equity, measure_type="Spot")
-Cashflows = RiskMeasure(name="Cashflows", measure_type="Cashflows")
+# pricebt DEV-I9: IRVanna/IRVolga are finite-difference measures as in 2.1.17 (plain RiskMeasure,
+# not callable, in 1.5.4), so gs's own vanna/volga notebook's IRVanna(aggregation_level=Type) works.
+IRVanna = RiskMeasureWithFiniteDifferenceParameter(name="IRVanna", asset_class=AssetClass.Rates, measure_type="Vanna")
+IRVega = RiskMeasureWithFiniteDifferenceParameter(name="IRVega", asset_class=AssetClass.Rates, measure_type="Vega")
+IRVolga = RiskMeasureWithFiniteDifferenceParameter(name="IRVolga", asset_class=AssetClass.Rates, measure_type="Volga")
+IRXccyDelta = RiskMeasureWithFiniteDifferenceParameter(name="IRXccyDelta", asset_class=AssetClass.Rates, measure_type="XccyDelta")
+InflDeltaParallelLocalCcyInBps = RiskMeasure(name="InflDeltaParallelLocalCcyInBps", asset_class=AssetClass.Rates, measure_type="Inflation Delta in Bps")
+InflMaturityCPI = RiskMeasure(name="InflMaturityCPI", asset_class=AssetClass.Rates, measure_type="FinalCPI")
+Infl_CompPeriod = RiskMeasure(name="Infl_CompPeriod", asset_class=AssetClass.Rates, measure_type="Inflation Compounding Period")
+InflationDelta = RiskMeasureWithFiniteDifferenceParameter(name="InflationDelta", asset_class=AssetClass.Rates, measure_type="InflationDelta")
+LightningDV01 = RiskMeasure(name="LightningDV01", measure_type="DV01")
+LightningOAS = RiskMeasure(name="LightningOAS", measure_type="OAS")
+LocalAnnuityInCents = RiskMeasure(name="LocalAnnuityInCents", asset_class=AssetClass.Rates, measure_type="Local Currency Accrual in Cents")
+Market = RiskMeasure(name="Market", measure_type="Market")
+MarketData = RiskMeasure(name="MarketData", measure_type="Market Data")
+MarketDataAssets = RiskMeasure(name="MarketDataAssets", measure_type="Market Data Assets")
+NonUSDOisDomRate = RiskMeasure(name="NonUSDOisDomRate", asset_class=AssetClass.FX, measure_type="NonUSDOisDomesticRate")
+OisFXSprExSpkRate = RiskMeasure(name="OisFXSprExSpkRate", asset_class=AssetClass.FX, measure_type="OisFXSpreadRateExcludingSpikes")
+OisFXSprRate = RiskMeasure(name="OisFXSprRate", asset_class=AssetClass.FX, measure_type="OisFXSpreadRate")
+ParSpread = RiskMeasure(name="ParSpread", asset_class=AssetClass.Rates, measure_type="Spread")
+PremiumCents = RiskMeasure(name="PremiumCents", asset_class=AssetClass.Rates, measure_type="Premium In Cents")
+PremiumSummary = RiskMeasure(name="PremiumSummary", asset_class=AssetClass.Commod, measure_type="Premium")
+Price = RiskMeasureWithCurrencyParameter(name="Price", measure_type="PV")
+PricePips = RiskMeasureWithCurrencyParameter(name="PricePips", measure_type="Price", unit=RiskMeasureUnit.Pips)
+ProbabilityOfExercise = RiskMeasure(name="ProbabilityOfExercise", measure_type="Probability Of Exercise")
+RFRFXRate = RiskMeasure(name="RFRFXRate", asset_class=AssetClass.FX, measure_type="RFRFXRate")
+RFRFXSprExSpkRate = RiskMeasure(name="RFRFXSprExSpkRate", asset_class=AssetClass.FX, measure_type="RFRFXSpreadRateExcludingSpikes")
+RFRFXSprRate = RiskMeasure(name="RFRFXSprRate", asset_class=AssetClass.FX, measure_type="RFRFXSpreadRate")
 ResolvedInstrumentValues = RiskMeasure(name="ResolvedInstrumentValues", measure_type="Resolved Instrument Values")
+Theta = RiskMeasure(name="Theta", measure_type="Theta")
+USDOisDomRate = RiskMeasure(name="USDOisDomRate", asset_class=AssetClass.FX, measure_type="USDOisDomesticRate")
+
+# gs_quant/risk/measures.py's parameterised presets (the call records base_name = the parent's name).
+IRBasisParallel = IRBasis(aggregation_level=AggregationLevel.Asset, name="IRBasisParallel")
+InflationDeltaParallel = InflationDelta(aggregation_level=AggregationLevel.Type, name="InflationDeltaParallel")
+IRDeltaParallel = IRDelta(aggregation_level=AggregationLevel.Asset, name="IRDeltaParallel")
+IRDeltaLocalCcy = IRDelta(currency="local", name="IRDeltaLocalCcy")
+IRXccyDeltaParallel = IRXccyDelta(aggregation_level=AggregationLevel.Type, name="IRXccyDeltaParallel")
+IRVegaParallel = IRVega(aggregation_level=AggregationLevel.Asset, name="IRVegaParallel")
+IRVegaLocalCcy = IRVega(currency="local", name="IRVegaLocalCcy")
+
+# pricebt DEV-I16: pricebt prices every measure in the instrument's own currency (DESIGN.md decision
+# 0.5), so the two plain LocalCcy measures are their base measure; base_name lets a config mapping
+# of the base measure serve them (IR_RISK_DESIGN.md section 1.3).
+object.__setattr__(IRGammaParallelLocalCcy, "base_name", "IRGammaParallel")
+object.__setattr__(IRDiscountDeltaParallelLocalCcy, "base_name", "IRDiscountDeltaParallel")

@@ -71,7 +71,9 @@ MUTATIONS = [
     (("market", "expr"), 'tr.market(pricebt_date, "GBP", pricebt_csa)', "market_available", "FAIL"),
     (("match",), {"notional_currency": "EUR"}, "match", "WARN"),
     (("functions", "npv", "scale_with_quantity"), False, "quantity_scaling[Price]", "FAIL"),
-    (("functions", "par_rate", "unit"), "ccy", "notional_linearity[par_rate]", "FAIL"),
+    # an UNMAPPED copy of par_rate: IRFwdRate's own function must keep a rate unit or the config no
+    # longer loads (measure contract, docs/v2/IR_RISK_DESIGN.md section 2)
+    (("functions", "par_rate_raw"), {"expr": "tr.par_rate(market, trade)", "unit": "ccy"}, "notional_linearity[par_rate_raw]", "FAIL"),
     (("functions", "dv01", "expr"), "tr.pv01(market, trade) * 100", "swap_dv01_band", "FAIL"),
     (("functions", "npv", "expr"), "-tr.npv(market, trade)", "swap_pnl_explain", "FAIL"),
     (("functions", "npv", "expr"), "float('nan')", "smoke_backtest", "FAIL"),

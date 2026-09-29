@@ -1,9 +1,12 @@
 {
-  "generated_date": "2026-09-27",
+  "generated_date": "2026-09-29",
   "gs_quant_version": "1.5.4",
   "requested_not_found": [
+    "gs_quant.risk.EqForwardSpot",
+    "gs_quant.risk.FXDeltaHedgeLocalCcy",
     "gs_quant.risk.FXDeltaLocalCcy",
     "gs_quant.risk.FXGammaLocalCcy",
+    "gs_quant.risk.FXThetaLocalCcy",
     "gs_quant.risk.FXVegaLocalCcy"
   ],
   "symbols": {
@@ -3529,7 +3532,7 @@
         [
           "end_date",
           true,
-          "datetime.date(2026, 9, 27)"
+          "datetime.date(2026, 9, 29)"
         ]
       ],
       "kind": "dataclass",
@@ -3710,7 +3713,7 @@
         [
           "end_date",
           "POSITIONAL_OR_KEYWORD",
-          "datetime.date(2026, 9, 27)"
+          "datetime.date(2026, 9, 29)"
         ]
       ]
     },
@@ -30613,7 +30616,7 @@
         [
           "dates",
           "POSITIONAL_OR_KEYWORD",
-          "datetime.date(2026, 9, 27)"
+          "datetime.date(2026, 9, 29)"
         ],
         [
           "calendars",
@@ -30672,6 +30675,393 @@
       "signature": [
         [
           "location",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ]
+      ]
+    },
+    "gs_quant.instrument.Bond": {
+      "fields": [
+        [
+          "buy_sell",
+          true,
+          "None"
+        ],
+        [
+          "identifier",
+          true,
+          "None"
+        ],
+        [
+          "identifier_type",
+          true,
+          "None"
+        ],
+        [
+          "size",
+          true,
+          "None"
+        ],
+        [
+          "settlement_date",
+          true,
+          "None"
+        ],
+        [
+          "settlement_currency",
+          true,
+          "None"
+        ],
+        [
+          "asset_class",
+          false,
+          "Cross Asset"
+        ],
+        [
+          "type_",
+          false,
+          "Bond"
+        ],
+        [
+          "name",
+          true,
+          "None"
+        ]
+      ],
+      "kind": "dataclass",
+      "method_signatures": {
+        "as_dict": [
+          [
+            "as_camel_case",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "calc": [
+          [
+            "risk_measure",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "fn",
+            "POSITIONAL_OR_KEYWORD",
+            "None"
+          ]
+        ],
+        "clone": [
+          [
+            "kwargs",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "compose": [
+          [
+            "components",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "default_instance": [],
+        "dollar_price": [],
+        "flip": [
+          [
+            "in_place",
+            "POSITIONAL_OR_KEYWORD",
+            "True"
+          ]
+        ],
+        "from_asset_id": [
+          [
+            "asset_id",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_asset_ids": [
+          [
+            "asset_ids",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_dict": [
+          [
+            "kvs",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ]
+        ],
+        "from_instance": [
+          [
+            "instance",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_json": [
+          [
+            "s",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "parse_float",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_int",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_constant",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_quick_entry": [
+          [
+            "text",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "asset_class",
+            "POSITIONAL_OR_KEYWORD",
+            "None"
+          ]
+        ],
+        "market": [],
+        "price": [
+          [
+            "currency",
+            "POSITIONAL_OR_KEYWORD",
+            "None"
+          ]
+        ],
+        "properties": [],
+        "properties_init": [],
+        "resolve": [
+          [
+            "in_place",
+            "POSITIONAL_OR_KEYWORD",
+            "True"
+          ]
+        ],
+        "resolved": [
+          [
+            "values",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "resolution_key",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "scale": [
+          [
+            "scaling",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "in_place",
+            "POSITIONAL_OR_KEYWORD",
+            "True"
+          ],
+          [
+            "check_resolved",
+            "POSITIONAL_OR_KEYWORD",
+            "True"
+          ]
+        ],
+        "schema": [
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "only",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "exclude",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "many",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "context",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "load_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "dump_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "partial",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "unknown",
+            "KEYWORD_ONLY",
+            "None"
+          ]
+        ],
+        "to_dict": [
+          [
+            "encode_json",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "to_json": [
+          [
+            "skipkeys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "ensure_ascii",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "check_circular",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "allow_nan",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "indent",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "separators",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "default",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "sort_keys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ]
+      },
+      "methods": [
+        "as_dict",
+        "calc",
+        "clone",
+        "compose",
+        "default_instance",
+        "dollar_price",
+        "flip",
+        "from_asset_id",
+        "from_asset_ids",
+        "from_dict",
+        "from_instance",
+        "from_json",
+        "from_quick_entry",
+        "market",
+        "price",
+        "properties",
+        "properties_init",
+        "resolve",
+        "resolved",
+        "scale",
+        "schema",
+        "to_dict",
+        "to_json"
+      ],
+      "properties": [
+        "instrument_quantity",
+        "metadata",
+        "provider",
+        "resolution_key",
+        "unresolved"
+      ],
+      "signature": [
+        [
+          "buy_sell",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "identifier",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "identifier_type",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "size",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "settlement_date",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "settlement_currency",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "name",
           "POSITIONAL_OR_KEYWORD",
           "None"
         ]
@@ -34933,178 +35323,1931 @@
       ]
     },
     "gs_quant.risk.Annuity": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithCurrencyParameter",
       "kind": "risk_measure",
       "measure_type": "AnnuityLocalCcy",
-      "name": "Annuity"
+      "name": "Annuity",
+      "unit": "None"
+    },
+    "gs_quant.risk.BaseCPI": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "BaseCPI",
+      "name": "BaseCPI",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDATMSpread": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "ATM Spread",
+      "name": "CDATMSpread",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDDelta": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Delta",
+      "name": "CDDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDFwdSpread": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Forward Spread",
+      "name": "CDFwdSpread",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDGamma": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Gamma",
+      "name": "CDGamma",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIForward": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIForward",
+      "name": "CDIForward",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIIndexDelta": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIIndexDelta",
+      "name": "CDIIndexDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIIndexVega": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIIndexVega",
+      "name": "CDIIndexVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIOptionPremium": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIOptionPremium",
+      "name": "CDIOptionPremium",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIOptionPremiumFlatFwd": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIOptionPremiumFlatFwd",
+      "name": "CDIOptionPremiumFlatFwd",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIOptionPremiumFlatVol": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIOptionPremiumFlatVol",
+      "name": "CDIOptionPremiumFlatVol",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDISpot": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDISpot",
+      "name": "CDISpot",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDISpreadDV01": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDISpreadDV01",
+      "name": "CDISpreadDV01",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIUpfrontPrice": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CDIUpfrontPrice",
+      "name": "CDIUpfrontPrice",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDImpliedVolatility": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Implied Volatility",
+      "name": "CDImpliedVolatility",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDIndexVega": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Vega",
+      "name": "CDIndexVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDTheta": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Theta",
+      "name": "CDTheta",
+      "unit": "None"
+    },
+    "gs_quant.risk.CDVega": {
+      "asset_class": "Credit",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Vega",
+      "name": "CDVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.CRIFIRCurve": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "CRIF IRCurve",
+      "name": "CRIFIRCurve",
+      "unit": "None"
     },
     "gs_quant.risk.Cashflows": {
+      "asset_class": "None",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Cashflows",
-      "name": "Cashflows"
+      "name": "Cashflows",
+      "unit": "None"
+    },
+    "gs_quant.risk.CommodDelta": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Delta",
+      "name": "CommodDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.CommodImpliedVol": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Volatility",
+      "name": "CommodImpliedVol",
+      "unit": "None"
+    },
+    "gs_quant.risk.CommodTheta": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Theta",
+      "name": "CommodTheta",
+      "unit": "None"
+    },
+    "gs_quant.risk.CommodVega": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Vega",
+      "name": "CommodVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.CompoundedFixedRate": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Compounded Fixed Rate",
+      "name": "CompoundedFixedRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.Cross": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Cross",
+      "name": "Cross",
+      "unit": "None"
+    },
+    "gs_quant.risk.CrossMultiplier": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Cross Multiplier",
+      "name": "CrossMultiplier",
+      "unit": "None"
+    },
+    "gs_quant.risk.Description": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Description",
+      "name": "Description",
+      "unit": "None"
     },
     "gs_quant.risk.DollarPrice": {
+      "asset_class": "None",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Dollar Price",
-      "name": "DollarPrice"
+      "name": "DollarPrice",
+      "unit": "None"
+    },
+    "gs_quant.risk.EqAnnualImpliedVol": {
+      "asset_class": "Equity",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Annual Implied Volatility",
+      "name": "EqAnnualImpliedVol",
+      "unit": "Percent"
     },
     "gs_quant.risk.EqDelta": {
+      "asset_class": "Equity",
       "class": "RiskMeasureWithCurrencyParameter",
       "kind": "risk_measure",
       "measure_type": "Delta",
-      "name": "EqDelta"
+      "name": "EqDelta",
+      "unit": "None"
     },
     "gs_quant.risk.EqGamma": {
+      "asset_class": "Equity",
       "class": "RiskMeasureWithCurrencyParameter",
       "kind": "risk_measure",
       "measure_type": "Gamma",
-      "name": "EqGamma"
+      "name": "EqGamma",
+      "unit": "None"
     },
     "gs_quant.risk.EqSpot": {
+      "asset_class": "Equity",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Spot",
-      "name": "EqSpot"
+      "name": "EqSpot",
+      "unit": "None"
+    },
+    "gs_quant.risk.EqTheta": {
+      "asset_class": "Equity",
+      "class": "RiskMeasureWithCurrencyParameter",
+      "kind": "risk_measure",
+      "measure_type": "Theta",
+      "name": "EqTheta",
+      "unit": "None"
     },
     "gs_quant.risk.EqVega": {
+      "asset_class": "Equity",
       "class": "RiskMeasureWithCurrencyParameter",
       "kind": "risk_measure",
       "measure_type": "Vega",
-      "name": "EqVega"
+      "name": "EqVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.ExpiryInYears": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "ExpiryInYears",
+      "name": "ExpiryInYears",
+      "unit": "None"
+    },
+    "gs_quant.risk.FX25DeltaButterflyVolatility": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX BF 25 Vol",
+      "name": "FX25DeltaButterflyVolatility",
+      "unit": "None"
+    },
+    "gs_quant.risk.FX25DeltaRiskReversalVolatility": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX RR 25 Vol",
+      "name": "FX25DeltaRiskReversalVolatility",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXAnnualATMImpliedVol": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Annual ATM Implied Volatility",
+      "name": "FXAnnualATMImpliedVol",
+      "unit": "Percent"
     },
     "gs_quant.risk.FXAnnualImpliedVol": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Annual Implied Volatility",
-      "name": "FXAnnualImpliedVol"
+      "name": "FXAnnualImpliedVol",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.FXBlackScholes": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "BSPrice",
+      "name": "FXBlackScholes",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXBlackScholesPct": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "BSPricePct",
+      "name": "FXBlackScholesPct",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXCalcDelta": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Calculated Delta",
+      "name": "FXCalcDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXCalcDeltaNoPremAdj": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Calculated Delta No Premium Adjustment",
+      "name": "FXCalcDeltaNoPremAdj",
+      "unit": "None"
     },
     "gs_quant.risk.FXDelta": {
+      "asset_class": "FX",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "Delta",
-      "name": "FXDelta"
+      "name": "FXDelta",
+      "unit": "None"
     },
-    "gs_quant.risk.FXGamma": {
+    "gs_quant.risk.FXDeltaHedge": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
-      "measure_type": "Gamma",
-      "name": "FXGamma"
+      "measure_type": "FX Hedge Delta",
+      "name": "FXDeltaHedge",
+      "unit": "None"
     },
-    "gs_quant.risk.FXSpot": {
+    "gs_quant.risk.FXDiscountFactorOver": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
-      "measure_type": "Spot",
-      "name": "FXSpot"
+      "measure_type": "FX Discount Factor Over",
+      "name": "FXDiscountFactorOver",
+      "unit": "None"
     },
-    "gs_quant.risk.FXVega": {
-      "class": "RiskMeasureWithFiniteDifferenceParameter",
-      "kind": "risk_measure",
-      "measure_type": "Vega",
-      "name": "FXVega"
-    },
-    "gs_quant.risk.IRAnnualImpliedVol": {
+    "gs_quant.risk.FXDiscountFactorUnder": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
-      "measure_type": "Annual Implied Volatility",
-      "name": "IRAnnualImpliedVol"
+      "measure_type": "FX Discount Factor Under",
+      "name": "FXDiscountFactorUnder",
+      "unit": "None"
     },
-    "gs_quant.risk.IRBasis": {
-      "class": "RiskMeasureWithFiniteDifferenceParameter",
-      "kind": "risk_measure",
-      "measure_type": "Basis",
-      "name": "IRBasis"
-    },
-    "gs_quant.risk.IRDailyImpliedVol": {
-      "class": "RiskMeasure",
-      "kind": "risk_measure",
-      "measure_type": "Daily Implied Volatility",
-      "name": "IRDailyImpliedVol"
-    },
-    "gs_quant.risk.IRDelta": {
-      "class": "RiskMeasureWithFiniteDifferenceParameter",
-      "kind": "risk_measure",
-      "measure_type": "Delta",
-      "name": "IRDelta"
-    },
-    "gs_quant.risk.IRDeltaLocalCcy": {
-      "class": "RiskMeasureWithFiniteDifferenceParameter",
-      "kind": "risk_measure",
-      "measure_type": "Delta",
-      "name": "IRDeltaLocalCcy"
-    },
-    "gs_quant.risk.IRDeltaParallel": {
-      "class": "RiskMeasureWithFiniteDifferenceParameter",
-      "kind": "risk_measure",
-      "measure_type": "Delta",
-      "name": "IRDeltaParallel"
-    },
-    "gs_quant.risk.IRFwdRate": {
+    "gs_quant.risk.FXFwd": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Forward Rate",
-      "name": "IRFwdRate"
+      "name": "FXFwd",
+      "unit": "None"
     },
-    "gs_quant.risk.IRGamma": {
+    "gs_quant.risk.FXGamma": {
+      "asset_class": "FX",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Gamma",
-      "name": "IRGamma"
+      "name": "FXGamma",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXImpliedCorrelation": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Correlation",
+      "name": "FXImpliedCorrelation",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXPoints": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Points",
+      "name": "FXPoints",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXPremium": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Premium",
+      "name": "FXPremium",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXPremiumPct": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Premium Pct",
+      "name": "FXPremiumPct",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXPremiumPctFlatFwd": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Premium Pct Flat Fwd",
+      "name": "FXPremiumPctFlatFwd",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXQuotedDelta": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "QuotedDelta",
+      "name": "FXQuotedDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXQuotedDeltaNoPremAdj": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Quoted Delta No Premium Adjustment",
+      "name": "FXQuotedDeltaNoPremAdj",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXQuotedVega": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Quoted Vega",
+      "name": "FXQuotedVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXQuotedVegaBps": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FX Quoted Vega Bps",
+      "name": "FXQuotedVegaBps",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXSpot": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Spot",
+      "name": "FXSpot",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXSpotVal": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FXSpotVal",
+      "name": "FXSpotVal",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXStrikePts": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "StrikePts",
+      "name": "FXStrikePts",
+      "unit": "None"
+    },
+    "gs_quant.risk.FXVega": {
+      "asset_class": "FX",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Vega",
+      "name": "FXVega",
+      "unit": "None"
+    },
+    "gs_quant.risk.FairPremium": {
+      "asset_class": "None",
+      "class": "RiskMeasureWithCurrencyParameter",
+      "kind": "risk_measure",
+      "measure_type": "FairPremium",
+      "name": "FairPremium",
+      "unit": "None"
+    },
+    "gs_quant.risk.FairPremiumInPercent": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FairPremiumPct",
+      "name": "FairPremiumInPercent",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.FairPrice": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Fair Price",
+      "name": "FairPrice",
+      "unit": "None"
+    },
+    "gs_quant.risk.FairVarStrike": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FairVarStrike",
+      "name": "FairVarStrike",
+      "unit": "None"
+    },
+    "gs_quant.risk.FairVolStrike": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FairVolStrike",
+      "name": "FairVolStrike",
+      "unit": "None"
+    },
+    "gs_quant.risk.ForwardPrice": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Forward Price",
+      "name": "ForwardPrice",
+      "unit": "BPS"
+    },
+    "gs_quant.risk.IRAnnualATMImpliedVol": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Annual ATMF Implied Volatility",
+      "name": "IRAnnualATMImpliedVol",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.IRAnnualImpliedVol": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Annual Implied Volatility",
+      "name": "IRAnnualImpliedVol",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.IRBasis": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Basis",
+      "name": "IRBasis",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRBasisParallel": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Basis",
+      "name": "IRBasisParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRDailyImpliedVol": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Daily Implied Volatility",
+      "name": "IRDailyImpliedVol",
+      "unit": "BPS"
+    },
+    "gs_quant.risk.IRDelta": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Delta",
+      "name": "IRDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRDeltaLocalCcy": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Delta",
+      "name": "IRDeltaLocalCcy",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRDeltaParallel": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "Delta",
+      "name": "IRDeltaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRDiscountDeltaParallel": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "ParallelDiscountDelta",
+      "name": "IRDiscountDeltaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRDiscountDeltaParallelLocalCcy": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "ParallelDiscountDeltaLocalCcy",
+      "name": "IRDiscountDeltaParallelLocalCcy",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRFwdRate": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Forward Rate",
+      "name": "IRFwdRate",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.IRGamma": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Gamma",
+      "name": "IRGamma",
+      "unit": "None"
     },
     "gs_quant.risk.IRGammaParallel": {
+      "asset_class": "Rates",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "ParallelGamma",
-      "name": "IRGammaParallel"
+      "name": "IRGammaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRGammaParallelLocalCcy": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "ParallelGammaLocalCcy",
+      "name": "IRGammaParallelLocalCcy",
+      "unit": "None"
     },
     "gs_quant.risk.IRSpotRate": {
+      "asset_class": "Rates",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Spot Rate",
-      "name": "IRSpotRate"
+      "name": "IRSpotRate",
+      "unit": "Percent"
+    },
+    "gs_quant.risk.IRVanna": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Vanna",
+      "name": "IRVanna",
+      "unit": "None"
     },
     "gs_quant.risk.IRVega": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "Vega",
-      "name": "IRVega"
+      "name": "IRVega",
+      "unit": "None"
     },
     "gs_quant.risk.IRVegaLocalCcy": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "Vega",
-      "name": "IRVegaLocalCcy"
+      "name": "IRVegaLocalCcy",
+      "unit": "None"
     },
     "gs_quant.risk.IRVegaParallel": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "Vega",
-      "name": "IRVegaParallel"
+      "name": "IRVegaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRVolga": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Volga",
+      "name": "IRVolga",
+      "unit": "None"
     },
     "gs_quant.risk.IRXccyDelta": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "XccyDelta",
-      "name": "IRXccyDelta"
+      "name": "IRXccyDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.IRXccyDeltaParallel": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "XccyDelta",
+      "name": "IRXccyDeltaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.InflDeltaParallelLocalCcyInBps": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Inflation Delta in Bps",
+      "name": "InflDeltaParallelLocalCcyInBps",
+      "unit": "None"
+    },
+    "gs_quant.risk.InflMaturityCPI": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "FinalCPI",
+      "name": "InflMaturityCPI",
+      "unit": "None"
+    },
+    "gs_quant.risk.Infl_CompPeriod": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Inflation Compounding Period",
+      "name": "Infl_CompPeriod",
+      "unit": "None"
     },
     "gs_quant.risk.InflationDelta": {
+      "asset_class": "Rates",
       "class": "RiskMeasureWithFiniteDifferenceParameter",
       "kind": "risk_measure",
       "measure_type": "InflationDelta",
-      "name": "InflationDelta"
+      "name": "InflationDelta",
+      "unit": "None"
+    },
+    "gs_quant.risk.InflationDeltaParallel": {
+      "asset_class": "Rates",
+      "class": "RiskMeasureWithFiniteDifferenceParameter",
+      "kind": "risk_measure",
+      "measure_type": "InflationDelta",
+      "name": "InflationDeltaParallel",
+      "unit": "None"
+    },
+    "gs_quant.risk.LightningDV01": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "DV01",
+      "name": "LightningDV01",
+      "unit": "None"
+    },
+    "gs_quant.risk.LightningOAS": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "OAS",
+      "name": "LightningOAS",
+      "unit": "None"
+    },
+    "gs_quant.risk.LocalAnnuityInCents": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Local Currency Accrual in Cents",
+      "name": "LocalAnnuityInCents",
+      "unit": "None"
+    },
+    "gs_quant.risk.Market": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Market",
+      "name": "Market",
+      "unit": "None"
+    },
+    "gs_quant.risk.MarketData": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Market Data",
+      "name": "MarketData",
+      "unit": "None"
+    },
+    "gs_quant.risk.MarketDataAssets": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Market Data Assets",
+      "name": "MarketDataAssets",
+      "unit": "None"
+    },
+    "gs_quant.risk.NonUSDOisDomRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "NonUSDOisDomesticRate",
+      "name": "NonUSDOisDomRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.OisFXSprExSpkRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "OisFXSpreadRateExcludingSpikes",
+      "name": "OisFXSprExSpkRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.OisFXSprRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "OisFXSpreadRate",
+      "name": "OisFXSprRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.ParSpread": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Spread",
+      "name": "ParSpread",
+      "unit": "None"
+    },
+    "gs_quant.risk.PnlExplain": {
+      "fields": [
+        [
+          "asset_class",
+          true,
+          "None"
+        ],
+        [
+          "measure_type",
+          true,
+          "None"
+        ],
+        [
+          "unit",
+          true,
+          "None"
+        ],
+        [
+          "parameters",
+          true,
+          "None"
+        ],
+        [
+          "value",
+          true,
+          "None"
+        ],
+        [
+          "name",
+          true,
+          "None"
+        ]
+      ],
+      "kind": "dataclass",
+      "method_signatures": {
+        "as_dict": [
+          [
+            "as_camel_case",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "clone": [
+          [
+            "kwargs",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "default_instance": [],
+        "from_dict": [
+          [
+            "kvs",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ]
+        ],
+        "from_instance": [
+          [
+            "instance",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_json": [
+          [
+            "s",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "parse_float",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_int",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_constant",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "properties": [],
+        "properties_init": [],
+        "schema": [
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "only",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "exclude",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "many",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "context",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "load_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "dump_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "partial",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "unknown",
+            "KEYWORD_ONLY",
+            "None"
+          ]
+        ],
+        "to_dict": [
+          [
+            "encode_json",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "to_json": [
+          [
+            "skipkeys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "ensure_ascii",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "check_circular",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "allow_nan",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "indent",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "separators",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "default",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "sort_keys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ]
+      },
+      "methods": [
+        "as_dict",
+        "clone",
+        "default_instance",
+        "from_dict",
+        "from_instance",
+        "from_json",
+        "properties",
+        "properties_init",
+        "schema",
+        "to_dict",
+        "to_json"
+      ],
+      "properties": [
+        "pricing_context"
+      ],
+      "signature": [
+        [
+          "to_market",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ]
+      ]
+    },
+    "gs_quant.risk.PnlExplainClose": {
+      "fields": [
+        [
+          "asset_class",
+          true,
+          "None"
+        ],
+        [
+          "measure_type",
+          true,
+          "None"
+        ],
+        [
+          "unit",
+          true,
+          "None"
+        ],
+        [
+          "parameters",
+          true,
+          "None"
+        ],
+        [
+          "value",
+          true,
+          "None"
+        ],
+        [
+          "name",
+          true,
+          "None"
+        ]
+      ],
+      "kind": "dataclass",
+      "method_signatures": {
+        "as_dict": [
+          [
+            "as_camel_case",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "clone": [
+          [
+            "kwargs",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "default_instance": [],
+        "from_dict": [
+          [
+            "kvs",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ]
+        ],
+        "from_instance": [
+          [
+            "instance",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_json": [
+          [
+            "s",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "parse_float",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_int",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_constant",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "properties": [],
+        "properties_init": [],
+        "schema": [
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "only",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "exclude",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "many",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "context",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "load_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "dump_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "partial",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "unknown",
+            "KEYWORD_ONLY",
+            "None"
+          ]
+        ],
+        "to_dict": [
+          [
+            "encode_json",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "to_json": [
+          [
+            "skipkeys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "ensure_ascii",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "check_circular",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "allow_nan",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "indent",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "separators",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "default",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "sort_keys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ]
+      },
+      "methods": [
+        "as_dict",
+        "clone",
+        "default_instance",
+        "from_dict",
+        "from_instance",
+        "from_json",
+        "properties",
+        "properties_init",
+        "schema",
+        "to_dict",
+        "to_json"
+      ],
+      "properties": [
+        "pricing_context"
+      ],
+      "signature": []
+    },
+    "gs_quant.risk.PnlExplainLive": {
+      "fields": [
+        [
+          "asset_class",
+          true,
+          "None"
+        ],
+        [
+          "measure_type",
+          true,
+          "None"
+        ],
+        [
+          "unit",
+          true,
+          "None"
+        ],
+        [
+          "parameters",
+          true,
+          "None"
+        ],
+        [
+          "value",
+          true,
+          "None"
+        ],
+        [
+          "name",
+          true,
+          "None"
+        ]
+      ],
+      "kind": "dataclass",
+      "method_signatures": {
+        "as_dict": [
+          [
+            "as_camel_case",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "clone": [
+          [
+            "kwargs",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "default_instance": [],
+        "from_dict": [
+          [
+            "kvs",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ]
+        ],
+        "from_instance": [
+          [
+            "instance",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_json": [
+          [
+            "s",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "parse_float",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_int",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_constant",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "properties": [],
+        "properties_init": [],
+        "schema": [
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "only",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "exclude",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "many",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "context",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "load_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "dump_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "partial",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "unknown",
+            "KEYWORD_ONLY",
+            "None"
+          ]
+        ],
+        "to_dict": [
+          [
+            "encode_json",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "to_json": [
+          [
+            "skipkeys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "ensure_ascii",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "check_circular",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "allow_nan",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "indent",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "separators",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "default",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "sort_keys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ]
+      },
+      "methods": [
+        "as_dict",
+        "clone",
+        "default_instance",
+        "from_dict",
+        "from_instance",
+        "from_json",
+        "properties",
+        "properties_init",
+        "schema",
+        "to_dict",
+        "to_json"
+      ],
+      "properties": [
+        "pricing_context"
+      ],
+      "signature": []
+    },
+    "gs_quant.risk.PnlPredictLive": {
+      "fields": [
+        [
+          "asset_class",
+          true,
+          "None"
+        ],
+        [
+          "measure_type",
+          true,
+          "None"
+        ],
+        [
+          "unit",
+          true,
+          "None"
+        ],
+        [
+          "parameters",
+          true,
+          "None"
+        ],
+        [
+          "value",
+          true,
+          "None"
+        ],
+        [
+          "name",
+          true,
+          "None"
+        ]
+      ],
+      "kind": "dataclass",
+      "method_signatures": {
+        "as_dict": [
+          [
+            "as_camel_case",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "clone": [
+          [
+            "kwargs",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "default_instance": [],
+        "from_dict": [
+          [
+            "kvs",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ]
+        ],
+        "from_instance": [
+          [
+            "instance",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "from_json": [
+          [
+            "s",
+            "POSITIONAL_OR_KEYWORD",
+            "NODEFAULT"
+          ],
+          [
+            "parse_float",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_int",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "parse_constant",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ],
+        "properties": [],
+        "properties_init": [],
+        "schema": [
+          [
+            "infer_missing",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "only",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "exclude",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "many",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "context",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "load_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "dump_only",
+            "KEYWORD_ONLY",
+            "()"
+          ],
+          [
+            "partial",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "unknown",
+            "KEYWORD_ONLY",
+            "None"
+          ]
+        ],
+        "to_dict": [
+          [
+            "encode_json",
+            "POSITIONAL_OR_KEYWORD",
+            "False"
+          ]
+        ],
+        "to_json": [
+          [
+            "skipkeys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "ensure_ascii",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "check_circular",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "allow_nan",
+            "KEYWORD_ONLY",
+            "True"
+          ],
+          [
+            "indent",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "separators",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "default",
+            "KEYWORD_ONLY",
+            "None"
+          ],
+          [
+            "sort_keys",
+            "KEYWORD_ONLY",
+            "False"
+          ],
+          [
+            "kw",
+            "VAR_KEYWORD",
+            "NODEFAULT"
+          ]
+        ]
+      },
+      "methods": [
+        "as_dict",
+        "clone",
+        "default_instance",
+        "from_dict",
+        "from_instance",
+        "from_json",
+        "properties",
+        "properties_init",
+        "schema",
+        "to_dict",
+        "to_json"
+      ],
+      "properties": [
+        "pricing_context"
+      ],
+      "signature": []
+    },
+    "gs_quant.risk.PremiumCents": {
+      "asset_class": "Rates",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Premium In Cents",
+      "name": "PremiumCents",
+      "unit": "None"
+    },
+    "gs_quant.risk.PremiumSummary": {
+      "asset_class": "Commod",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Premium",
+      "name": "PremiumSummary",
+      "unit": "None"
     },
     "gs_quant.risk.Price": {
+      "asset_class": "None",
       "class": "RiskMeasureWithCurrencyParameter",
       "kind": "risk_measure",
       "measure_type": "PV",
-      "name": "Price"
+      "name": "Price",
+      "unit": "None"
+    },
+    "gs_quant.risk.PricePips": {
+      "asset_class": "None",
+      "class": "RiskMeasureWithCurrencyParameter",
+      "kind": "risk_measure",
+      "measure_type": "Price",
+      "name": "PricePips",
+      "unit": "Pips"
+    },
+    "gs_quant.risk.ProbabilityOfExercise": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Probability Of Exercise",
+      "name": "ProbabilityOfExercise",
+      "unit": "None"
+    },
+    "gs_quant.risk.RFRFXRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "RFRFXRate",
+      "name": "RFRFXRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.RFRFXSprExSpkRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "RFRFXSpreadRateExcludingSpikes",
+      "name": "RFRFXSprExSpkRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.RFRFXSprRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "RFRFXSpreadRate",
+      "name": "RFRFXSprRate",
+      "unit": "None"
     },
     "gs_quant.risk.ResolvedInstrumentValues": {
+      "asset_class": "None",
       "class": "RiskMeasure",
       "kind": "risk_measure",
       "measure_type": "Resolved Instrument Values",
-      "name": "ResolvedInstrumentValues"
+      "name": "ResolvedInstrumentValues",
+      "unit": "None"
+    },
+    "gs_quant.risk.Theta": {
+      "asset_class": "None",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "Theta",
+      "name": "Theta",
+      "unit": "None"
+    },
+    "gs_quant.risk.USDOisDomRate": {
+      "asset_class": "FX",
+      "class": "RiskMeasure",
+      "kind": "risk_measure",
+      "measure_type": "USDOisDomesticRate",
+      "name": "USDOisDomRate",
+      "unit": "None"
+    },
+    "gs_quant.risk.aggregate_results": {
+      "kind": "function",
+      "signature": [
+        [
+          "results",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ],
+        [
+          "allow_mismatch_risk_keys",
+          "POSITIONAL_OR_KEYWORD",
+          "False"
+        ],
+        [
+          "allow_heterogeneous_types",
+          "POSITIONAL_OR_KEYWORD",
+          "False"
+        ]
+      ]
+    },
+    "gs_quant.risk.aggregate_risk": {
+      "kind": "function",
+      "signature": [
+        [
+          "results",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ],
+        [
+          "threshold",
+          "POSITIONAL_OR_KEYWORD",
+          "None"
+        ],
+        [
+          "allow_heterogeneous_types",
+          "POSITIONAL_OR_KEYWORD",
+          "False"
+        ]
+      ]
+    },
+    "gs_quant.risk.combine_risk_key": {
+      "kind": "function",
+      "signature": [
+        [
+          "key_1",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ],
+        [
+          "key_2",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ]
+      ]
+    },
+    "gs_quant.risk.sort_risk": {
+      "kind": "function",
+      "signature": [
+        [
+          "df",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ],
+        [
+          "by",
+          "POSITIONAL_OR_KEYWORD",
+          "('date', 'time', 'mkt_type', 'mkt_asset', 'mkt_class', 'mkt_point')"
+        ]
+      ]
+    },
+    "gs_quant.risk.subtract_risk": {
+      "kind": "function",
+      "signature": [
+        [
+          "left",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ],
+        [
+          "right",
+          "POSITIONAL_OR_KEYWORD",
+          "NODEFAULT"
+        ]
+      ]
     },
     "gs_quant.session.Environment": {
       "kind": "enum",

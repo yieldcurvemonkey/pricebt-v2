@@ -86,7 +86,7 @@ def _mutate(path: str, value):
     (_mutate("assets", ["tests/assets/no_such.yaml"]), "does not exist"),
     (_mutate("result_ccy", "USD"), "needs an FX config"),
     (_mutate("name", "Bad Name"), "kebab-case"),
-    (_mutate("instruments.primary.class", "Bond"), "not a pricebt.instrument class"),
+    (_mutate("instruments.primary.class", "IRCap"), "not a pricebt.instrument class"),
     (_mutate("risks_to_report", ["Pricee"]), "risks_to_report"),
     (_mutate("benchmark", "sp500"), "benchmark"),
     (_mutate("instruments", {"main": {"class": "IRSwap", "kwargs": {}}}), "'primary' instrument is required"),

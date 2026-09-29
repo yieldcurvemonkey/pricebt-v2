@@ -13,7 +13,7 @@ is GENERATED -- never hand-edit it (IMPLEMENTATION_PLAN.md section 0.2); re-run 
 is `typing.Optional[<EnumClass>]` and `<EnumClass>` is in PRICEBT_ENUM_NAMES below, else None.
 
 `default_repr` is `repr(gs_default)`, taken as-is from gs_api_snapshot.py's JSON. For the current
-7 mirrored classes every field default is `None`/`0.0` (a real Python literal), so `default_repr`
+8 mirrored classes every field default is `None`/`0.0` (a real Python literal), so `default_repr`
 is always directly embeddable source text. That is NOT guaranteed for an enum-valued gs default: an
 enum's `repr()` (e.g. `<PayReceive.pay: 'Pay'>`) is not valid Python once re-embedded as a bare
 literal, and `repr()` of a `default_factory` field would be a callable's repr, not a value at all
@@ -38,7 +38,7 @@ OUT_PY = ROOT / "src" / "pricebt" / "instrument" / "_gs_fields.py"
 # The classes _gs_fields.py mirrors (DESIGN.md decision 0.6: a later gs class is added by adding
 # its name here and regenerating -- a data change, not hand-written code). This order is also the
 # order the classes appear in the generated file.
-CLASS_LIST = ["IRSwap", "IRSwaption", "FXOption", "FXForward", "EqOption", "InflationSwap", "Cash"]
+CLASS_LIST = ["IRSwap", "IRSwaption", "FXOption", "FXForward", "EqOption", "InflationSwap", "Cash", "Bond"]
 
 # Copied verbatim from IMPLEMENTATION_PLAN.md's P1.1 task ("Enums declared as class X(EnumBase,
 # str, Enum)"). Do NOT `import pricebt.common` here -- see the module docstring.
@@ -49,6 +49,7 @@ PRICEBT_ENUM_NAMES = [
     "UnderlierType", "TradeAs", "OptionSettlementMethod", "OptionExerciseStyle", "RiskMeasureUnit",
     "AssetClass", "AssetType", "CurrencyName", "PositionType",
     "Currency",
+    "FiniteDifferenceMethod",  # IR_RISK_DESIGN.md section 1.4 (no instrument field uses it)
 ]
 
 _OPTIONAL_RE = re.compile(r"^typing\.Optional\[([\w.]+)\]$")

@@ -68,6 +68,7 @@ The only names pricebt puts into an evaluation (DESIGN §4.3):
 | `trade` | whatever `trade.expr` returned | functions | the library trade object, for ONE unit |
 | `trades`, `weights` | `list`, `list[float]` | portfolio_functions | this asset's trade objects on this market, and their weights |
 | `pricebt_quantity` | `float` | attributes | the instrument's signed quantity multiplier |
+| `pricebt_bump_size`, `pricebt_finite_difference_method`, `pricebt_local_curve`, `pricebt_scale_factor` | the value or `None` | functions, portfolio_functions | the requested measure's parameter (e.g. `IRDelta(bump_size=5)`). A function supports a parameter only if its expression names the variable; otherwise requesting it raises `NotSupportedError` (DEV-I10) |
 | `base`, `quote` | `str` | FX config `rate` only | ISO codes |
 
 Injected names **shadow** config names of the same spelling — do not define a helper named
@@ -118,7 +119,16 @@ thing. Requesting an FX conversion of a non-currency unit is a `ConfigError`.
   pinning decisions must be correct for.
 - **Functions return a `float`.** `NaN` is allowed and propagates (used here for "undefined on a
   dead trade", e.g. `par_rate` after maturity). Portfolio functions with `returns: buckets` return
-  `dict[str, float]`.
+  `dict[str, float]`, or a list of row dicts with keys among `mkt_type, mkt_asset, mkt_class,
+  mkt_point, mkt_quoting_style, value` (`value` required; `labels` fill the missing coordinates).
+  A `functions:` entry with `returns: frame` returns a DataFrame or a list of dicts (`[]` is
+  allowed); quantity scales only its `scale_columns`, and it is never FX-converted.
+- **Measure contracts.** An `IRSwap`, `IRSwaption` or `Bond` config must map every measure of its
+  class's contract or declare it under `unsupported_measures:` with a reason; the load error lists
+  every gap and prints a paste-ready block (DEV-I11, [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §2).
+  A preset or LocalCcy key (`IRDeltaParallel`, `IRGammaParallelLocalCcy`, ...) counts toward its
+  base measure and also prices the base's requests. Declare the base measure, never a preset: a
+  declared preset name, a form outside the contract row, or an unknown name loads with a warning.
 - **Security: configs are trusted code.** Both `imports` and `code` are `exec`'d, and every
   expression is `eval`'d, in a plain Python namespace with no sandboxing. Only load a config whose
   contents you trust — pricebt loads a config only from a path (or in-memory mapping) the calling

@@ -7,6 +7,23 @@ description: >
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
+unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); R2-20 keeps this config declaration-only
+  IRDiscountDeltaParallel: "toylib.rates has one curve and no discount-only bump function; not wired in this config"
+  IRGammaParallel: "toylib.rates has no own-rate gamma function; not wired in this config"
+  IRGamma: "toylib.rates has no gamma ladder function; not wired in this config"
+  IRVega: "toylib.rates has no volatility (a swap's vega is 0.0 by convention, R2-8, but no zero function is wired here)"
+  IRVanna: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRVolga: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRBasis: "toylib.rates is single-curve (no projection-vs-discount basis); not wired in this config"
+  IRXccyDelta: "single-currency toy swap with no cross-currency basis; not wired in this config"
+  IRSpotRate: "toylib.rates has no spot-starting-equivalent par rate function; not wired in this config"
+  IRAnnualImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRAnnualATMImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRDailyImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  Theta: "toylib.rates has no one-day translated-curve carry function; not wired in this config"
+  ExpiryInYears: "no years-to-final-date function is wired in this config"
+  Annuity: "toylib.rates exposes pv01 but no Annuity function; not wired in this config"
+  Cashflows: "toy npv never drops paid coupons (total return by construction), so its Cashflows would be an empty frame (R2-6); no frame function is wired in this config"
 defaults:
   pay_or_receive: Receive
   termination_date: 10y

@@ -5,8 +5,11 @@
 # Each entry is {symbol, aspect, reason, dev_id?, ...}, with a non-empty reason. `symbol` is an
 # exact "gs_quant...." key from gs_api_1_5_4.json, or a glob pattern (matched with fnmatch) when the
 # same difference recurs across many symbols. `aspect` is one of: signature, fields, methods,
-# method_signature, properties, members, all (all = skip every aspect for this symbol --
-# existence-only, for a stub whose constructor intentionally does not match gs).
+# method_signature, properties, members, risk_measure, all (all = skip every aspect for this symbol
+# -- existence-only, for a stub whose constructor intentionally does not match gs).
+# An `all` entry with `pending: <phase>` (and no skip) instead excuses a symbol that is ABSENT from
+# pricebt because a later phase adds it; once pricebt has the symbol, the entry itself fails, so
+# it is deleted and the symbol compared like any other.
 #
 # Extra fields, by aspect:
 #   signature/fields/method_signature: insert (pricebt-only names; removing them from pricebt's list
@@ -21,14 +24,17 @@
 #   methods/properties: missing (gs names pricebt does not implement), extra (pricebt-only names
 #                        gs does not have)
 #   members: subset (true = pricebt's members must be a subset of gs's, not an exact match)
+#   risk_measure: expect (a mapping over class/name/measure_type/asset_class/unit: pricebt must equal
+#                 each value given here instead of the snapshot's; unnamed fields still match gs)
 #
 # Any difference not accounted for by an entry here fails the parity test -- including an in-scope
 # symbol missing from pricebt entirely, a signature mismatch with no entry, or a DEV-marked
 # deviation with no corresponding DESIGN section 11 row. Not listed here at all (need no entry,
 # DESIGN.md section 12.3): the trailing keyword-only pricebt_asset/quantity_/kwargs are documented
-# below anyway for the record, and the 2.1.17-only measures FXDeltaLocalCcy/FXGammaLocalCcy/
-# FXVegaLocalCcy (absent from the 1.5.4 snapshot; the test checks their existence directly, they are
-# never treated as "extra symbol not in snapshot" failures).
+# below anyway for the record, and the 2.1.17-only measures EqForwardSpot/FXDeltaHedgeLocalCcy/
+# FXDeltaLocalCcy/FXGammaLocalCcy/FXThetaLocalCcy/FXVegaLocalCcy (absent from the 1.5.4 snapshot, so
+# listed in its requested_not_found; the test checks their existence directly, they are never
+# treated as "extra symbol not in snapshot" failures, and tests/test_risk_measures.py pins them).
 
 # ------------------------------------------------------------------------- instruments (section 5.1)
 - symbol: "gs_quant.instrument.*"
@@ -299,6 +305,89 @@
     Same rename as gs_quant.instrument.*'s calc entry above; portfolio.py's own calc() is grouped
     under its "pricing (DESIGN.md section 6.5)" comment block with the identical
     risk_measure_or_iterable parameter name.
+
+# ------------------------------------------------------------------------------------- risk measures
+- symbol: gs_quant.risk.IRVanna
+  aspect: risk_measure
+  expect: {class: RiskMeasureWithFiniteDifferenceParameter}
+  dev_id: DEV-I9
+  reason: >
+    IR_RISK_DESIGN.md section 1.2: pricebt follows 2.1.17, where IRVanna is a
+    RiskMeasureWithFiniteDifferenceParameter (1.5.4: a plain, non-callable RiskMeasure), because gs's
+    own vanna/volga notebook calls IRVanna(aggregation_level=Type), which only works that way.
+    name/measure_type/asset_class/unit still match the snapshot.
+
+- symbol: gs_quant.risk.IRVolga
+  aspect: risk_measure
+  expect: {class: RiskMeasureWithFiniteDifferenceParameter}
+  dev_id: DEV-I9
+  reason: >
+    Same as gs_quant.risk.IRVanna above: 2.1.17's finite-difference class, so
+    IRVolga(aggregation_level=Type) works as in gs's vanna/volga notebook.
+
+# ------------------------------------------------------------------ risk helpers and classes (R2-23)
+- symbol: gs_quant.risk.aggregate_risk
+  aspect: all
+  pending: Phase B
+  reason: >
+    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
+    lands in Phase B. Delete this row then.
+
+- symbol: gs_quant.risk.aggregate_results
+  aspect: all
+  pending: Phase B
+  reason: >
+    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
+    lands in Phase B. Delete this row then.
+
+- symbol: gs_quant.risk.subtract_risk
+  aspect: all
+  pending: Phase B
+  reason: >
+    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
+    lands in Phase B. Delete this row then.
+
+- symbol: gs_quant.risk.sort_risk
+  aspect: all
+  pending: Phase B
+  reason: >
+    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
+    lands in Phase B. Delete this row then.
+
+- symbol: gs_quant.risk.combine_risk_key
+  aspect: all
+  pending: Phase B
+  reason: >
+    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
+    lands in Phase B. Delete this row then.
+
+- symbol: gs_quant.risk.PnlExplain
+  aspect: all
+  pending: Phase E
+  reason: >
+    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
+    Delete this row then.
+
+- symbol: gs_quant.risk.PnlExplainClose
+  aspect: all
+  pending: Phase E
+  reason: >
+    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
+    Delete this row then.
+
+- symbol: gs_quant.risk.PnlExplainLive
+  aspect: all
+  pending: Phase E
+  reason: >
+    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
+    Delete this row then.
+
+- symbol: gs_quant.risk.PnlPredictLive
+  aspect: all
+  pending: Phase E
+  reason: >
+    IR_RISK_DESIGN.md sections 1.6, 8 and R2-23: the PnlExplain measure classes land in Phase E.
+    Delete this row then.
 
 # --------------------------------------------------------------------------------------- common enums
 - symbol: gs_quant.common.Currency

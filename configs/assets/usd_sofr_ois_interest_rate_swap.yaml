@@ -7,6 +7,23 @@ description: >
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
+unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); only what this config does not map
+  IRDiscountDeltaParallel: "single-curve OIS pricing (USD-SOFR-1D discounts and projects); no discount-only bump function is wired for ARBS yet"
+  IRGammaParallel: "not wired for ARBS yet: docs/v2/PNL_EXPLAIN_PLAN.md T2 (branch v2-pnl-explain) adds a gamma function"
+  IRGamma: "no gamma ladder function is wired for ARBS yet"
+  IRVega: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  IRVanna: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  IRVolga: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  IRBasis: "single-curve OIS pricing (no projection-vs-discount basis); no zero function is wired for ARBS yet"
+  IRXccyDelta: "single-currency USD swap (no cross-currency basis); no zero function is wired for ARBS yet"
+  IRSpotRate: "no spot-starting-equivalent par rate function is wired for ARBS yet"
+  IRAnnualImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  IRAnnualATMImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  IRDailyImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
+  Theta: "not wired for ARBS yet: docs/v2/PNL_EXPLAIN_PLAN.md T2 (branch v2-pnl-explain) adds a per-year IRTheta, a different measure (Theta = IRTheta / 365, R2-4)"
+  ExpiryInYears: "no years-to-final-date function is wired for ARBS yet"
+  Annuity: "market.pv01 exists but no Annuity function (1e4 x pv01) is wired for ARBS yet"
+  Cashflows: "no cashflow-schedule (frame) function is wired for ARBS yet"
 defaults:
   pay_or_receive: Receive          # gs server default (R04 s1); coerced to PayReceive.Receive (value 'Rec')
   termination_date: 10y

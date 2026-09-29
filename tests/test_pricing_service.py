@@ -108,9 +108,11 @@ def test_irdeltaparallel_falls_back_through_base_name_to_irdelta_mapping():
 
 
 def test_irdelta_bump_size_raises_not_supported():
+    """DEV-I8 as narrowed by DEV-I10: bump_size passes through only to a function that reads
+    `pricebt_bump_size`; the toy ladder does not, so the request is refused, never ignored."""
     session = _session()
     d = date(2024, 3, 4)
-    with pytest.raises(NotSupportedError):
+    with pytest.raises(NotSupportedError, match="function 'delta_ladder' does not reference pricebt_bump_size"):
         session.pricing.value(_swap(), d, IRDelta(bump_size=5), None)
 
 

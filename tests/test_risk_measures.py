@@ -242,3 +242,90 @@ def test_target_backtests_is_a_lazy_shim():
     assert "__getattr__" in vars(target_backtests)
     with pytest.raises(AttributeError):
         target_backtests.NotARealName
+
+
+# ------------------------------------------------------------------------------- the ported catalogue (IR_RISK_DESIGN.md section 1)
+# gs_quant/risk/measures.py's presets, transcribed from gs 2.1.17: name -> (parent, parameters). The
+# snapshot records no parameters, so this table is the presets' only parity check (R2-23).
+PRESETS = {
+    "IRBasisParallel": ("IRBasis", {"aggregation_level": common.AggregationLevel.Asset}),
+    "InflationDeltaParallel": ("InflationDelta", {"aggregation_level": common.AggregationLevel.Type}),
+    "IRDeltaParallel": ("IRDelta", {"aggregation_level": common.AggregationLevel.Asset}),
+    "IRDeltaLocalCcy": ("IRDelta", {"currency": "local"}),
+    "IRXccyDeltaParallel": ("IRXccyDelta", {"aggregation_level": common.AggregationLevel.Type}),
+    "IRVegaParallel": ("IRVega", {"aggregation_level": common.AggregationLevel.Asset}),
+    "IRVegaLocalCcy": ("IRVega", {"currency": "local"}),
+}
+# pricebt DEV-I16: plain LocalCcy measures that fall back to their base measure's mapping.
+LOCAL_CCY_FALLBACKS = {"IRGammaParallelLocalCcy": "IRGammaParallel", "IRDiscountDeltaParallelLocalCcy": "IRDiscountDeltaParallel"}
+
+
+@pytest.mark.parametrize("name", sorted(PRESETS))
+def test_preset_parameters_and_base_name(name):
+    parent_name, params = PRESETS[name]
+    m, parent = getattr(risk, name), getattr(risk, parent_name)
+    assert m.name == name
+    assert m.base_name == parent_name
+    assert m.parameters == FiniteDifferenceParameter(**params)
+    assert type(m) is type(parent) is RiskMeasureWithFiniteDifferenceParameter
+    assert (m.asset_class, m.measure_type, m.unit, m.value) == (parent.asset_class, parent.measure_type, parent.unit, parent.value)
+
+
+@pytest.mark.parametrize("name, base", sorted(LOCAL_CCY_FALLBACKS.items()))
+def test_local_ccy_fallback_base_name(name, base):
+    m = getattr(risk, name)
+    assert m.base_name == base
+    assert type(m) is RiskMeasure and m.parameters is None
+    assert m != getattr(risk, base)  # base_name is not part of identity
+
+
+def test_only_presets_and_local_ccy_fallbacks_carry_a_base_name():
+    carrying = {n for n in risk.__all__ if isinstance(getattr(risk, n), RiskMeasure) and getattr(risk, n).base_name}
+    assert carrying == set(PRESETS) | set(LOCAL_CCY_FALLBACKS)
+
+
+# The 2.1.17-only measures are absent from the 1.5.4 snapshot, so the parity test only checks that
+# they exist; their identity is pinned here (gs 2.1.17 gs_quant/target/measures.py).
+TWO_1_17_ONLY = {
+    "EqForwardSpot": (RiskMeasure, common.AssetClass.Equity, "Forward Price", None),
+    "FXDeltaHedgeLocalCcy": (RiskMeasureWithCurrencyParameter, common.AssetClass.FX, "FX Hedge Delta Local Ccy", None),
+    "FXDeltaLocalCcy": (RiskMeasureWithCurrencyParameter, common.AssetClass.FX, "FX Delta Local Ccy", None),
+    "FXGammaLocalCcy": (RiskMeasureWithCurrencyParameter, common.AssetClass.FX, "FX Gamma Local Ccy", None),
+    "FXThetaLocalCcy": (RiskMeasureWithCurrencyParameter, common.AssetClass.FX, "FX Theta Local Ccy", None),
+    "FXVegaLocalCcy": (RiskMeasureWithCurrencyParameter, common.AssetClass.FX, "FX Vega Local Ccy", None),
+}
+
+
+@pytest.mark.parametrize("name", sorted(TWO_1_17_ONLY))
+def test_2_1_17_only_measure_identity(name):
+    cls, asset_class, measure_type, unit = TWO_1_17_ONLY[name]
+    m = getattr(risk, name)
+    assert (type(m), m.name, m.asset_class, m.measure_type, m.unit, m.parameters) == (cls, name, asset_class, measure_type, unit, None)
+
+
+def test_vanna_volga_are_finite_difference_measures():
+    # pricebt DEV-I9 (2.1.17 behaviour): gs's vanna/volga notebook calls IRVanna(aggregation_level=Type)
+    for m in (risk.IRVanna, risk.IRVolga):
+        typed = m(aggregation_level="Type")
+        assert typed.aggregation_level is common.AggregationLevel.Type
+        assert repr(typed) == f"{m.name}(aggregation_level:Type)"
+
+
+# ------------------------------------------------------------------------------- finite_difference_method
+@pytest.mark.parametrize("given", ["Centered", "centered", "CENTERED", common.FiniteDifferenceMethod.Centered])
+def test_finite_difference_method_coerced_case_insensitively(given):
+    m = IRDelta(finite_difference_method=given)
+    assert m.parameters.finite_difference_method is common.FiniteDifferenceMethod.Centered
+    assert m == IRDelta(finite_difference_method="Centered")
+    assert repr(m) == "IRDelta(finite_difference_method:Centered)"
+
+
+def test_finite_difference_method_inherited_on_recall():
+    m = IRDelta(finite_difference_method="up")(bump_size=2)
+    assert m.parameters.finite_difference_method is common.FiniteDifferenceMethod.Up
+    assert m.parameters.bump_size == 2
+
+
+def test_invalid_finite_difference_method_raises():
+    with pytest.raises(ValueError, match="Sideways"):
+        IRDelta(finite_difference_method="Sideways")

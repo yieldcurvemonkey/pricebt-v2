@@ -1,5 +1,5 @@
 """Instrument, ConfigInstrument, instrument_identity, and the generated gs instrument classes
-(IRSwap, IRSwaption, FXOption, FXForward, EqOption, InflationSwap, Cash); re-exports OptionStyle,
+(IRSwap, IRSwaption, FXOption, FXForward, EqOption, InflationSwap, Cash, Bond); re-exports OptionStyle,
 OptionType, Currency, PayReceive, BuySell, SwapClearingHouse, SwapSettlement.
 
 The generated classes are built at import time from `_gs_fields.GS_FIELDS` (DESIGN.md section 5.1):
@@ -363,6 +363,7 @@ class ConfigInstrument(Instrument):
 
 
 __all__ = [
+    "Bond",
     "BuySell",
     "Cash",
     "ConfigInstrument",

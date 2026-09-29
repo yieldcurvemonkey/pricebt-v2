@@ -1,5 +1,6 @@
 """Loading and validating one asset config (DESIGN.md section 4): parses the mapping (via
-`assets.yamlio`), checks it against the section 4.2 schema, compiles every expression string, and
+`assets.yamlio`), checks it against the section 4.2 schema and its instrument's measure contract
+(`risk.contracts`, docs/v2/IR_RISK_DESIGN.md section 2), compiles every expression string, and
 returns a frozen `AssetConfig`. Nothing here executes a config's `imports` or `code` -- that is
 `AssetNamespace`'s job (`assets.namespace`), done lazily and only at first evaluation.
 """
@@ -8,20 +9,25 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 import pandas as pd
 
+from .. import instrument as _instrument_pkg
 from ..errors import ConfigError
+from ..risk import contracts
 from . import yamlio
 
 # ------------------------------------------------------------------------------------ schema constants
 
 UNITS = {"ccy", "ccy_per_bp", "ccy_per_bp2", "bp", "pct", "decimal", "number", "date"}
 EXTENSIVE_UNITS = {"ccy", "ccy_per_bp", "ccy_per_bp2", "number"}
-RETURNS_VALUES = {"scalar", "buckets"}
+RETURNS_VALUES = {"scalar", "buckets"}  # portfolio_functions:
+FUNCTION_RETURNS_VALUES = {"scalar", "frame"}  # functions: (docs/v2/IR_RISK_DESIGN.md R2-15)
+UNSUPPORTED_FORMS = contracts.FORMS  # unsupported_measures: {form: reason} keys
 BUILD_ON_VALUES = {"each_market", "resolve_date"}
 LABEL_KEYS = {"mkt_type", "mkt_asset", "mkt_class", "mkt_quoting_style"}
 _ISO_CODE_RE = re.compile(r"^[A-Za-z]{3}$")
@@ -29,13 +35,14 @@ _ISO_CODE_RE = re.compile(r"^[A-Za-z]{3}$")
 _TOP_KEYS = {
     "schema_version", "asset", "description", "instrument", "match", "currency", "defaults",
     "imports", "code", "market", "resolve", "trade", "functions", "portfolio_functions",
-    "attributes", "size_attribute", "risk_measures",
+    "attributes", "size_attribute", "risk_measures", "unsupported_measures",
 }
 _MARKET_KEYS = {"expr", "key"}
 _RESOLVE_KEYS = {"expr"}
 _TRADE_KEYS = {"expr", "build_on"}
-_FUNCTION_KEYS = {"expr", "unit", "currency", "scale_with_quantity"}
-_PORTFOLIO_FUNCTION_KEYS = _FUNCTION_KEYS | {"returns", "labels"}
+_COMMON_FUNCTION_KEYS = {"expr", "unit", "currency", "scale_with_quantity"}
+_FUNCTION_KEYS = _COMMON_FUNCTION_KEYS | {"returns", "scale_columns"}
+_PORTFOLIO_FUNCTION_KEYS = _COMMON_FUNCTION_KEYS | {"returns", "labels"}
 _RISK_MEASURE_DICT_KEYS = {"scalar", "bucketed"}
 
 _RESERVED_EVAL_KEYS = {"market", "resolve", "trade"}
@@ -46,7 +53,10 @@ _RESERVED_EVAL_KEYS = {"market", "resolve", "trade"}
 
 @dataclass(frozen=True)
 class FunctionSpec:
-    """One `functions:` or `portfolio_functions:` entry (DESIGN.md section 4.2)."""
+    """One `functions:` or `portfolio_functions:` entry (DESIGN.md section 4.2). `returns` is
+    "scalar" or "frame" for a `functions:` entry and "scalar" or "buckets" for a
+    `portfolio_functions:` entry; `scale_columns` (frames only) names the columns quantity scaling
+    multiplies (docs/v2/IR_RISK_DESIGN.md section 2.3)."""
 
     expr: str
     unit: str
@@ -54,6 +64,7 @@ class FunctionSpec:
     scale_with_quantity: bool
     returns: str
     labels: Dict[str, str]
+    scale_columns: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -88,6 +99,12 @@ class AssetConfig:
     attributes: Dict[str, str]
     size_attribute: Optional[str]
     risk_measures: Dict[str, RiskMapping]
+    # measure -> {form or "*": reason}. A declaration never overrides a mapping (IR_RISK_DESIGN
+    # R2-9): it applies only to a requested form that has no mapping slot.
+    unsupported_measures: Dict[str, Dict[str, str]]
+    # (base measure, form) -> the risk_measures key serving it (`contracts.provided_forms`): the
+    # pricing layer's last lookup, so a preset key the contract counts is also one that prices
+    provided_forms: Dict[Tuple[str, str], str]
     imports_src: str
     code_src: str
     imports_code: Any = field(repr=False)
@@ -165,17 +182,95 @@ def _parse_function_entry(raw: Any, name: str, key: str, allowed_keys: Sequence[
         scale_with_quantity = unit in EXTENSIVE_UNITS
     elif not isinstance(scale_with_quantity, bool):
         _fail(name, f"{key}.scale_with_quantity", f"must be a bool, got {scale_with_quantity!r}")
-    returns = "scalar"
+    allowed_returns = RETURNS_VALUES if is_portfolio else FUNCTION_RETURNS_VALUES
+    returns = d.get("returns", "scalar")
+    if returns not in allowed_returns:
+        _fail(name, f"{key}.returns", f"returns {returns!r} is not one of {sorted(allowed_returns)}")
     labels: Dict[str, str] = {}
+    scale_columns: Tuple[str, ...] = ()
     if is_portfolio:
-        returns = d.get("returns", "scalar")
-        if returns not in RETURNS_VALUES:
-            _fail(name, f"{key}.returns", f"returns {returns!r} is not one of {sorted(RETURNS_VALUES)}")
         labels_raw = d.get("labels", {})
         labels_raw = _require_mapping(labels_raw, name, f"{key}.labels")
         _check_unknown_keys(labels_raw, LABEL_KEYS, name, f"{key}.labels")
         labels = dict(labels_raw)
-    return FunctionSpec(expr=expr, unit=unit, currency=currency, scale_with_quantity=scale_with_quantity, returns=returns, labels=labels)
+    else:
+        scale_columns = _parse_scale_columns(d.get("scale_columns"), name, f"{key}.scale_columns", returns, unit in EXTENSIVE_UNITS and scale_with_quantity)
+    return FunctionSpec(expr=expr, unit=unit, currency=currency, scale_with_quantity=scale_with_quantity, returns=returns, labels=labels, scale_columns=scale_columns)
+
+
+def _parse_scale_columns(raw: Any, name: str, key: str, returns: str, extensive: bool) -> Tuple[str, ...]:
+    """`scale_columns:` is allowed only with `returns: frame`: a list of column names, required
+    (non-empty) when the frame is extensive, i.e. its unit is extensive and it scales with quantity."""
+    if raw is None:
+        cols: Tuple[str, ...] = ()
+    elif returns != "frame":
+        _fail(name, key, "is allowed only with returns: frame")
+    elif not isinstance(raw, (list, tuple)) or not all(isinstance(c, str) and c for c in raw):
+        _fail(name, key, f"must be a list of non-empty column names, got {raw!r}")
+    else:
+        cols = tuple(raw)
+    if returns == "frame" and extensive and not cols:
+        _fail(name, key, "an extensive frame (extensive unit, scale_with_quantity true) must list the columns that scale with quantity")
+    return cols
+
+
+def _require_reason(value: Any, name: str, key: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        _fail(name, key, f"must be a non-empty reason string (why the library cannot compute it), got {value!r}")
+    return value
+
+
+def _parse_unsupported(raw: Any, name: str) -> Dict[str, Dict[str, str]]:
+    """`unsupported_measures:` -> `{measure: {form or "*": reason}}`. A value is a reason (the
+    whole measure) or a `{scalar|bucketed|frame: reason}` mapping (docs/v2/IR_RISK_DESIGN.md
+    section 2.3). Any non-empty reason loads (R2-12)."""
+    d = _require_mapping(raw, name, "unsupported_measures")
+    out: Dict[str, Dict[str, str]] = {}
+    for measure, value in d.items():
+        key = f"unsupported_measures.{measure}"
+        if not isinstance(measure, str) or not measure:
+            _fail(name, key, f"a measure name must be a non-empty string, got {measure!r}")
+        if isinstance(value, Mapping):
+            if not value:
+                _fail(name, key, f"must give a reason, or at least one of {list(UNSUPPORTED_FORMS)} with a reason")
+            _check_unknown_keys(value, UNSUPPORTED_FORMS, name, key)
+            out[measure] = {form: _require_reason(reason, name, f"{key}.{form}") for form, reason in value.items()}
+        else:
+            out[measure] = {"*": _require_reason(value, name, key)}
+    return out
+
+
+def _instrument_classes() -> Tuple[str, ...]:
+    """The names an `instrument:` may take: every `Instrument` subclass `pricebt.instrument`
+    exports (the generated gs classes and `ConfigInstrument`), never the `Instrument` base."""
+    mod = _instrument_pkg
+    return tuple(sorted(n for n in mod.__all__ if n != "Instrument" and isinstance(getattr(mod, n, None), type) and issubclass(getattr(mod, n), mod.Instrument)))
+
+
+def _check_contract(name: str, instrument: str, risk_measures: Mapping[str, "RiskMapping"], functions: Mapping[str, FunctionSpec], portfolio_functions: Mapping[str, FunctionSpec], unsupported: Mapping[str, Mapping[str, str]]) -> Dict[Tuple[str, str], str]:
+    """pricebt DEV-I11: every measure and form of the instrument's contract (`risk.contracts`) is
+    mapped with an allowed unit or declared under `unsupported_measures:`. All problems go into one
+    `ConfigError` that ends with a paste-ready declaration block for the missing ones; a stale
+    declaration of something mapped is only a `UserWarning` (R2-9: the mapping wins), as is a
+    declaration the contract cannot count. Returns `contracts.provided_forms` for `AssetConfig`."""
+
+    def summary(fname: Optional[str]) -> Optional[contracts.MappedFunction]:
+        if fname is None:
+            return None
+        f = functions.get(fname) or portfolio_functions[fname]
+        return contracts.MappedFunction(fname, f.unit, f.scale_with_quantity, f.returns, f.scale_columns)
+
+    mapped = {k: {"scalar": summary(m.scalar), "bucketed": summary(m.bucketed)} for k, m in risk_measures.items()}
+    result = contracts.check(instrument, mapped, unsupported)
+    for w in result.warnings:
+        warnings.warn(f"asset {name}: {w}", UserWarning, stacklevel=3)
+    if result.problems:
+        msg = f"{len(result.problems)} measure-contract problem(s) for instrument {instrument} (docs/v2/IR_RISK_DESIGN.md section 2):\n" + "\n".join(f"  - {p}" for p in result.problems)
+        if result.missing:
+            msg += "\nMap each missing measure, or declare what the library cannot compute (merge into unsupported_measures:, replacing each TODO with an honest reason):\n"
+            msg += contracts.unsupported_block(instrument, result.missing)
+        raise ConfigError(msg, asset=name, key="risk_measures")
+    return contracts.provided_forms(instrument, mapped)
 
 
 def _risk_target_kind(target: str, functions: Mapping[str, "FunctionSpec"], portfolio_functions: Mapping[str, "FunctionSpec"]) -> Optional[str]:
@@ -248,6 +343,9 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
         _fail(name, "description", f"must be a string, got {description!r}")
 
     instrument = _require_str(raw.get("instrument"), name, "instrument")
+    classes = _instrument_classes()
+    if instrument not in classes:
+        _fail(name, "instrument", f"instrument {instrument!r} is not a class exported by pricebt.instrument ({', '.join(classes)})", candidates=classes, bad=instrument)
 
     match = _require_mapping(raw.get("match", {}), name, "match")
 
@@ -326,6 +424,10 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
     if "Price" not in risk_measures_raw:
         _fail(name, "risk_measures", "must include 'Price'", candidates=risk_measures_raw, bad="Price")
     risk_measures = {rname: _parse_risk_measure(rspec, name, f"risk_measures.{rname}", functions, portfolio_functions) for rname, rspec in risk_measures_raw.items()}
+    unsupported_measures = _parse_unsupported(raw.get("unsupported_measures", {}), name)
+    # pricebt DEV-I11: gs answers any measure (UnsupportedValue when inapplicable); pricebt requires
+    # each contract measure to be mapped or declared, here at load time
+    provided_forms = _check_contract(name, instrument, risk_measures, functions, portfolio_functions, unsupported_measures)
 
     compiled: Dict[str, Tuple[Any, str]] = {
         "market": (_compile_expr(market_expr, name, "market", "eval"), market_expr),
@@ -359,6 +461,8 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
         attributes=attributes,
         size_attribute=size_attribute,
         risk_measures=risk_measures,
+        unsupported_measures=unsupported_measures,
+        provided_forms=provided_forms,
         imports_src=imports_src,
         code_src=code_src,
         imports_code=imports_code,

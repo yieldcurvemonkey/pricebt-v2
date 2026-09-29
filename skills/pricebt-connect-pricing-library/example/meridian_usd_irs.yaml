@@ -7,6 +7,23 @@ description: >
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
+unsupported_measures:   # what the library cannot compute, with a reason (docs/v2/IR_RISK_DESIGN.md section 2)
+  IRDiscountDeltaParallel: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no discount-only bump"
+  IRGammaParallel: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no gamma"
+  IRGamma: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no gamma ladder"
+  IRVega: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (a swap's vega would be 0.0 by convention, R2-8; not wired in this example)"
+  IRVanna: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
+  IRVolga: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
+  IRBasis: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: one USD.SOFR curve, no basis spread (0.0; not wired in this example)"
+  IRXccyDelta: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: single-currency swap, no cross-currency basis (0.0; not wired in this example)"
+  IRSpotRate: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no spot-starting equivalent"
+  IRAnnualImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
+  IRAnnualATMImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
+  IRDailyImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
+  Theta: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no carry/theta"
+  ExpiryInYears: "not wired in this example (the maturity is known in resolve; no function maps it)"
+  Annuity: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no annuity measure; not wired in this example"
+  Cashflows: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no cashflow schedule"
 defaults:
   pay_or_receive: Receive          # gs default; coerced to the PayReceive enum (value 'Rec')
   termination_date: 10y

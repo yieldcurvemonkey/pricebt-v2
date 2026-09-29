@@ -56,7 +56,8 @@ REQUESTED_NOT_FOUND: List[str] = API["requested_not_found"]
 EXCEPTIONS: List[dict] = yaml.safe_load((DATA / "gs_api_exceptions.yaml").read_text(encoding="utf8")) or []
 _USED: set = set()  # ids(exception dict) actually consulted by some comparison, for the hygiene test
 
-_VALID_ASPECTS = {"signature", "fields", "methods", "method_signature", "properties", "members", "all"}
+_VALID_ASPECTS = {"signature", "fields", "methods", "method_signature", "properties", "members", "all", "risk_measure"}
+_RISK_MEASURE_ASPECTS = ("class", "name", "measure_type", "asset_class", "unit")
 _DEV_ID_RE = re.compile(r"\bDEV-[A-Za-z0-9]+\b")
 
 
@@ -128,6 +129,8 @@ def describe(obj: Any) -> dict:
             "class": cls.__name__,
             "name": getattr(obj, "name", None),
             "measure_type": str(getattr(obj, "measure_type", None)),
+            "asset_class": str(getattr(obj, "asset_class", None)),
+            "unit": str(getattr(obj, "unit", None)),
         }
     return {"kind": "function", "signature": _sig_list(obj, strip_self=True)}
 
@@ -287,8 +290,13 @@ def diff_symbol(gs_key: str) -> List[str]:
     """Returns a list of human-readable failure strings for `gs_key`; empty means it matches."""
     gs_desc = SYMBOLS[gs_key]
     pb_obj = resolve(gs_key)
+    # an `all` row with `pending: <phase>` excuses a symbol a later phase adds -- and only while it
+    # is absent, so the row cannot outlive the implementation (IR_RISK_DESIGN.md R2-23)
+    pending = [e["pending"] for e in _applicable(gs_key, "all") if e.get("pending")]
     if pb_obj is None:
-        return ["missing from pricebt entirely"]
+        return [] if pending else ["missing from pricebt entirely"]
+    if pending:
+        return [f"pricebt now has it, but a `pending: {pending[0]}` row still excuses it: delete that row so it is compared"]
     if _skip_all(gs_key):
         return []
 
@@ -324,9 +332,13 @@ def diff_symbol(gs_key: str) -> List[str]:
             failures.append(d)
 
     if gs_desc["kind"] == "risk_measure":
-        for f in ("class", "name", "measure_type"):
-            if gs_desc[f] != pb_desc.get(f):
-                failures.append(f"{f}: gs={gs_desc[f]!r} pb={pb_desc.get(f)!r}")
+        # a `risk_measure` exception's `expect` replaces gs's value for the fields it names: pricebt
+        # must then equal the expected value exactly (IR_RISK_DESIGN.md R2-24; e.g. DEV-I9's class)
+        expect = {k: v for e in _applicable(gs_key, "risk_measure") for k, v in e.get("expect", {}).items()}
+        for f in _RISK_MEASURE_ASPECTS:
+            want = expect.get(f, gs_desc[f])
+            if want != pb_desc.get(f):
+                failures.append(f"{f}: gs={gs_desc[f]!r} expected={want!r} pb={pb_desc.get(f)!r}")
 
     if "methods" in gs_desc:
         d = _compare_name_set(gs_key, "methods", gs_desc["methods"], pb_desc.get("methods", []))
@@ -391,12 +403,40 @@ def test_2_1_17_only_risk_measures_exist_in_pricebt(name):
 
 
 def test_no_unexpected_extra_risk_measures():
-    """pricebt.risk's RiskMeasure instances are exactly the DESIGN.md section 8.1 scope: every
-    1.5.4-present name plus the 3 named 2.1.17-only ones. No other extras (DESIGN.md section 12.3:
-    only those 3 are allowed to be pricebt-only)."""
+    """pricebt.risk's RiskMeasure instances are exactly the ported gs catalogue (IR_RISK_DESIGN.md
+    section 1): every 1.5.4-present name plus the 2.1.17-only ones the snapshot tool requested but
+    did not find (RISK_2_1_17_ONLY, six today). No other extras (DESIGN.md section 12.3)."""
     scope = {k.rsplit(".", 1)[-1] for k in SYMBOLS if k.startswith("gs_quant.risk.")} | set(RISK_2_1_17_ONLY)
     actual = {n for n in pb_risk.__all__ if dataclasses.is_dataclass(getattr(pb_risk, n)) and not isinstance(getattr(pb_risk, n), type)}
     assert actual - scope == set(), f"unexpected extra pricebt risk measures: {sorted(actual - scope)}"
+
+
+def test_risk_measure_exception_expect_is_enforced(monkeypatch):
+    """R2-24's `risk_measure` aspect is a real check, not a skip: an `expect` that does not match
+    pricebt fails, and dropping the row brings back the plain gs comparison's failure."""
+    key = "gs_quant.risk.IRVanna"
+    real = list(EXCEPTIONS)
+    rows = [e for e in real if e["symbol"] == key and e["aspect"] == "risk_measure"]
+    assert rows, f"no risk_measure exception row for {key}"
+    assert diff_symbol(key) == []
+    wrong = [dict(e, expect={"class": "RiskMeasureWithCurrencyParameter"}) if e in rows else e for e in real]
+    monkeypatch.setitem(globals(), "EXCEPTIONS", wrong)
+    assert any(f.startswith("class:") for f in diff_symbol(key)), diff_symbol(key)
+    monkeypatch.setitem(globals(), "EXCEPTIONS", [e for e in real if e not in rows])
+    assert diff_symbol(key) == ["class: gs='RiskMeasure' expected='RiskMeasure' pb='RiskMeasureWithFiniteDifferenceParameter'"]
+
+
+def test_pending_row_excuses_only_an_absent_symbol(monkeypatch):
+    """R2-23's later-phase symbols: without the `pending` row the absence fails; once pricebt has
+    the symbol, the row itself fails (so Phase B/E must delete it and get a real comparison)."""
+    key = "gs_quant.risk.aggregate_risk"
+    assert resolve(key) is None and diff_symbol(key) == []
+    real = list(EXCEPTIONS)
+    monkeypatch.setitem(globals(), "EXCEPTIONS", [e for e in real if not (e["symbol"] == key and e.get("pending"))])
+    assert diff_symbol(key) == ["missing from pricebt entirely"]
+    monkeypatch.setitem(globals(), "EXCEPTIONS", real)
+    monkeypatch.setattr(pb_risk, "aggregate_risk", lambda results, threshold=None, allow_heterogeneous_types=False: None, raising=False)
+    assert diff_symbol(key) == ["pricebt now has it, but a `pending: Phase B` row still excuses it: delete that row so it is compared"]
 
 
 @pytest.mark.parametrize("name", COMMON_ENUM_NAMES, ids=COMMON_ENUM_NAMES)
@@ -440,6 +480,15 @@ def test_every_exception_dev_id_is_a_real_design_row():
         dev_id = e.get("dev_id")
         if dev_id:
             assert dev_id in DESIGN_DEV_IDS, f"{e['symbol']} aspect={e['aspect']}: dev_id {dev_id!r} has no DESIGN.md section 11 row"
+
+
+def test_every_dev_id_cited_in_src_is_a_real_design_row():
+    """A DEV id in shipped code or text (markers, docstrings, error/contract text) names a DESIGN.md
+    section 11 row, so a reader can look it up."""
+    src = Path(__file__).parent.parent / "src" / "pricebt"
+    cited = {(m, str(p.relative_to(src))) for p in src.rglob("*.py") for m in _DEV_ID_RE.findall(p.read_text(encoding="utf8"))}
+    missing = sorted((m, p) for m, p in cited if m not in DESIGN_DEV_IDS)
+    assert not missing, f"DEV ids with no DESIGN.md section 11 row: {missing}"
 
 
 def test_every_exception_symbol_matches_at_least_one_real_symbol():

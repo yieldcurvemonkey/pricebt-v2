@@ -179,4 +179,17 @@ GS_FIELDS: dict = {
             ('name', 'None', None),
         ],
     },
+    'Bond': {
+        'asset_class': 'Cross Asset',
+        'type_': 'Bond',
+        'fields': [
+            ('buy_sell', 'None', 'BuySell'),
+            ('identifier', 'None', None),
+            ('identifier_type', 'None', 'UnderlierType'),
+            ('size', 'None', None),
+            ('settlement_date', 'None', None),
+            ('settlement_currency', 'None', 'Currency'),
+            ('name', 'None', None),
+        ],
+    },
 }

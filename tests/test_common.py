@@ -19,6 +19,7 @@ from pricebt.common import (
     Currency,
     CurrencyName,
     DayCountFraction,
+    FiniteDifferenceMethod,
     OptionExerciseStyle,
     OptionSettlementMethod,
     OptionStyle,
@@ -102,6 +103,7 @@ ENUM_MEMBERS = {
     },
     OptionExerciseStyle: {"Auto": "Auto", "Manual": "Manual"},
     RiskMeasureUnit: {"Percent": "Percent", "Dollar": "Dollar", "BPS": "BPS", "Pips": "Pips"},
+    FiniteDifferenceMethod: {"Up": "Up", "Centered": "Centered", "Down": "Down", "CenteredSecondOrder": "CenteredSecondOrder"},
     AssetClass: {
         "Cash": "Cash",
         "Commod": "Commod",

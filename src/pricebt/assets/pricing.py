@@ -13,6 +13,7 @@ in the DAG, so it is imported only inside `engine_calc`/`engine_resolve`'s bodie
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from datetime import date as _date, datetime, time as _time
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -23,12 +24,12 @@ from pricebt.assets.fx import FxConfig, FxEvaluator
 from pricebt.assets.namespace import AssetNamespace
 from pricebt.assets.registry import AssetRegistry
 from pricebt.common import AggregationLevel
-from pricebt.errors import ConfigError, MarketDataUnavailable, NotSupportedError, PricebtError
+from pricebt.errors import ConfigError, MarketDataUnavailable, NotSupportedError, PricebtError, UnsupportedMeasureError
 from pricebt.instrument import Instrument, instrument_identity
 from pricebt.instrument import _freeze  # noqa: F401 -- reuse the one freeze rule (DESIGN.md 5.1 item 3)
 from pricebt.markets import HistoricalPricingContext, PricingContext
 from pricebt.markets.portfolio import Portfolio
-from pricebt.risk import Price, RiskMeasureWithCurrencyParameter, RiskMeasureWithFiniteDifferenceParameter
+from pricebt.risk import Price, RiskMeasureWithCurrencyParameter, RiskMeasureWithFiniteDifferenceParameter, contracts
 from pricebt.risk.results import (
     FloatWithInfo,
     LazyFuture,
@@ -39,6 +40,7 @@ from pricebt.risk.results import (
     SeriesWithInfo,
     _MultiMeasureFuture,  # noqa: F401 -- purpose-built for exactly this: a per-measure-lazy multi-measure future
     make_bucketed_frame,
+    make_table_frame,
 )
 
 __all__ = ["PricingService", "engine_calc", "engine_resolve"]
@@ -46,7 +48,39 @@ __all__ = ["PricingService", "engine_calc", "engine_resolve"]
 # Units a currency-parameterised measure may convert (the extensive, currency-denominated ones).
 _CONVERTIBLE_UNITS = {"ccy", "ccy_per_bp", "ccy_per_bp2"}
 
+# pricebt DEV-I10: the measure parameters a config function may read, injected as pricebt_<name>
+# (None when the measure does not set it). Every other parameter except aggregation_level and the
+# currency is refused (DEV-I8).
+_PASS_THROUGH_PARAMS = ("bump_size", "finite_difference_method", "local_curve", "scale_factor")
+
 _NO_MARKET = object()  # cache sentinel: "evaluated, and there is none" (distinct from "not yet evaluated")
+
+
+def _measure_params(risk) -> Tuple[Tuple[str, Any], ...]:
+    """pricebt DEV-I10: the pass-through parameters `risk` sets, as a sorted `((name, value), ...)`
+    tuple. It is part of every unit-value, portfolio-value and group key, so two bump sizes never
+    share a cached value. A `FiniteDifferenceMethod` stays the enum (a `str`)."""
+    p = risk.parameters
+    return tuple(sorted((n, getattr(p, n)) for n in _PASS_THROUGH_PARAMS if getattr(p, n, None) is not None))
+
+
+def _param_env(params: Tuple[Tuple[str, Any], ...]) -> Dict[str, Any]:
+    """The four `pricebt_<parameter>` injected names, always present (None when not set), so an
+    expression that reads one never raises NameError."""
+    env: Dict[str, Any] = {f"pricebt_{n}": None for n in _PASS_THROUGH_PARAMS}
+    env.update((f"pricebt_{n}", v) for n, v in params)
+    return env
+
+
+def _is_rows(raw) -> bool:
+    """A `returns: buckets` value given as a list of per-row dicts (docs/v2/IR_RISK_DESIGN.md
+    R2-14), as opposed to a `{mkt_point: value}` mapping or a list of `(point, value)` pairs, which
+    `dict()` reads as before."""
+    return isinstance(raw, (list, tuple)) and all(isinstance(r, Mapping) for r in raw)
+
+
+def _bucket_total(raw) -> float:
+    return sum(r["value"] for r in raw) if _is_rows(raw) else sum(raw.values())
 
 
 def _unit_dict(spec, target_ccy: str) -> Dict[str, int]:
@@ -215,20 +249,20 @@ class PricingService:
 
     # ------------------------------------------------------------------------------ unit evaluation (section 6.3)
 
-    def _eval_unit_cached(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], function: str) -> Any:
-        """The RAW value of `function` for one unit of this asset's resolved terms (a float for a
-        `functions:` entry, or whatever a `portfolio_functions:` entry returns when called with
-        `trades=[trade], weights=[1.0]` -- DESIGN.md section 8.1 rule 6). Cached; never scaled by
-        quantity or FX here."""
+    def _eval_unit_cached(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], function: str, params: Tuple[Tuple[str, Any], ...] = ()) -> Any:
+        """The RAW value of `function` for one unit of this asset's resolved terms (a float or a
+        frame for a `functions:` entry, or whatever a `portfolio_functions:` entry returns when
+        called with `trades=[trade], weights=[1.0]` -- DESIGN.md section 8.1 rule 6), with the
+        measure `params` (`_measure_params`) injected. Cached; never scaled by quantity or FX here."""
         frozen = tuple(sorted(resolved_terms.items()))
-        key = (asset.name, frozen, d, function, csa)
+        key = (asset.name, frozen, d, function, csa, params)  # pricebt DEV-I10: params in the key
         if asset.build_on == "resolve_date":
             key = key + (res_date, res_csa)
         if key in self._unit_value_cache:
             return self._unit_value_cache[key]
         trade = self._trade_for(asset, resolved_terms, res_date, res_csa, d, csa)
         mkt = self.market(asset, d, csa)
-        base = {**self._base_injected(d, csa), "pricebt_asset": asset.name, "pricebt_currency": asset.currency, "market": mkt}
+        base = {**self._base_injected(d, csa), **_param_env(params), "pricebt_asset": asset.name, "pricebt_currency": asset.currency, "market": mkt}
         if function in asset.functions:
             # DESIGN.md section 4.3: `resolved` is available in trade, functions and attributes --
             # NOT in portfolio_functions (the `else` branch below), which gets `trades`/`weights`.
@@ -243,16 +277,16 @@ class PricingService:
         self._unit_value_cache[key] = raw
         return raw
 
-    def unit_value(self, inst: Instrument, d: _date, function: str, csa: Optional[str]) -> float:
+    def unit_value(self, inst: Instrument, d: _date, function: str, csa: Optional[str], *, params: Tuple[Tuple[str, Any], ...] = ()) -> float:
         resolved_inst = self.resolve(inst, d, csa)
         asset = self.asset_for(resolved_inst)
         rk = resolved_inst.resolution_key
-        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, function)
+        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, function, params)
         return float(raw)
 
     # ------------------------------------------------------------------------------ group evaluation (section 6.3/8.2)
 
-    def _portfolio_value_from_entries(self, asset, d: _date, function: str, csa: Optional[str], entries: Sequence[Tuple[dict, _date, Optional[str], float]]) -> Any:
+    def _portfolio_value_from_entries(self, asset, d: _date, function: str, csa: Optional[str], entries: Sequence[Tuple[dict, _date, Optional[str], float]], params: Tuple[Tuple[str, Any], ...] = ()) -> Any:
         spec = asset.functions.get(function)
         if spec is None:
             spec = asset.portfolio_functions.get(function)
@@ -270,7 +304,7 @@ class PricingService:
             frozen = tuple(sorted(rt.items()))
             kw = w if scale_with_quantity else 1.0
             key_entries.append((frozen, res_date, res_csa, kw) if asset.build_on == "resolve_date" else (frozen, kw))
-        key = (asset.name, d, function, csa, tuple(key_entries))
+        key = (asset.name, d, function, csa, tuple(key_entries), params)  # pricebt DEV-I10: params in the key
         if key in self._portfolio_value_cache:
             return self._portfolio_value_cache[key]
         trades = [self._trade_for(asset, rt, res_date, res_csa, d, csa) for rt, res_date, res_csa, _w in entries]
@@ -278,6 +312,7 @@ class PricingService:
         mkt = self.market(asset, d, csa)
         injected = {
             **self._base_injected(d, csa),
+            **_param_env(params),
             "pricebt_asset": asset.name,
             "pricebt_currency": asset.currency,
             "market": mkt,
@@ -285,17 +320,20 @@ class PricingService:
             "weights": weights,
         }
         raw = self._ns(asset).eval(function, **injected)
-        result = dict(raw) if spec is not None and spec.returns == "buckets" else float(raw)
+        if spec is not None and spec.returns == "buckets":
+            result = [dict(r) for r in raw] if _is_rows(raw) else dict(raw)
+        else:
+            result = float(raw)
         self._portfolio_value_cache[key] = result
         return result
 
-    def portfolio_value(self, asset, d: _date, function: str, insts: Sequence[Instrument], csa: Optional[str]) -> Any:
+    def portfolio_value(self, asset, d: _date, function: str, insts: Sequence[Instrument], csa: Optional[str], *, params: Tuple[Tuple[str, Any], ...] = ()) -> Any:
         entries = []
         for inst in insts:
             resolved_inst = self.resolve(inst, d, csa)
             rk = resolved_inst.resolution_key
             entries.append((resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, resolved_inst.quantity_))
-        return self._portfolio_value_from_entries(asset, d, function, csa, entries)
+        return self._portfolio_value_from_entries(asset, d, function, csa, entries, params)
 
     # ------------------------------------------------------------------------------ attribute (section 4.3)
 
@@ -353,18 +391,37 @@ class PricingService:
     def _currency_field_name(risk) -> str:
         return "value" if isinstance(risk, RiskMeasureWithCurrencyParameter) else "currency"
 
-    def _check_no_extra_parameters(self, asset, risk) -> None:
+    def _check_parameters(self, asset, risk, fname: str) -> None:
         params = risk.parameters
         if params is None:
             return
         currency_field = self._currency_field_name(risk)
+        names = asset.code(fname).co_names
         for f in dataclasses.fields(params):
-            if f.name in ("parameter_type", "aggregation_level", currency_field):
+            if f.name in ("parameter_type", "aggregation_level", currency_field) or getattr(params, f.name) is None:
                 continue
-            if getattr(params, f.name) is not None:
-                # pricebt DEV-I8: gs honours extra measure parameters (e.g. bump_size) server-side;
-                # pricebt has no server, so it raises here instead (DESIGN.md section 8.1 rule 3a).
-                raise NotSupportedError(f"asset {asset.name}: {risk!r} sets {f.name}; pricebt passes only aggregation_level and currency to asset configs")
+            if f.name in _PASS_THROUGH_PARAMS:
+                # pricebt DEV-I10: gs sends these to its server; pricebt injects them as
+                # pricebt_<name>, and a function supports one iff its expression names that
+                # variable (top-level co_names: a nested scope cannot see injected names anyway).
+                if f"pricebt_{f.name}" not in names:
+                    raise NotSupportedError(f"asset {asset.name}: {risk!r} sets {f.name}; function {fname!r} does not reference pricebt_{f.name}")
+                continue
+            # pricebt DEV-I8 (narrowed by DEV-I10): gs honours mkt_marking_options server-side;
+            # pricebt has no server, so it raises here instead (DESIGN.md section 8.1 rule 3a).
+            raise NotSupportedError(f"asset {asset.name}: {risk!r} sets {f.name}; it is honoured GS server-side and pricebt cannot pass it to an asset config")
+
+    @staticmethod
+    def _raise_if_declared(asset, risk, forms: Sequence[str]) -> None:
+        """pricebt DEV-I11: raise `UnsupportedMeasureError` if the measure (looked up like its
+        mapping: its own name, then its `base_name`) declares the whole measure (`*`) or one of
+        `forms` under `unsupported_measures:`. Called only once the requested mapping slot is known
+        to be empty: a mapping always wins over a declaration (IR_RISK_DESIGN R2-9)."""
+        for name in filter(None, (risk.name, risk.base_name)):
+            declared = asset.unsupported_measures.get(name, {})
+            for form in ("*", *forms):
+                if form in declared:
+                    raise UnsupportedMeasureError(asset.name, name, form, declared[form])
 
     def _scale_scalar(self, raw: float, spec, quantity_: float, func_ccy: str, target_ccy: str, d: _date) -> float:
         v = float(raw)
@@ -377,15 +434,35 @@ class PricingService:
             v *= self.fx(func_ccy, target_ccy, d)
         return v
 
-    def _scale_bucket(self, raw: dict, spec, quantity_: float, func_ccy: str, target_ccy: str, d: _date) -> dict:
+    def _scale_bucket(self, raw, spec, quantity_: float, func_ccy: str, target_ccy: str, d: _date):
         factor = 1.0
         if spec.scale_with_quantity:
             factor *= quantity_
         if target_ccy != func_ccy:
             factor *= self.fx(func_ccy, target_ccy, d)
+        if _is_rows(raw):
+            # IR_RISK_DESIGN R2-14: per-row buckets scale only each row's value (a row without one
+            # is left for make_bucketed_frame to reject)
+            return [dict(r, value=r["value"] * factor) if "value" in r else dict(r) for r in raw]
         if factor == 1.0:
             return dict(raw)
         return {k: v * factor for k, v in raw.items()}
+
+    @staticmethod
+    def _table_value(raw, asset, measure: str, fname: str, spec, quantity_: float, key: RiskKey, unit: dict):
+        """A `returns: frame` function's per-unit table as this position's `DataFrameWithInfo`
+        (IR_RISK_DESIGN R2-15): quantity scales only `scale_columns` (when the function scales
+        with quantity); the frame is checked against the measure's required columns by name."""
+        if isinstance(raw, (list, tuple)) and not raw:
+            # no rows: still the measure's required columns (contracts.validate_frame needs them)
+            raw = pd.DataFrame(columns=list(contracts.FRAME_COLUMNS.get(measure, ())))
+        factor = quantity_ if spec.scale_with_quantity else 1.0
+        try:
+            frame = make_table_frame(raw, risk_key=key, unit=unit, scale_columns=spec.scale_columns, factor=factor)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"function {fname!r} (returns: frame): {exc}", asset=asset.name, key=f"functions.{fname}") from exc
+        contracts.validate_frame(measure, frame)
+        return frame
 
     def value(self, inst: Instrument, d: _date, risk, csa: Optional[str]):
         # step 1
@@ -396,12 +473,6 @@ class PricingService:
             risk = Price(currency="USD")
 
         asset = self.asset_for(inst)
-        mapping = asset.risk_measures.get(risk.name)
-        if mapping is None and risk.base_name:
-            mapping = asset.risk_measures.get(risk.base_name)
-        if mapping is None:
-            raise ConfigError(f"asset {asset.name} has no mapping for risk measure {risk.name}; add it under risk_measures:", asset=asset.name)
-        self._check_no_extra_parameters(asset, risk)
 
         # pricebt DEV-I4: gs returns a small DataFrame for IRDelta(aggregation_level=Type); pricebt
         # returns FloatWithInfo for Type/Asset/Class and a bucketed DataFrameWithInfo for None/Point
@@ -410,11 +481,39 @@ class PricingService:
         agg = risk.aggregation_level if has_agg_level else None
         want_bucketed = has_agg_level and (agg is None or agg == AggregationLevel.Point)
 
+        mname = risk.name
+        mapping = asset.risk_measures.get(risk.name)
+        if mapping is None and risk.base_name:
+            mname = risk.base_name
+            mapping = asset.risk_measures.get(risk.base_name)
+        if mapping is None:
+            # DESIGN.md section 8.1 rule 3, last step (IR_RISK_DESIGN R2-10): a preset or fallback
+            # key the load-time contract counted toward this measure serves it too, in the form
+            # this request needs (an aggregation-level scalar may also sum a bucketed slot, rule 5)
+            mname = risk.base_name or risk.name
+            forms = ("bucketed",) if want_bucketed else ("scalar", "bucketed") if has_agg_level else ("scalar", "frame", "bucketed")
+            key = next((asset.provided_forms[(mname, f)] for f in forms if (mname, f) in asset.provided_forms), None)
+            mapping = asset.risk_measures.get(key)
+
+        # pricebt DEV-I11: a declared-unsupported measure/form raises UnsupportedMeasureError, but
+        # only where the requested mapping slot is empty (a mapping wins, IR_RISK_DESIGN R2-9). An
+        # aggregation-level measure asks for one form; a plain one names no form, so any
+        # declaration of it counts when nothing is mapped.
+        if mapping is None:
+            self._raise_if_declared(asset, risk, ("bucketed",) if want_bucketed else ("scalar",) if has_agg_level else contracts.FORMS)
+            raise ConfigError(f"asset {asset.name} has no mapping for risk measure {risk.name}; add it under risk_measures:", asset=asset.name)
+
         scalar_via_bucket_sum = False
         if want_bucketed:
             fname, is_bucketed = mapping.bucketed, True
             if fname is None:
-                raise ConfigError(f"asset {asset.name}: risk measure {risk.name} has no bucketed mapping", asset=asset.name)
+                self._raise_if_declared(asset, risk, ("bucketed",))
+                # IR_RISK_DESIGN R2-13: a bare finite-difference measure is the bucketed form; with
+                # no bucketed slot, the scalar slot is the mapped one
+                raise ConfigError(
+                    f"asset {asset.name}: risk measure {risk.name} has no bucketed mapping; request {risk.name}(aggregation_level='Type') for the scalar form",
+                    asset=asset.name,
+                )
         else:
             fname, is_bucketed = mapping.scalar, False
             if fname is None:
@@ -424,13 +523,18 @@ class PricingService:
                 if has_agg_level:
                     # DESIGN.md section 8.1 rule 5's FIRST bullet: aggregation_level explicitly
                     # resolved to Type/Asset/Class (scalar form) but only a bucketed function is
-                    # mapped -- sum the buckets into the scalar.
+                    # mapped -- sum the buckets into the scalar. A declared-unsupported scalar form
+                    # wins over the sum (pricebt DEV-I11): the sum would produce exactly that form.
+                    self._raise_if_declared(asset, risk, ("scalar",))
                     scalar_via_bucket_sum = True
                 else:
                     # DESIGN.md section 8.1 rule 5's THIRD bullet: the measure has no
                     # aggregation_level concept at all, so a missing scalar mapping means SELECT
                     # the bucketed form (LazyFuture/DataFrameWithInfo) -- never sum it.
                     is_bucketed = True
+
+        self._check_parameters(asset, risk, fname)
+        params = _measure_params(risk)
 
         spec = asset.functions.get(fname)
         if spec is None:
@@ -440,6 +544,8 @@ class PricingService:
         func_ccy = spec.currency or asset.currency
         risk_ccy = getattr(risk, "currency", None)
         target_ccy = func_ccy if risk_ccy in (None, "local") else risk_ccy
+        if target_ccy != func_ccy and spec.returns == "frame":
+            raise ConfigError(f"measure {risk.name} returns a frame (a table); it cannot be converted to {target_ccy}", asset=asset.name)
         if target_ccy != func_ccy and spec.unit not in _CONVERTIBLE_UNITS:
             raise ConfigError(f"measure {risk.name} has unit {spec.unit}; it cannot be converted to {target_ccy}", asset=asset.name)
 
@@ -447,34 +553,39 @@ class PricingService:
         rk = resolved_inst.resolution_key
 
         if is_bucketed:
-            return self._lazy_value(inst, resolved_inst, asset, fname, spec, func_ccy, target_ccy, d, csa, risk)
+            return self._lazy_value(inst, resolved_inst, asset, fname, spec, func_ccy, target_ccy, d, csa, risk, params)
 
-        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, fname)
-        raw_total = sum(raw.values()) if scalar_via_bucket_sum else raw
-        val = self._scale_scalar(raw_total, spec, resolved_inst.quantity_, func_ccy, target_ccy, d)
+        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, fname, params)
         unit = _unit_dict(spec, target_ccy)
         key = RiskKey(provider=None, date=d, market=None, params=None, scenario=None, risk_measure=risk)
+        if spec.returns == "frame":
+            return self._table_value(raw, asset, mname, fname, spec, resolved_inst.quantity_, key, unit)
+        raw_total = _bucket_total(raw) if scalar_via_bucket_sum else raw
+        val = self._scale_scalar(raw_total, spec, resolved_inst.quantity_, func_ccy, target_ccy, d)
         return FloatWithInfo(val, risk_key=key, unit=unit)
 
-    def _lazy_value(self, orig_inst: Instrument, resolved_inst: Instrument, asset, fname: str, spec, func_ccy: str, target_ccy: str, d: _date, csa: Optional[str], risk) -> LazyFuture:
+    def _lazy_value(self, orig_inst: Instrument, resolved_inst: Instrument, asset, fname: str, spec, func_ccy: str, target_ccy: str, d: _date, csa: Optional[str], risk, params: Tuple[Tuple[str, Any], ...] = ()) -> LazyFuture:
         rk = resolved_inst.resolution_key
         res_date, res_csa = rk.date, resolved_inst.resolution_csa
         frozen_resolved = tuple(sorted(resolved_inst.resolved_terms.items()))
-        group_key = (asset.name, asset.market_key, d, csa, fname, target_ccy)
+        # pricebt DEV-I10: params last, so two bump sizes never share a group (and group_key[2]
+        # stays the date)
+        group_key = (asset.name, asset.market_key, d, csa, fname, target_ccy, params)
         # pricebt: member carries res_date/res_csa and the originating risk measure too (beyond
         # DESIGN.md section 8.2's literal 3-tuple) so group_aggregate can build a resolve_date
         # asset's trades on the right market without re-deriving them from PricebtSession.current,
         # and so it can fill RiskKey.risk_measure (section 8.2: "pricebt fills date and
         # risk_measure") the same way the scalar path does. Every instrument in one group_key was
         # evaluated with the SAME `measures` tuple element (Portfolio.calc passes one shared risk
-        # object to every child), so any one member's risk is the group's risk.
-        member = (instrument_identity(orig_inst), frozen_resolved, resolved_inst.quantity_, res_date, res_csa, risk)
+        # object to every child), so any one member's risk is the group's risk. The measure
+        # params (pricebt DEV-I10) come last.
+        member = (instrument_identity(orig_inst), frozen_resolved, resolved_inst.quantity_, res_date, res_csa, risk, params)
         service = self
         quantity_ = resolved_inst.quantity_
         resolved_terms = resolved_inst.resolved_terms
 
         def thunk():
-            raw = service._eval_unit_cached(asset, resolved_terms, res_date, res_csa, d, csa, fname)
+            raw = service._eval_unit_cached(asset, resolved_terms, res_date, res_csa, d, csa, fname, params)
             scaled = service._scale_bucket(raw, spec, quantity_, func_ccy, target_ccy, d)
             key = RiskKey(provider=None, date=d, market=None, params=None, scenario=None, risk_measure=risk)
             return make_bucketed_frame(scaled, labels=spec.labels, risk_key=key, unit=_unit_dict(spec, target_ccy))
@@ -482,14 +593,14 @@ class PricingService:
         return LazyFuture(thunk, group_key, member, service)
 
     def group_aggregate(self, group_key, members):
-        asset_name, _market_key, d, csa, fname, target_ccy = group_key
+        asset_name, _market_key, d, csa, fname, target_ccy, params = group_key
         asset = self.registry[asset_name]
         spec = asset.functions.get(fname)
         if spec is None:
             spec = asset.portfolio_functions[fname]
         func_ccy = spec.currency or asset.currency
-        entries = [(dict(frozen_resolved), res_date, res_csa, quantity_) for _identity, frozen_resolved, quantity_, res_date, res_csa, _risk in members]
-        raw = self._portfolio_value_from_entries(asset, d, fname, csa, entries)
+        entries = [(dict(frozen_resolved), res_date, res_csa, quantity_) for _identity, frozen_resolved, quantity_, res_date, res_csa, _risk, _params in members]
+        raw = self._portfolio_value_from_entries(asset, d, fname, csa, entries, params)
         scaled = self._scale_bucket(raw, spec, 1.0, func_ccy, target_ccy, d)  # weights already carry quantity_
         risk = members[0][5]
         key = RiskKey(provider=None, date=d, market=None, params=None, scenario=None, risk_measure=risk)
@@ -532,6 +643,23 @@ def _unwrap(v):
     return v.result() if isinstance(v, LazyFuture) else v
 
 
+def _date_indexed(by_date: dict, rep):
+    """One measure's per-date values as one historical result: a `SeriesWithInfo` indexed by date
+    carrying `rep`'s (the first date's raw value's) unit/risk_key, or -- when `rep` is a table
+    (`pricebt_table`, IR_RISK_DESIGN R2-15) -- one table with a `date` column prepended to each
+    date's rows, concatenated in date order."""
+    if getattr(rep, "pricebt_table", False):
+        frames = []
+        for d, table in by_date.items():
+            frame = pd.DataFrame(table, copy=True)
+            frame.insert(0, "date", d)
+            frames.append(frame)
+        # dates with no rows add nothing (and concatenating empty frames trips a pandas warning)
+        frames = [f for f in frames if len(f)] or frames
+        return make_table_frame(pd.concat(frames, ignore_index=True), risk_key=rep.risk_key, unit=rep.unit)
+    return SeriesWithInfo(pd.Series(by_date), unit=getattr(rep, "unit", None), risk_key=getattr(rep, "risk_key", None))
+
+
 def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str]):
     # pricebt: historical per-instrument values are materialised eagerly (unlike the single-date
     # path, where a bucketed measure stays a LazyFuture for group aggregation) -- a date-indexed
@@ -546,23 +674,16 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     # per-date values were put in a Series -- SeriesWithInfo carries them on the SERIES itself
     # (`_metadata`, risk/results.py), not per element, and the constructor call here never passed
     # them. Grab them from one representative value (constant across dates for the same instrument
-    # and measure) and pass them through explicitly.
+    # and measure) and pass them through explicitly. A table measure becomes one date-stacked
+    # table instead (`_date_indexed`).
     if len(measures) == 1:
         rep = next(iter(per_date.values()), None)
-        return SeriesWithInfo(
-            pd.Series({d: _unwrap(per_date[d]) for d in dates}),
-            unit=getattr(rep, "unit", None),
-            risk_key=getattr(rep, "risk_key", None),
-        )
+        return _date_indexed({d: _unwrap(per_date[d]) for d in dates}, rep)
     result = MultipleRiskMeasureResult()
     rep_multi = next(iter(per_date.values()), None)
     for m in measures:
         rep = rep_multi[m] if rep_multi is not None else None
-        result[m] = SeriesWithInfo(
-            pd.Series({d: _unwrap(per_date[d][m]) for d in dates}),
-            unit=getattr(rep, "unit", None),
-            risk_key=getattr(rep, "risk_key", None),
-        )
+        result[m] = _date_indexed({d: _unwrap(per_date[d][m]) for d in dates}, rep)
     return result
 
 

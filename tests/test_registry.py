@@ -13,6 +13,7 @@ import pytest
 from pricebt.assets.config import load_asset
 from pricebt.assets.registry import AssetRegistry
 from pricebt.errors import ConfigError
+from pricebt.risk import contracts
 
 
 def _asset(name, *, instrument="ConfigInstrument", match=None, currency="USD", market_key=None, imports="", code="", market_expr="1", defaults=None):
@@ -28,6 +29,11 @@ def _asset(name, *, instrument="ConfigInstrument", match=None, currency="USD", m
         "functions": {"f": {"expr": "1", "unit": "ccy"}},
         "risk_measures": {"Price": "f"},
     }
+    # A class with a measure contract (IRSwap) must map or declare all of it (IR_RISK_DESIGN.md
+    # section 2); these tests are about matching, so everything but Price is declared.
+    unsupported = {r.measure: "registry test: only Price is priced" for r in contracts.contract_for(instrument) if r.measure != "Price"}
+    if unsupported:
+        cfg["unsupported_measures"] = unsupported
     if match is not None:
         cfg["match"] = match
     return cfg

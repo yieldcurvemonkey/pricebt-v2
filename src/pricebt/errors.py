@@ -39,6 +39,10 @@ class AssetEvaluationError(PricebtError):
         self.csa = csa
         super().__init__(f"asset {asset!r} key {key!r} expr {self.expr!r} date={date} csa={csa!r}")
 
+    def __reduce__(self):
+        # the constructor's arguments, not `args` (one message string), so copy/pickle work
+        return type(self), (self.asset, self.key, self.expr, self.date, self.csa)
+
     def __str__(self) -> str:
         base = super().__str__()
         cause = self.__cause__
@@ -59,7 +63,35 @@ class MarketDataUnavailable(PricebtError):
         msg = f"no market for {asset!r} on {date} (csa={csa!r})"
         super().__init__(f"{msg}: {reason}" if reason else msg)
 
+    def __reduce__(self):
+        return type(self), (self.asset, self.date, self.csa, self.reason)
+
 
 class NotSupportedError(PricebtError):
     """Raised by a stub for a feature intentionally left out of pricebt (GS server-side machinery,
     or a later-phase feature not yet implemented). The message says what to use instead."""
+
+
+class UnsupportedMeasureError(ConfigError, NotSupportedError):
+    """A risk measure (or one form of it) was requested that the asset config declares under
+    `unsupported_measures:` (docs/v2/IR_RISK_DESIGN.md section 2.4; pricebt DEV-I11). Both a
+    `ConfigError` (the config decides it) and a `NotSupportedError` (nothing can compute it here).
+    `form` is "scalar", "bucketed", "frame", or "*" for every form."""
+
+    def __init__(self, asset: str, measure: str, form: str, reason: str):
+        self.measure = measure
+        self.form = form
+        self.reason = reason
+        shown = "every form" if form == "*" else form
+        key = f"unsupported_measures.{measure}" + ("" if form == "*" else f".{form}")
+        # "has no mapping for risk measure X" is the generic no-mapping text, kept so a caller
+        # matching it (the v2-pnl-explain branch's T-MISSING test) still matches (R14 section 8 #3)
+        super().__init__(
+            f"asset {asset} has no mapping for risk measure {measure}: {measure!r} is declared unsupported ({shown}): {reason}. "
+            f"Map it under risk_measures: once the asset's library can compute it.",
+            asset=asset,
+            key=key,
+        )
+
+    def __reduce__(self):
+        return type(self), (self.asset, self.measure, self.form, self.reason)
