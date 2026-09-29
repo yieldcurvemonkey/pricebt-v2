@@ -33,6 +33,7 @@ def test_library_has_the_expected_skills():
         "pricebt-asset-config-cookbook", "pricebt-enterprise-integration", "pricebt-port-gs-notebook",
         "pricebt-strategy-workflow", "pricebt-strategy-intake", "pricebt-strategy-recipes", "pricebt-adversarial-review",
         "pricebt-spot-checks", "pricebt-tearsheet-report", "pricebt-research-methodology",
+        "pricebt-risk-measures", "pricebt-pnl-attribution",
     }
     assert expected <= names, f"missing skills: {sorted(expected - names)}"
 

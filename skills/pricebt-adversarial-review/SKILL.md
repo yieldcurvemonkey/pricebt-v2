@@ -63,4 +63,4 @@ Assume the backtest is wrong and try to prove it. A finding is a claim with evid
 
 ## Related skills
 
-- [`pricebt-spot-checks`](../pricebt-spot-checks/SKILL.md) (numbers), [`pricebt-research-methodology`](../pricebt-research-methodology/SKILL.md) (standards), [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md) (delivery).
+- [`pricebt-spot-checks`](../pricebt-spot-checks/SKILL.md) (numbers), [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md) (P&L by greek, checklist section E), [`pricebt-research-methodology`](../pricebt-research-methodology/SKILL.md) (standards), [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md) (delivery).

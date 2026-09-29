@@ -1,0 +1,93 @@
+# Broken on purpose (check_asset fixture): the resolve never passes buy_sell on (it forces Buy), so a
+# Sell prices exactly like a Buy. Must FAIL swaption_buy_sell_fold.
+# Copy of tests/assets/toy_usd_swaption.yaml with ONE thing broken (resolve:).
+schema_version: 1
+asset: bad_swaption_sell_not_folded
+description: >
+  Toy USD swaption: Bachelier (normal) pricing with a flat vol over the toy rates world in
+  tests/toylib/swaption.py. Test-only fixture, never shipped; mirrors DESIGN.md section 13's
+  swaption extensibility walkthrough at toy scale, and maps the full IR measure contract
+  (docs/v2/IR_RISK_DESIGN.md section 2, section 00). Units: npv USD; sensitivities USD per bp
+  (bp^2) of the forward swap rate / normal vol; rates and vols in bp; Theta USD per calendar day.
+  Physically settled: after expiry an exercised leg is the underlying swap, an unexercised one 0.
+instrument: IRSwaption
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Pay   # gs defaults to Straddle; the toy keeps Pay (Straddle prices as payer + receiver)
+  buy_sell: Buy
+  expiration_date: 1y
+  termination_date: 10y
+  notional_currency: USD
+  strike: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.swaption as ts
+market:
+  expr: 'ts.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_swaption_vol
+resolve:
+  expr: 'ts.resolve_swaption(market, dict(kwargs, buy_sell="Buy"))'   # MISTAKE: buy_sell dropped (pricebt never reads it: resolve must fold it)
+functions:
+  npv:             {expr: 'ts.npv(market, trade, pricebt_date)', unit: ccy}   # valued on the pricing date (a CloseMarket override keeps the time value)
+  vega:            {expr: 'ts.vega(market, trade)', unit: ccy_per_bp}
+  delta:           {expr: 'ts.delta(market, trade)', unit: ccy_per_bp}
+  discount_delta:  {expr: 'ts.discount_delta(market, trade)', unit: ccy_per_bp}
+  gamma:           {expr: 'ts.gamma(market, trade)', unit: ccy_per_bp2}
+  vanna:           {expr: 'ts.vanna(market, trade)', unit: ccy_per_bp2}
+  volga:           {expr: 'ts.volga(market, trade)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}   # single-curve, single-currency: no basis / xccy exposure
+  theta_1d:        {expr: 'ts.theta_1d(market, trade)', unit: ccy}
+  fwd_rate:        {expr: 'ts.fwd_rate(market, trade)', unit: bp}
+  spot_rate:       {expr: 'ts.spot_rate(market, trade)', unit: bp}
+  annual_vol:      {expr: 'ts.annual_vol(market, trade)', unit: bp}
+  atm_vol:         {expr: 'ts.atm_vol(market, trade)', unit: bp}
+  daily_vol:       {expr: 'ts.daily_vol(market, trade)', unit: bp}
+  expiry_in_years: {expr: 'ts.expiry_in_years(market, trade)', unit: decimal}
+  prob_exercise:   {expr: 'ts.prob_exercise(market, trade)', unit: decimal}
+  annuity:         {expr: 'ts.annuity(market, trade)', unit: ccy}
+  cashflows:       {expr: 'ts.cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+portfolio_functions:
+  delta_ladder:
+    expr: 'ts.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'ts.gamma_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  vega_cube:
+    expr: 'ts.vega_cube(market, trades, weights, ("1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y"), ("1Y", "2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+  pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
+    expr: 'ts.pnl_explain(market, market_to, trades, weights, pricebt_date)'
+    unit: ccy
+    returns: buckets
+attributes:
+  expiration_date: 'resolved["expiration_date"]'
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: vega, bucketed: vega_cube}
+  IRVanna: vanna
+  IRVolga: volga
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: fwd_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: annual_vol
+  IRAnnualATMImpliedVol: atm_vol
+  IRDailyImpliedVol: daily_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  PnlExplain: pnl_explain
+  ProbabilityOfExercise: prob_exercise

@@ -129,6 +129,72 @@ def test_archetype_specific_rules():
     assert any("stop_loss_mtm with result_ccy" in e for e in specmod.validate_spec(s))
 
 
+_OPT = {"pay_or_receive": "Pay", "buy_sell": "Buy", "expiration_date": "3m", "termination_date": "10y",
+        "notional_currency": "USD", "notional_amount": 1e7, "strike": "A-50"}
+_BOND = {"buy_sell": "Buy", "identifier": "TOY 4.25 2034-11-15", "size": 1e7, "settlement_currency": "USD"}
+_SWAP = {"pay_or_receive": "Pay", "termination_date": "10y", "notional_currency": "USD", "notional_amount": 1e7}
+
+
+def _errors(cls, kwargs, **over):
+    return specmod.validate_spec(filled(instruments={"primary": {"class": cls, "kwargs": kwargs}}, **over))
+
+
+def test_swaption_and_bond_kwargs_are_checked_against_the_generated_class():
+    assert _errors("IRSwaption", _OPT) == []
+    assert _errors("IRSwaption", {**_OPT, "pay_or_receive": "Straddle", "settlement": "Physical"}) == []
+    assert _errors("Bond", _BOND) == []
+    camel = {("payOrReceive" if k == "pay_or_receive" else k): v for k, v in _SWAP.items()}
+    assert _errors("IRSwap", camel) == []  # gs camelCase names are snake-cased first
+    for cls, kwargs, message in [
+        ("IRSwaption", {**_OPT, "expiry": "3m"}, "'expiry' is not a IRSwaption field"),  # typo gs would ignore
+        ("Bond", {**_BOND, "notional_amount": 1e7}, "'notional_amount' is not a Bond field"),  # a bond sizes by `size`
+        ("IRSwaption", {**_OPT, "buy_sell": "Hold"}, "not a valid BuySell"),
+        ("IRSwaption", {k: v for k, v in _OPT.items() if k != "buy_sell"}, "buy_sell is required for IRSwaption"),
+        ("IRSwaption", {k: v for k, v in _OPT.items() if k != "pay_or_receive"}, "pay_or_receive is required for IRSwaption"),
+        ("Bond", {k: v for k, v in _BOND.items() if k != "identifier"}, "identifier is required for Bond"),
+        ("IRSwaption", {**_OPT, "premium": 25_000.0}, "premium 25000.0 must be 0 in a backtest"),
+    ]:
+        errors = _errors(cls, kwargs)
+        assert any(message in e for e in errors), (message, errors)
+
+
+@pytest.mark.parametrize("first, second, ok", [
+    (("Bond", _BOND), ("Bond", {**_BOND, "buy_sell": "Sell"}), True),
+    (("Bond", _BOND), ("Bond", _BOND), False),
+    (("Bond", _BOND), ("IRSwap", _SWAP), True),  # asset swap: long bond (delta < 0) vs payer (delta > 0)
+    (("Bond", _BOND), ("IRSwap", {**_SWAP, "pay_or_receive": "Receive"}), False),
+    (("IRSwaption", _OPT), ("IRSwaption", {**_OPT, "buy_sell": "Sell"}), True),
+    (("IRSwaption", _OPT), ("IRSwaption", {**_OPT, "pay_or_receive": "Receive", "buy_sell": "Sell"}), False),  # both long delta
+    (("IRSwaption", {**_OPT, "pay_or_receive": "Straddle"}), ("IRSwaption", {**_OPT, "pay_or_receive": "Straddle", "buy_sell": "Sell"}), True),
+    (("IRSwaption", {**_OPT, "pay_or_receive": "Straddle"}), ("IRSwaption", {**_OPT, "pay_or_receive": "Straddle"}), False),
+])
+def test_curve_trade_needs_opposite_positions_for_any_class(first, second, ok):
+    s = filled(archetype="curve_trade", signal={"type": "none"},
+               instruments={"primary": {"class": first[0], "kwargs": first[1]}, "second": {"class": second[0], "kwargs": second[1]}})
+    errors = specmod.validate_spec(s)
+    assert (not any("opposite positions" in e for e in errors)) == ok, errors
+
+
+def test_dv01_sizing_refuses_a_straddle_and_hedge_measure_must_parse():
+    straddle = {**_OPT, "pay_or_receive": "Straddle"}
+    dv01 = dict(archetype="periodic_roll", signal={"type": "none"}, sizing={"method": "dv01_target", "dv01_target": 5000.0})
+    errors = _errors("IRSwaption", straddle, **dv01)
+    assert any("sizing.dv01_target: instruments.primary" in e and "Straddle" in e for e in errors)
+    assert _errors("IRSwaption", _OPT, **dv01) == []
+    assert _errors("Bond", _BOND, risk_limits={"hedge_measure": "IRDeltaParallel"}) == []
+    assert any("risk_limits.hedge_measure" in e for e in _errors("Bond", _BOND, risk_limits={"hedge_measure": "IRDeltaa"}))
+
+
+def test_instrument_terms_cli(capsys):
+    import instrument_terms
+
+    assert instrument_terms.main(["IRSwaption", "pay_or_receive=Pay", "buy_sell=Sell", "expiration_date=3m"]) == 0
+    out = capsys.readouterr().out
+    assert "unit IRDelta sign: -1" in out and "'buy_sell': Buy" in out and "'pay_or_receive': Pay" in out
+    assert instrument_terms.main(["Bond", "buy_sell=Buy", "expiry=3m"]) == 1
+    assert "'expiry' is not a Bond field" in capsys.readouterr().out
+
+
 def test_missing_sections_are_reported_not_crashed():
     assert any("missing" in e for e in specmod.validate_spec({"name": "x"}))
 
@@ -138,6 +204,9 @@ def test_parse_risk():
     assert specmod.parse_risk("Price") == Price
     assert specmod.parse_risk("IRDeltaParallel") == IRDeltaParallel
     assert specmod.parse_risk("IRDelta(aggregation_level='Type')") == IRDelta(aggregation_level="Type")
+    from pricebt.risk import IRVanna
+    vanna = specmod.parse_risk("IRVanna(aggregation_level=Type, bump_size=0.5)")  # unquoted numbers stay numbers
+    assert vanna == IRVanna(aggregation_level="Type", bump_size=0.5)
     with pytest.raises(ValueError):
         specmod.parse_risk("NotAMeasure")
 

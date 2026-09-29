@@ -101,8 +101,8 @@ def test_cash_accrual_and_initial_value_reach_the_strategy():
 # --------------------------------------------------------------------------------- mean_reversion
 
 
-MR_SPEC = spec("mean_reversion", dates={"end": date(2025, 1, 2)},
-                signal={"type": "par_rate_zscore", "instrument": "primary", "measure": "par_rate", "lookback": 30,
+MR_SPEC = spec("mean_reversion", dates={"end": date(2025, 1, 2)},  # IRFwdRate: resolved through risk_measures (-> par_rate)
+                signal={"type": "par_rate_zscore", "instrument": "primary", "measure": "IRFwdRate", "lookback": 30,
                         "params": {"z_entry": 2.0}},
                 costs={"model": "dv01_bp", "level": 0.25})
 
@@ -281,6 +281,124 @@ def test_invalid_and_custom_specs_are_refused():
         recipes.build(spec("custom"))
 
 
+# --------------------------------------------------------------------------------- swaptions and bonds
+
+EXAMPLES = ROOT / "skills" / "pricebt-strategy-recipes" / "example"
+_OPT = {"expiration_date": "1y", "termination_date": "10y", "notional_currency": "USD", "notional_amount": 1e6, "strike": "ATM"}
+_BOND = {"identifier": "TOY 4.25 2034-11-15", "size": 1e6, "settlement_currency": "USD"}
+
+
+def _w(v):
+    return str(getattr(v, "value", v))
+
+
+@pytest.mark.parametrize("cls, kwargs, sign, opposite", [
+    ("IRSwap", {"pay_or_receive": "Pay"}, 1, {"pay_or_receive": "Rec"}),
+    ("IRSwap", {"pay_or_receive": "Receive"}, -1, {"pay_or_receive": "Pay"}),
+    ("IRSwaption", {"pay_or_receive": "Pay", "buy_sell": "Buy", **_OPT}, 1, {"pay_or_receive": "Pay", "buy_sell": "Sell"}),
+    ("IRSwaption", {"pay_or_receive": "Pay", "buy_sell": "Sell", **_OPT}, -1, {"pay_or_receive": "Pay", "buy_sell": "Buy"}),
+    ("IRSwaption", {"pay_or_receive": "Receive", "buy_sell": "Buy", **_OPT}, -1, {"pay_or_receive": "Rec", "buy_sell": "Sell"}),
+    ("IRSwaption", {"pay_or_receive": "Receive", "buy_sell": "Sell", **_OPT}, 1, {"pay_or_receive": "Rec", "buy_sell": "Buy"}),
+    ("Bond", {"buy_sell": "Buy", **_BOND}, -1, {"buy_sell": "Sell"}),
+    ("Bond", {"buy_sell": "Sell", **_BOND}, 1, {"buy_sell": "Buy"}),
+])
+def test_direction_follows_the_class_position_kwarg(cls, kwargs, sign, opposite):
+    """R13 finding 9: a swaption's position is buy_sell (pay_or_receive is the option type), a bond's is
+    buy_sell; direction_sign is the sign of the unit IRDelta under the contract (long bond < 0)."""
+    inst = recipes.make_instrument("primary", {"class": cls, "kwargs": kwargs})
+    assert recipes.direction_sign(inst) == sign
+    opp = recipes.flipped(inst, "primary_opp")
+    assert {k: _w(opp.kwargs[k]) for k in opposite} == opposite and opp.quantity_ == inst.quantity_
+    assert recipes.direction_sign(opp) == -sign
+
+
+def test_a_straddle_has_no_delta_sign_and_flips_buy_sell():
+    straddle = recipes.make_instrument("p", {"class": "IRSwaption", "kwargs": {"pay_or_receive": "Straddle", "buy_sell": "Sell", **_OPT}})
+    with pytest.raises(ValueError, match="Straddle"):
+        recipes.direction_sign(straddle)
+    assert _w(recipes.flipped(straddle, "q").kwargs["buy_sell"]) == "Buy"
+    bond = recipes.make_instrument("b", {"class": "Bond", "kwargs": {"buy_sell": "Buy", **_BOND}}, notional=5e6)
+    assert bond.kwargs["size"] == 5e6  # sizing.notional overrides the class's size kwarg
+
+
+def test_momentum_on_a_swaption_trades_the_sold_payer_not_a_bought_receiver():
+    """U30 acceptance: the _opp leg has the opposite buy_sell and the SAME pay_or_receive; the signal
+    is the config-driven level IRFwdRate (the swaption's forward), in bp."""
+    s = spec("momentum", assets=["tests/assets/toy_usd_swaption.yaml"], dates={"end": date(2024, 5, 1)},
+             instruments={"primary": {"class": "IRSwaption", "kwargs": {"pay_or_receive": "Pay", "buy_sell": "Buy", **_OPT}}},
+             signal={"type": "rate_momentum", "instrument": "primary", "measure": "IRFwdRate", "lookback": 20,
+                     "params": {"threshold_bp": 1.0}}, costs={"model": "none"}, risks_to_report=["Price"])
+    bt, built = recipes.run(s)
+    check_invariants(bt, cost_level_positive=False)
+    assert built.signal is not None and len(built.signal) > 20
+    up, down = (t.actions[0].priceables[0] for t in built.strategy.triggers)
+    assert (_w(up.kwargs["buy_sell"]), _w(up.kwargs["pay_or_receive"])) == ("Buy", "Pay")
+    assert (_w(down.kwargs["buy_sell"]), _w(down.kwargs["pay_or_receive"])) == ("Sell", "Pay")
+    assert len(bt.trade_ledger()) > 0
+
+
+def test_swaption_expiry_roll_exits_each_option_on_its_expiration_date():
+    bt, built = recipes.run(EXAMPLES / "toy_swaption_expiry_roll.yaml")
+    check_invariants(bt)
+    ledger = bt.trade_ledger()
+    closed = ledger[ledger["Status"] == "closed"]
+    assert len(closed) == 5
+    for name, row in closed.iterrows():
+        trade = next(t for t in bt.portfolio_dict[row["Open"]] if t.name == name)
+        assert row["Close"] == trade.expiration_date  # 'expiration_date' read from the config attribute
+        assert row["Close Value"] >= 0  # a bought option is never a liability at expiry
+    assert (closed["Close Value"] == 0).any()  # some expired out of the money: the premium is the loss
+    assert any("expiration_date" in n for n in built.notes) and any("buy_sell is the position" in n for n in built.notes)
+
+
+def test_short_straddle_delta_hedged_is_delta_flat_short_vega_long_theta():
+    from pricebt.risk import IRDeltaParallel, IRVegaParallel, Theta
+
+    bt, built = recipes.run(EXAMPLES / "toy_short_straddle_delta_hedged.yaml")
+    rs = check_invariants(bt)
+    assert built.strategy.triggers[1].actions[0].risk == IRDeltaParallel
+    assert rs[IRDeltaParallel].abs().max() < 1e-2  # hedged on IRDeltaParallel every business day
+    assert (rs[IRVegaParallel] < 0).all()  # short vol: the swap hedges carry no vega
+    assert (rs[Theta] > 0).all()  # short options collect carry
+    assert len(ledger_names(bt, "Scaled_hedge_")) == len(rs)
+    assert any("DEV-I12" in n for n in built.notes)
+
+
+def test_bond_carry_roll_is_long_duration_and_its_coupon_shows_only_in_the_explain_table():
+    from pricebt.backtests.backtest_objects import bond_pnl_definition
+    from pricebt.backtests.generic_engine import GenericEngine
+    from pricebt.risk import IRDeltaParallel
+
+    built = recipes.build(EXAMPLES / "toy_bond_carry_roll.yaml")
+    bt = GenericEngine().run_backtest(built.strategy, **built.run_kwargs, pnl_explain=bond_pnl_definition())
+    rs = check_invariants(bt)
+    ledger = bt.trade_ledger().sort_values("Open")
+    assert list(ledger["Close"])[:-1] == list(ledger["Open"])[1:]  # re-entered on every roll date
+    assert (rs[IRDeltaParallel] < 0).all()  # a long bond loses when its yield rises
+    table = bt.pnl_explain_table()
+    coupon = table.loc[table["cashflow_pnl"] != 0, "cashflow_pnl"]
+    assert list(coupon.index) == [date(2024, 5, 15)] and coupon.iloc[0] == pytest.approx(10e6 * 0.0425 / 2)
+    step = table.loc[date(2024, 5, 15)]
+    assert step["actual_pnl"] < 0 < step["economic_pnl"]  # Total drops by the coupon the engine never books
+    assert abs(step["residual_pnl"]) < 1e-3 * coupon.iloc[0]
+    assert any("NOT booked" in n for n in built.notes)
+
+
+def test_bond_against_a_payer_swap_keeps_both_directions_and_nets_to_zero_dv01():
+    bt, built = recipes.run(EXAMPLES / "toy_bond_asset_swap.yaml")
+    check_invariants(bt)
+    entry_dates = sorted(set(bt.trade_ledger()["Open"]))
+    assert len(entry_dates) == 4
+    for d in entry_dates:
+        legs = {t.name: t for t in bt.portfolio_dict[d] if t.name.endswith(str(d))}
+        bond, swap = (next(t for n, t in legs.items() if n.startswith(p)) for p in ("Leg1_primary", "Leg2_second"))
+        assert bond.quantity_ > 0 and swap.quantity_ > 0  # Buy stays a long bond, Pay stays a payer
+        assert float(bt.results[d][DV01][bond.name]) == pytest.approx(-5000.0, rel=1e-6)
+        assert float(bt.results[d][DV01][swap.name]) == pytest.approx(5000.0, rel=1e-6)
+        assert float(bt.results[d][DV01].aggregate()) == pytest.approx(0.0, abs=1e-6)
+    assert any("the spread is the trade" in n for n in built.notes)
+
+
 # --------------------------------------------------------------------------------- determinism, every archetype
 
 _TWO_LEGS = {"primary": {"class": "IRSwap", "kwargs": {"pay_or_receive": "Receive", "termination_date": "2y",
@@ -298,6 +416,7 @@ DETERMINISM_SPECS = {
     "event": spec("event", event_dates=[date(2024, 1, 31), date(2024, 3, 20)], rebalance={"trade_duration": "1w"}),
     "stop_loss": spec("periodic_roll", dates={"start": date(2024, 5, 1), "end": date(2024, 9, 3)},
                       rebalance={"trade_duration": None}, risk_limits={"stop_loss_mtm": 1_000_000.0}),
+    **{p.stem: recipes.specmod.load_spec(p) for p in sorted(EXAMPLES.glob("*.yaml"))},  # the swaption and bond recipes
 }
 
 

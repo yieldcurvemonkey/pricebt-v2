@@ -1,0 +1,93 @@
+# Broken on purpose (check_asset fixture): the bond's IRDelta is the library's risk per -1bp (positive
+# for a long bond) mapped without negating. Must FAIL bond_dv01_sign.
+# Copy of tests/assets/toy_usd_bond.yaml with ONE thing broken (functions.delta).
+schema_version: 1
+asset: bad_bond_dv01_positive
+description: >
+  Toy USD fixed-coupon bond on the deterministic rates world (tests/toylib/bond.py): a tiny bond
+  master keyed by identifier, a flat curve plus a sinusoidal spread. Test-only fixture, never
+  shipped; maps the full IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2, section 00).
+  Units: npv USD, the holder-signed dirty PV of the flows not yet paid (paid coupons drop out and
+  are listed by Cashflows); sensitivities USD per bp (bp^2) of the yield; yield and spreads in bp;
+  Theta USD per calendar day (same yield, the day's coupon counted as cash).
+instrument: Bond
+match: {settlement_currency: USD}
+currency: USD
+defaults:
+  buy_sell: Buy
+  identifier: TOY 4.25 2034-11-15
+  size: 1.0e6
+  settlement_currency: USD
+imports: |
+  import toylib.bond as tb
+market:
+  expr: 'tb.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_bond_curve
+resolve:
+  expr: 'tb.resolve_bond(market, kwargs)'
+functions:
+  npv:             {expr: 'tb.npv(market, trade)', unit: ccy}
+  delta:           {expr: '-tb.delta(market, trade)', unit: ccy_per_bp}   # MISTAKE: per -1bp (long bond > 0)
+  discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
+  yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
+  gamma:           {expr: 'tb.gamma(market, trade)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # no vol / basis / xccy exposure (R2-8)
+  zero_per_bp2:    {expr: '0.0', unit: ccy_per_bp2}
+  zero_vol:        {expr: '0.0', unit: bp}            # vol levels 0.0 by convention (R2-8)
+  yield_bp:        {expr: 'tb.yield_bp(market, trade)', unit: bp}
+  spread_bp:       {expr: 'tb.spread_bp(market, trade)', unit: bp}
+  theta_1d:        {expr: 'tb.theta_1d(market, trade)', unit: ccy}
+  expiry_in_years: {expr: 'tb.expiry_in_years(market, trade)', unit: decimal}
+  annuity:         {expr: 'tb.annuity(market, trade)', unit: ccy}
+  cashflows:       {expr: 'tb.cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount, notional]}
+  dirty_price:     {expr: 'tb.dirty_price(market, trade)', unit: pct}   # per 100 face (measure_series extras)
+  clean_price:     {expr: 'tb.clean_price(market, trade)', unit: pct}
+  accrued:         {expr: 'tb.accrued(market, trade)', unit: ccy}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tb.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'tb.gamma_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+  pnl_explain:   # PnlExplain: full revaluation from market to market_to by risk factor (IR_RISK_DESIGN section 8)
+    expr: 'tb.pnl_explain(market, market_to, trades, weights)'
+    unit: ccy
+    returns: buckets
+attributes:
+  notional_amount:  'abs(resolved["face"]) * pricebt_quantity'
+  termination_date: 'resolved["maturity"]'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: yield_bp
+  IRSpotRate: yield_bp
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  PnlExplain: pnl_explain
+  LightningDV01: yield_dv01
+  LightningOAS: spread_bp
+  ParSpread: spread_bp

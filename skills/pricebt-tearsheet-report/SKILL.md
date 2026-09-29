@@ -23,6 +23,7 @@ A tearsheet exists to answer one question: **should anyone act on this strategy,
 - `spot_checks`: the list from `spot_check.run_spot_checks(...)`.
 - `review_findings`: from the adversarial review, as a list of strings or of dicts (e.g. `{"severity": ..., "finding": ...}`).
 - `caveats`: extra caveats (the pricebt ones are always included); `notes`: your one-paragraph verdict.
+- `attribution`: optional `backtest.pnl_explain_table()` of a run with a `PnlDefinition` ([`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md)). It adds a "P&L attribution" section before the spot checks: component totals and shares, the unexplained share graded PASS/WARN/FAIL (`attribution.grade`) (a WARN or FAIL line points to the residual diagnosis), and a cumulative chart stacked above and below zero with the economic P&L as a line. Without it the report is unchanged.
 
 ## Outputs
 
@@ -65,6 +66,7 @@ Every section answers a decision question. If a section does not change what som
 | **How much risk does it use?** | Risk and P&L in bp | Max/Mean Abs Risk (dv01), Risk Turnover per Year, Total PnL (bp), PnL / Mean Abs Risk (bp). P&L in bp of rate move is comparable across notionals and currencies. |
 | **How does it fail?** | Key metrics, charts | Max Drawdown and its duration, worst five days, Sortino, skew/kurtosis, drawdown chart, daily P&L histogram. The worst days tell you which market move breaks it. |
 | **Is it tradeable as modelled?** | Caveats, spot checks | Same-close execution, costs and financing as modelled, coupons between marks not booked, missing-market dates dropped, open-at-end positions. |
+| **What was it paid for?** | P&L attribution (when `attribution=` is given) | component totals (delta, gamma, vega, vanna, volga, theta), the graded unexplained share and r2. A carry or vol thesis must show up in its own component, with a small residual next to it. |
 | **Can someone reproduce it?** | Reproducibility | Spec, asset configs, pricebt git commit, generated-at timestamp, CSVs of the ledger and the daily frame. |
 
 ### Success criteria
@@ -104,3 +106,4 @@ A `null` threshold is skipped; an unknown criterion or an unavailable metric is 
 - [`pricebt-adversarial-review`](../pricebt-adversarial-review/SKILL.md): produces `review_findings`.
 - [`pricebt-strategy-intake`](../pricebt-strategy-intake/SKILL.md): produces the spec, its `success_criteria` and its `assumptions`.
 - [`pricebt-architecture`](../pricebt-architecture/SKILL.md): the engine semantics behind the caveats.
+- [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): builds the `attribution=` input (P&L by greek).

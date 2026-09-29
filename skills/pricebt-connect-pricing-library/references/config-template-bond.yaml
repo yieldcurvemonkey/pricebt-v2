@@ -1,0 +1,248 @@
+# Asset-config TEMPLATE: a fixed-coupon Bond on ANY pricing / bond-analytics library, mapping the WHOLE IR
+# measure contract (src/pricebt/risk/contracts.py; docs/v2/IR_RISK_DESIGN.md section 2 and section 00).
+# Same layout as config-template.yaml (the swap): PRIMITIVES (your library) -> RECIPES (pricebt's contract).
+#
+# A Bond's own rate is its YIELD TO MATURITY (pricebt DEV-I12): IRFwdRate = IRSpotRate = the yield, and the IRDelta
+# scalar / IRGammaParallel are dPrice/dy and d2Price/dy2 (yield bumps: every bond library has price-from-yield).
+# A long bond has IRDelta < 0. gs Bond has `size` (no notional_amount) and `buy_sell`: resolve folds
+# buy_sell x sign(size) into a signed face amount, and the attributes below give the engine a notional_amount.
+#
+# Copy it to configs/assets/<asset>.yaml. It LOADS as-is; pricing it raises NotImplementedError("TODO ...") at
+# the first primitive you have not filled. Fill the PRIMITIVES; keep the RECIPES or map native calls converted to
+# pricebt units/signs; declare what your library cannot compute (end of this file).
+# Runnable reference: tests/assets/toy_usd_bond.yaml (tests/toylib/bond.py).
+# Proof of this template: tests/skills/test_skill_connect_example.py fills the primitives with the toy library.
+schema_version: 1
+asset: TODO_asset_name                 # unique; e.g. ust_bonds_<library>
+description: >
+  TODO: bond universe, library, curve, how bonds are marked (curve + spread, or quoted prices). Units: npv <CCY>,
+  the holder-signed DIRTY PV of the flows not yet paid (paid coupons drop out and are listed by Cashflows);
+  sensitivities <CCY> per bp (bp^2) of the yield (long bond delta < 0); yield and spreads in bp; Theta <CCY> per
+  calendar day at a constant yield.
+instrument: Bond
+match: {settlement_currency: USD}      # TODO: which bonds this config serves
+currency: USD
+defaults:                              # no default identifier: every Bond names its own
+  buy_sell: Buy
+  size: 1.0e6                          # TODO: your size convention (face amount in currency here)
+  settlement_currency: USD
+
+imports: |
+  import datetime as _dt
+  # TODO: set import-time env vars first, then import your library:
+  # import yourlib
+
+code: |
+  def _todo(what):
+      raise NotImplementedError("TODO (asset-config template): implement " + what)
+
+  # ================= 1. PRIMITIVES: the only calls into YOUR library. Replace every body. =================
+  # Boundary conventions: dates datetime.date; rates, yields and spreads DECIMAL; PVs in `currency:`, holder-signed,
+  # for the resolved signed face amount (long > 0); shifts h DECIMAL (1bp = 1e-4).
+
+  def lib_market(d):
+      """The discount curve and the bond marks for the close of d as one object (e.g. SimpleNamespace(curve=...,
+      spreads=...) or a quoted-price table), or None when any part is missing. Catch only no-data exceptions."""
+      _todo("lib_market(d): curve + bond marks for d, or None")
+
+  def lib_bond_static(m, identifier, identifier_type):
+      """Static data for the identifier as PLAIN values (numbers, dates, strings): at least coupon (DECIMAL,
+      annual), maturity (date), frequency (coupons per year), plus whatever your pricer needs (day count, first
+      coupon date, ...). Raise on an unknown identifier. Use point-in-time static data (no survivorship)."""
+      _todo("lib_bond_static(m, identifier, identifier_type)")
+
+  def lib_bond(m, r):
+      """Your library's bond for the resolved terms r (the static fields plus face: signed face amount)."""
+      _todo("lib_bond(m, r)")
+
+  def lib_pv(m, t):
+      """Holder-signed DIRTY PV of the flows paid after m's date (dirty price / 100 x face). Paid coupons drop
+      out on their payment date; lib_cashflows lists the flows still to be paid."""
+      _todo("lib_pv(m, t)")
+
+  def lib_yield(m, t):
+      """DECIMAL yield to maturity implied by lib_pv, in EXACTLY the convention lib_pv_at_yield inverts
+      (compounding, day count). Finite after maturity too (e.g. the last live value)."""
+      _todo("lib_yield(m, t)")
+
+  def lib_pv_at_yield(t, y, d):
+      """Holder-signed dirty PV of the flows paid after date d, discounted at yield y (DECIMAL) from d: your
+      library's price-from-yield on settlement/valuation date d, times the face."""
+      _todo("lib_pv_at_yield(t, y, d)")
+
+  def lib_shift_discount(m, h):
+      """Market m with the discount curve shifted in parallel by h and each bond's spread (OAS / Z-spread) held.
+      A bond marked only by a quoted price: solve its Z-spread to your curve once, then shift the curve."""
+      _todo("lib_shift_discount(m, h)")
+
+  def lib_annuity(m, t):
+      """PV, in ccy, of 1.0 per annum paid on the bond's coupon schedule, per SIGNED face: long > 0, short < 0."""
+      _todo("lib_annuity(m, t)")
+
+  def lib_cashflows(m, t):
+      """Rows (dicts) of every coupon and the principal paid after m's date, holder-signed: payment_date (date),
+      payment_amount (ccy), currency, payment_type ('Coupon', 'Principal'); optional gs columns (notional, rate,
+      accrual_start_date, accrual_end_date). Empty after maturity."""
+      _todo("lib_cashflows(m, t)")
+
+  def lib_oas(m, t):
+      """DECIMAL option-adjusted spread over your reference curve (a bullet bond: its Z-spread): LightningOAS."""
+      _todo("lib_oas(m, t)")
+
+  def lib_par_spread(m, t):
+      """DECIMAL par asset-swap spread (or your library's par spread): ParSpread."""
+      _todo("lib_par_spread(m, t)")
+
+  def lib_pillars(m):
+      """Curve pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y")."""
+      _todo("lib_pillars(m)")
+
+  def lib_shift_pillar(m, pillar, h):
+      """Market m with ONLY that curve pillar shifted by h, each bond's spread held."""
+      _todo("lib_shift_pillar(m, pillar, h)")
+
+  # ============ 2. RECIPES: the contract from the primitives (keep, or map a native call instead) ============
+  H = 1e-4                                   # 1bp, decimal
+
+  def _side(buy_sell):
+      s = str(getattr(buy_sell, "value", buy_sell)).strip().lower()
+      if s not in ("buy", "sell"):
+          raise ValueError(f"buy_sell must be Buy or Sell, got {buy_sell!r}")
+      return 1.0 if s == "buy" else -1.0
+
+  def resolve_bond(m, kw):
+      """Runs ONCE on the trade date: the identifier's static data as plain values, and one signed face amount
+      (buy_sell x sign(size)); pricebt never reads buy_sell or size itself."""
+      ident = kw.get("identifier")
+      if not ident:
+          raise ValueError("a Bond needs an identifier")
+      size = float(kw["size"])
+      static = dict(lib_bond_static(m, ident, kw.get("identifier_type")))
+      return dict(static, identifier=ident, face=abs(size) * _side(kw.get("buy_sell", "Buy")) * (1.0 if size >= 0 else -1.0))
+
+  def pv(m, t):
+      return lib_pv(m, t)
+
+  def yield_in_bp(m, t):
+      return lib_yield(m, t) * 1e4           # decimal -> bp
+
+  def _at(t, y, d, h):
+      return lib_pv_at_yield(t, y + h, d)
+
+  def yield_delta(m, t, d, bump_bp=None, method=None):
+      """IRDelta scalar and LightningDV01 (pricebt DEV-I12): dPV/dy per +1bp of yield, by yield bumps
+      (bump_size read as bp). Equal to the total derivative along a curve shift: PV is a function of y alone."""
+      y, h = lib_yield(m, t), float(bump_bp or 1.0) * H
+      how = str(getattr(method, "value", method) or "Centered")
+      if how == "Up":
+          return (_at(t, y, d, h) - _at(t, y, d, 0.0)) / (h / H)
+      if how == "Down":
+          return (_at(t, y, d, 0.0) - _at(t, y, d, -h)) / (h / H)
+      return (_at(t, y, d, h) - _at(t, y, d, -h)) / (2.0 * h / H)
+
+  def yield_gamma(m, t, d):
+      """IRGammaParallel: d2PV/dy2 per bp^2 of yield (convexity in money terms; > 0 for a long bullet bond)."""
+      y = lib_yield(m, t)
+      return _at(t, y, d, H) + _at(t, y, d, -H) - 2.0 * _at(t, y, d, 0.0)
+
+  def discount_only_delta(m, t):
+      return (pv(lib_shift_discount(m, H), t) - pv(lib_shift_discount(m, -H), t)) / 2.0
+
+  def theta_one_day(m, t, d):
+      """Theta (pricebt DEV-I15, bond rule): PV at the SAME yield one calendar day later + the coupons paid in
+      (d, d+1] - PV(d), ccy PER DAY. Carry and pull-to-par, no curve roll."""
+      d1 = d + _dt.timedelta(days=1)
+      cash = sum(r["payment_amount"] for r in lib_cashflows(m, t) if r["payment_date"] <= d1)
+      return lib_pv_at_yield(t, lib_yield(m, t), d1) + cash - pv(m, t)
+
+  def years_to(end, d):
+      return max((end - d).days, 0) / 365.0  # ExpiryInYears: to maturity (pricebt DEV-I17)
+
+  def key_rate_ladder(m, trades, weights):
+      """IRDelta bucketed: central 1bp bump of each curve pillar, spreads held, weighted, ccy per +1bp."""
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) - pv(dn, t)) / 2.0 for t, w in zip(trades, weights))
+      return out
+
+  def diagonal_gamma_ladder(m, trades, weights):
+      """IRGamma bucketed (pricebt DEV-I13: diagonal only), ccy per bp^2 at each pillar."""
+      base = [pv(m, t) for t in trades]
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) + pv(dn, t) - 2.0 * b) for t, w, b in zip(trades, weights, base))
+      return out
+
+market:
+  expr: 'lib_market(pricebt_date)'
+  key: TODO_market_key
+resolve:
+  expr: 'resolve_bond(market, kwargs)'
+trade:
+  expr: 'lib_bond(market, resolved)'
+  build_on: resolve_date               # a bond's static terms do not depend on the market
+functions:
+  npv:             {expr: 'pv(market, trade)', unit: ccy}
+  delta:           {expr: 'yield_delta(market, trade, pricebt_date, pricebt_bump_size, pricebt_finite_difference_method)', unit: ccy_per_bp}
+  discount_delta:  {expr: 'discount_only_delta(market, trade)', unit: ccy_per_bp}
+  gamma:           {expr: 'yield_gamma(market, trade, pricebt_date)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # a bullet bond has no vol exposure (R2-8); no basis/xccy leg
+  zero_per_bp2:    {expr: '0.0', unit: ccy_per_bp2}
+  zero_vol:        {expr: '0.0', unit: bp}            # vol levels 0.0 by convention, so mixed books work
+  yield_bp:        {expr: 'yield_in_bp(market, trade)', unit: bp}
+  oas_bp:          {expr: 'lib_oas(market, trade) * 1e4', unit: bp}
+  par_spread_bp:   {expr: 'lib_par_spread(market, trade) * 1e4', unit: bp}
+  theta_1d:        {expr: 'theta_one_day(market, trade, pricebt_date)', unit: ccy}
+  expiry_in_years: {expr: 'years_to(resolved["maturity"], pricebt_date)', unit: decimal}
+  annuity:         {expr: 'lib_annuity(market, trade)', unit: ccy}
+  cashflows:       {expr: 'lib_cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+portfolio_functions:
+  delta_ladder:
+    expr: 'key_rate_ladder(market, trades, weights)'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'diagonal_gamma_ladder(market, trades, weights)'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TODO, mkt_class: SWAPTION}
+attributes:
+  notional_amount:  'abs(resolved["face"]) * pricebt_quantity'   # the default ScaledTransactionModel reads it
+  termination_date: 'resolved["maturity"]'
+size_attribute: notional_amount
+risk_measures:                         # every row of the Bond contract (src/pricebt/risk/contracts.py)
+  Price: npv
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: yield_bp
+  IRSpotRate: yield_bp
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  LightningDV01: delta
+  LightningOAS: oas_bp
+  ParSpread: par_spread_bp
+# Declaring instead of mapping (delete the mapped line first), e.g. for bonds marked only by quoted prices:
+# unsupported_measures:
+#   IRDiscountDeltaParallel: "bonds are marked by quoted price only; no discount curve is attached"
+#   IRDelta: {bucketed: "no curve behind the quoted prices; the yield delta is the only rate risk"}
+#   IRGamma: "no curve behind the quoted prices"

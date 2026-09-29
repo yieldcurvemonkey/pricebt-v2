@@ -78,3 +78,19 @@ Every metric in metrics.json, as computed by `compute_metrics` in [`tearsheet.py
 | `min_trades` | Total Trades | value ≥ threshold |
 
 A null threshold is skipped. An unavailable metric or an unknown criterion is N/A, and N/A does not count as passing.
+
+## P&L attribution section (optional)
+
+Rendered only when `build_tearsheet(..., attribution=backtest.pnl_explain_table())` is given. The statistics come from `explain_stats` in `skills/pricebt-pnl-attribution/scripts/attribution.py`; the table's columns are defined in [`../../pricebt-pnl-attribution/references/definitions.md`](../../pricebt-pnl-attribution/references/definitions.md) §4.
+
+| Metric | Formula | Units | Notes |
+|---|---|---|---|
+| component total | sum over steps of the column (each attribute, `explained_pnl`, `residual_pnl`, `actual_pnl`, `cashflow_pnl`, `economic_pnl`) | ccy | an attribute's total equals the last value of `pnl_explain()` for it |
+| share of economic P&L | component total / `economic_pnl` total | fraction | shares of the attributes and the residual sum to 1 |
+| unexplained share | the worst of the residual variance share, 1 − r2 and \|Σ residual\| / Σ\|economic\| (`attribution.grade`) | fraction | graded PASS ≤ 5%, WARN ≤ 25%, else FAIL; also FAIL on any NaN, or when a residual signature names an attribute on a material residual; the WARN/FAIL line under the table is `attribution.grade_reason` |
+| residual variance share | var(`residual_pnl`) / var(`economic_pnl`) over the steps | fraction | blind to a steady bias (a sign-flipped theta); blank with fewer than two steps |
+| r2 | 1 − Σ residual² / Σ (economic − mean economic)² | dimensionless | no refit, so a biased attribution scores below 1 even when correlated |
+| sum abs(residual) / sum abs(economic) | Σ\|residual\| / Σ\|economic\| | fraction | robust to one large step |
+| worst residual (date) | the step with the largest \|residual\| | ccy | the first place to look |
+
+Chart: the cumulative attributes and residual, stacked above zero (positive parts) and below zero (negative parts) per date, with the cumulative economic P&L as a line.

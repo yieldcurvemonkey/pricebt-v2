@@ -22,7 +22,9 @@ Each reviewer returns findings as rows: `id | severity | finding | evidence | pr
 > - that ATM entries have near-zero PV;
 > - that curve legs are dv01-weighted and the signal's weights equal the traded weights;
 > - that costs are charged per side;
-> - that carry-dependent P&L is disclosed as missing coupons between marks (gs parity).
+> - that carry-dependent P&L is disclosed as missing coupons between marks (gs parity);
+> - for options: vega per bp of normal vol, the theta sign (a bought option loses time value), expiry at intrinsic, a point-in-time vol surface, and vega concentration in one expiry;
+> - for bonds: clean vs dirty price, coupons and repo financing, and on-the-run roll survivorship.
 >
 > Recompute two trades' entry values independently with the pricing library if you can. Checklist sections A1, A2, A4, A5, A7, A9, A10 and D.
 

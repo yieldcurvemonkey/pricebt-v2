@@ -105,3 +105,22 @@ def test_demo_cli_mean_reversion_with_signal(tmp_path):
     assert "ledger identity" in page and "determinism" in page  # spot checks rendered
     m = json.loads(Path(paths["metrics"]).read_text(encoding="utf-8"))["metrics"]
     assert m["Total Trades"] >= 1 and math.isfinite(m["Out-of-Sample Sharpe"]) and math.isfinite(m["In-Sample Sharpe"])
+
+
+def test_attribution_section_only_when_supplied(tmp_path):
+    """build_tearsheet(attribution=bt.pnl_explain_table()) adds a "P&L attribution" section before
+    the spot checks (totals, graded residual share, stacked chart); without it nothing changes."""
+    plain = Path(tearsheet.build_tearsheet(_toy(), tmp_path / "plain", "Toy")["html"]).read_text(encoding="utf-8")
+    assert "P&amp;L attribution" not in plain and not (tmp_path / "plain" / "pnl_attribution.png").exists()
+    sys.path.insert(0, str(ROOT / "skills" / "pricebt-pnl-attribution" / "scripts"))
+    import attribution
+
+    bt = attribution.demo_backtest("swaption", end=date(2024, 2, 29))
+    table = bt.pnl_explain_table()
+    page = Path(tearsheet.build_tearsheet(bt, tmp_path / "att", "Toy swaption", attribution=table)["html"]).read_text(encoding="utf-8")
+    assert page.index("<h2>P&amp;L attribution</h2>") < page.index("<h2>Spot checks</h2>")
+    assert "VegaPnL" in page and "PNL_theta" in page and '<td class="PASS">PASS</td>' in page
+    assert (tmp_path / "att" / "pnl_attribution.png").is_file() and "diagnosing-residuals.md" not in page
+    unexplained = table.assign(residual_pnl=table["economic_pnl"])
+    page = Path(tearsheet.build_tearsheet(bt, tmp_path / "bad", "Toy", attribution=unexplained)["html"]).read_text(encoding="utf-8")
+    assert "FAIL: unexplained 110.31% (worst of residual variance share 100.00%" in page and "diagnosing-residuals.md" in page

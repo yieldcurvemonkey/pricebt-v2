@@ -119,3 +119,23 @@ def test_demo_cli_prints_a_table(capsys):
     spot_check._demo()
     out = capsys.readouterr().out
     assert "| ledger identity | **PASS** |" in out and "| determinism | **PASS** |" in out
+
+
+def test_attribution_residual_info_pass_and_fail(session, monkeypatch):
+    """check_pnl_attribution_generic: INFO with no PnlDefinition; PASS on the attributed toy
+    swaption (and dispatched by run_spot_checks); FAIL when nothing is explained or a cell is NaN."""
+    assert spot_check.check_pnl_attribution_generic(_run()).status == "INFO"
+    sys.path.insert(0, str(ROOT / "skills" / "pricebt-pnl-attribution" / "scripts"))
+    import attribution
+
+    bt = attribution.demo_backtest("swaption", end=date(2024, 2, 29))
+    res = _by_name(spot_check.run_spot_checks(bt, sample=2))["attribution residual"]
+    assert res.status == "PASS" and "VegaPnL" in res.detail and "residual variance share" in res.detail
+    table = bt.pnl_explain_table()
+    unexplained = table.assign(residual_pnl=table["economic_pnl"])
+    monkeypatch.setattr(BackTest, "pnl_explain_table", lambda self: unexplained)
+    assert spot_check.check_pnl_attribution_generic(bt).status == "FAIL"
+    poisoned = table.assign(PNL_theta=table["PNL_theta"].where(table.index != table.index[5]))
+    monkeypatch.setattr(BackTest, "pnl_explain_table", lambda self: poisoned)
+    nan = spot_check.check_pnl_attribution_generic(bt)
+    assert nan.status == "FAIL" and "PNL_theta" in nan.detail

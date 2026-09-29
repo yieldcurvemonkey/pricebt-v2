@@ -1,0 +1,24 @@
+# Recipe (tested by tests/skills/test_skill_recipes.py): an asset-swap-like package -- buy the bond and
+# pay fixed on a maturity-matched swap, each leg sized to the same |IRDelta| every month, so the book
+# is neutral to a parallel move of both rates and earns (or loses) the bond-vs-swap spread.
+# Toy assets: tests/assets/toy_usd_bond.yaml and tests/assets/toy_usd_irs_full.yaml.
+name: toy-bond-asset-swap
+idea: Long the 10y bond against a pay-fixed swap to the same maturity, dv01-matched, rolled monthly.
+hypothesis: >
+  The bond's spread over swaps mean-reverts from wide levels; fails when the spread keeps widening
+  (funding or supply stress), which the dv01 match does not hedge.
+assets: [tests/assets/toy_usd_bond.yaml, tests/assets/toy_usd_irs_full.yaml]
+instruments:
+  primary:
+    class: Bond
+    kwargs: {buy_sell: Buy, identifier: TOY 4.25 2034-11-15, size: 10000000, settlement_currency: USD}
+  second:
+    class: IRSwap
+    kwargs: {pay_or_receive: Pay, termination_date: 2034-11-15, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+dates: {start: 2024-01-02, end: 2024-04-02, frequency: 1b}
+archetype: curve_trade
+signal: {type: none}
+rebalance: {frequency: 1m, trade_duration: next schedule}
+sizing: {method: dv01_target, dv01_target: 5000}   # each leg +/-5000 per bp; the long bond's level is signed negative
+costs: {model: dv01_bp, level: 0.25}
+risks_to_report: [Price, IRDeltaParallel]

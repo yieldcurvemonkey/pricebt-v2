@@ -1,33 +1,30 @@
-# Asset-config TEMPLATE for connecting ANY pricing library to pricebt (vanilla fixed-float swap shape).
-# Copy it to configs/assets/<asset>.yaml and replace every TODO. The file loads as-is
-# (load_asset never runs imports/code), so fill it in step by step and re-run load_asset.
-# Worked, tested version of exactly this shape: skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml
-# Contract: docs/v2/ASSET_CONFIG_GUIDE.md. Conventions: references/convention-conversions.md.
+# Asset-config TEMPLATE: an IRSwap (vanilla fixed-float swap) on ANY pricing library, mapping the WHOLE
+# IR measure contract (src/pricebt/risk/contracts.py; docs/v2/IR_RISK_DESIGN.md section 2 and section 00).
+# Swaption and bond versions: config-template-swaption.yaml, config-template-bond.yaml (same layout).
+#
+# Copy it to configs/assets/<asset>.yaml. It LOADS as-is (load_asset never runs imports/code), and pricing it
+# raises NotImplementedError("TODO ...") at the first primitive you have not filled, so fill it step by step:
+#   1. PRIMITIVES (code: section 1) are the ONLY calls into your library. Replace every body. Each docstring
+#      says exactly what pricebt needs back (unit, sign, date type).
+#   2. RECIPES (code: section 2) derive every contract measure from the primitives. Keep them, OR, where your
+#      library computes a measure natively, point that function's expr at the native call converted to the
+#      pricebt unit and sign (comment it: # vendor: X -> pricebt: Y) and check it once against the recipe.
+#   3. A measure your library genuinely cannot produce: delete its risk_measures line and declare it under
+#      unsupported_measures: with an honest, specific reason (example at the end of this file; the load error
+#      prints the paste-ready block for everything you left out).
+# Runnable reference implementation of this contract on a closed-form toy library:
+#   tests/assets/toy_usd_irs_full.yaml (tests/toylib/rates.py + tests/toylib/irrisk.py).
+# Proof that THIS template is complete and its recipes are right (fills the primitives with the toy library
+# and compares every contract measure with the toy config): tests/skills/test_skill_connect_example.py
 schema_version: 1
 asset: TODO_asset_name                 # unique; e.g. usd_sofr_irs_<library>
 description: >
-  TODO: instrument, library, curve. State the units: npv <CCY>; dv01 <CCY> per +1bp (payer > 0); rates in bp.
-instrument: IRSwap                     # a class in pricebt.instrument (IRSwap, IRSwaption, ...)
+  TODO: instrument, library, curve. Units: npv <CCY>, holder's view (say whether Price drops paid coupons);
+  sensitivities <CCY> per +1bp (per bp^2) of the swap's own par rate (payer delta > 0); rates in bp;
+  Theta <CCY> per calendar day.
+instrument: IRSwap                     # a class in pricebt.instrument
 match: {notional_currency: USD}        # TODO: which instruments this config serves
-currency: USD                          # TODO: the currency your npv/dv01 come back in
-unsupported_measures:                  # TODO: map each measure your library can compute (and delete it here);
-                                       # give every one you cannot an honest, specific reason (docs/v2/IR_RISK_DESIGN.md section 2)
-  IRDiscountDeltaParallel: "TODO: why your library cannot compute this"
-  IRGammaParallel: "TODO: why your library cannot compute this"
-  IRGamma: "TODO: why your library cannot compute this"
-  IRVega: "TODO: why your library cannot compute this"
-  IRVanna: "TODO: why your library cannot compute this"
-  IRVolga: "TODO: why your library cannot compute this"
-  IRBasis: "TODO: why your library cannot compute this"
-  IRXccyDelta: "TODO: why your library cannot compute this"
-  IRSpotRate: "TODO: why your library cannot compute this"
-  IRAnnualImpliedVol: "TODO: why your library cannot compute this"
-  IRAnnualATMImpliedVol: "TODO: why your library cannot compute this"
-  IRDailyImpliedVol: "TODO: why your library cannot compute this"
-  Theta: "TODO: why your library cannot compute this"
-  ExpiryInYears: "TODO: why your library cannot compute this"
-  Annuity: "TODO: why your library cannot compute this"
-  Cashflows: "TODO: why your library cannot compute this"
+currency: USD                          # TODO: the currency lib_pv returns
 defaults:                              # gs-style defaults for kwargs the user leaves out
   pay_or_receive: Receive
   termination_date: 10y
@@ -36,99 +33,272 @@ defaults:                              # gs-style defaults for kwargs the user l
   notional_amount: 1.0e6
 
 imports: |
-  import re
   import datetime as _dt
-  # TODO: set env vars the library reads AT IMPORT (auth, "no production DB", ...) BEFORE importing it.
-  import yourlib                       # TODO: your library (installed, or add --sys-path for the checker)
+  import re
+  # TODO: set env vars your library reads AT IMPORT time (auth, "no production DB", ...) BEFORE importing it:
+  # import yourlib
 
 code: |
-  _CLIENT = yourlib.connect()          # TODO: ONE session per process (code: runs once per process)
-  _CURVE = "TODO.CURVE.ID"
-  _ATM = re.compile(r"^\s*(?:atm|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25' (bp)
+  def _todo(what):
+      raise NotImplementedError("TODO (asset-config template): implement " + what)
+
+  # ================= 1. PRIMITIVES: the only calls into YOUR library. Replace every body. =================
+  # Boundary conventions (convert HERE, once): dates are datetime.date; rates are DECIMAL (0.0425); a PV is in
+  # `currency:`, holder-signed, for the trade built from the resolved (signed) notional; a shift h is DECIMAL
+  # (1bp = 1e-4). Never define a helper named market, trade, kwargs, resolved, trades, weights or market_to.
+
+  def lib_market(d):
+      """The market (curve set) for the close of date d, or None when the library has no data for d
+      (weekend, holiday, gap, outside history). Catch ONLY the library's no-data exceptions, e.g.
+      try: return CLIENT.market(as_of=d.isoformat(), curve="USD.SOFR")
+      except (yourlib.MarketClosed, yourlib.NoData): return None"""
+      _todo("lib_market(d): the curve set for d, or None")
+
+  def lib_spot_date(m):
+      """The effective date of a spot-starting swap on market m, by YOUR library's calendar (a date)."""
+      _todo("lib_spot_date(m)")
+
+  def lib_add_tenor(m, start, tenor):
+      """start + tenor ('10Y', '6M') by your library's calendar and roll rule, as a date."""
+      _todo("lib_add_tenor(m, start, tenor)")
+
+  def lib_par_rate(m, start, end):
+      """DECIMAL par fixed rate of a swap from start to end on market m (pins 'ATM' strikes)."""
+      _todo("lib_par_rate(m, start, end)")
+
+  def lib_swap(m, r):
+      """Your library's trade for the resolved terms r: effective_date, termination_date, fixed_rate (DECIMAL),
+      notional (signed, payer > 0). Convert the rate unit and the side convention here."""
+      _todo("lib_swap(m, r)")
+
+  def lib_pv(m, t):
+      """PV of trade t on market m, holder-signed, in `currency:` (Price), valued at m's own valuation date. A
+      process-global evaluation date (QuantLib-style Settings.instance().evaluationDate) is set HERE, from m,
+      before every pricing call: pricebt interleaves dates in one process, and a memo must key on the date."""
+      _todo("lib_pv(m, t)")
+
+  def lib_own_rate(m, t):
+      """Trade t's own quoted rate, DECIMAL: its par fixed rate on market m (IRFwdRate). Must stay finite
+      on every date the trade is held, including its exit date (after maturity: the last live value)."""
+      _todo("lib_own_rate(m, t)")
+
+  def lib_spot_rate(m, t):
+      """DECIMAL par rate of the spot-starting swap that ends on t's termination date (IRSpotRate)."""
+      _todo("lib_spot_rate(m, t)")
+
+  def lib_shift(m, h):
+      """A copy of market m with EVERY rate curve (projection and discount) shifted in parallel by h. Shift
+      the inputs your library calibrates from (zero rates or par quotes; say which in `description:`)."""
+      _todo("lib_shift(m, h)")
+
+  def lib_shift_discount(m, h):
+      """Market m with ONLY the discount curve shifted by h (a single-curve library: the same as lib_shift)."""
+      _todo("lib_shift_discount(m, h)")
+
+  def lib_translate(m, days):
+      """Market m seen `days` calendar days later with every FORWARD rate held fixed: DF'(x) = DF(x)/DF(t+days),
+      valuation date t+days. QuantLib-style: an implied term structure at the new reference date; rateslib-
+      style: Curve.translate (NOT roll). Never rebuild today's zero rates on the later date (that rolls down).
+      Carry the new valuation date ON the returned market (lib_pv sets any global date from it); if you must
+      move a process-global date here, do it in try/finally and restore it."""
+      _todo("lib_translate(m, days)")
+
+  def lib_annuity(m, t):
+      """N x A in ccy, PAYER-POSITIVE: the signed notional (pay-fixed > 0, receive-fixed < 0, the sign of IRDelta)
+      times the PV of 1.0 per annum on t's fixed schedule (1e4 x the fixed-leg PV01), = -dPV/dK. A QuantLib-style
+      fixedLegBPS has the fixed leg's own sign (negative for a payer): return -1e4 x fixedLegBPS. No native call?
+      -(PV(fixed_rate + h) - PV(fixed_rate - h)) / (2h), rebuilding t with the strike moved by +-h."""
+      _todo("lib_annuity(m, t)")
+
+  def lib_cashflows(m, t):
+      """Rows (dicts) of the flows lib_pv still INCLUDES and will drop on their payment date (payment_date after
+      m's date), holder-signed: payment_date (date), payment_amount (ccy), currency, payment_type ('Fixed',
+      'Float', ...). Return [] when lib_pv is total return (it never drops a paid flow)."""
+      _todo("lib_cashflows(m, t)")
+
+  def lib_pillars(m):
+      """Your curve's pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y")."""
+      _todo("lib_pillars(m)")
+
+  def lib_shift_pillar(m, pillar, h):
+      """Market m with ONLY `pillar` shifted by h (a key-rate bump of your curve inputs)."""
+      _todo("lib_shift_pillar(m, pillar, h)")
+
+  # ============ 2. RECIPES: the contract from the primitives (keep, or map a native call instead) ============
+  H = 1e-4                                   # 1bp, decimal
+  _ATM = re.compile(r"^\s*(?:atmf?|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25', 'A-10' (bp)
   _TENOR = re.compile(r"^\s*\d+\s*[dwmy]\s*$", re.I)
 
-  def load_market(d):
-      # pricebt passes a datetime.date. Return the library's market object for that close, or None.
-      # TODO: convert d to the library's date type (ISO string? datetime at EOD? use pricebt_timestamp?)
-      # TODO: catch ONLY the library's "closed / no data" exceptions; let real errors propagate.
-      try:
-          m = _CLIENT.market(d.isoformat(), _CURVE)
-      except (LookupError,):             # TODO: e.g. (yourlib.MarketClosed, yourlib.NoData)
-          return None
-      # TODO: if the library can silently serve the previous day's curve, check its ref date == d here.
-      return m
+  def _pin(m, base, x):
+      """'spot' or None -> base; a tenor -> base + tenor (library calendar); a date stays a date."""
+      if x is None or (isinstance(x, str) and x.strip().lower() == "spot"):
+          return base
+      if isinstance(x, str) and _TENOR.match(x):
+          return lib_add_tenor(m, base, x.strip().upper())
+      if isinstance(x, str):
+          raise ValueError(f"unsupported date {x!r} (use a tenor such as '10y', 'spot', or a date)")
+      return x.date() if isinstance(x, _dt.datetime) else x
 
-  def _sign(por):                        # pricebt enum (value 'Pay'/'Rec') or a raw string -> +1 payer / -1 receiver
-      s = str(getattr(por, "value", por)).strip().lower()
-      if s == "pay": return 1.0
-      if s in ("rec", "receive", "receiver"): return -1.0
-      raise ValueError(f"pay_or_receive must be Pay or Receive, got {por!r}")
+  def _direction(por):
+      s = str(getattr(por, "value", por)).strip().lower()      # pricebt enum (value 'Pay'/'Rec') or a string
+      if s in ("pay", "payer"):
+          return 1.0
+      if s in ("rec", "receive", "receiver"):
+          return -1.0
+      raise ValueError(f"pay_or_receive must be Pay or Receive for a swap, got {por!r}")
 
   def resolve_swap(m, kw):
-      # Runs ONCE at the trade date. Return ONLY plain, ABSOLUTE terms: dates, a decimal strike, a signed notional.
-      start = _CLIENT.spot_date(m)                                   # TODO: library's spot / effective-date helper
-      term = kw["termination_date"]
-      if isinstance(term, str) and _TENOR.match(term):
-          end = _CLIENT.maturity(m, start, term.strip().upper())     # TODO: library's own tenor->date (its calendar)
-      else:
-          end = term
-      notional = float(kw["notional_amount"]) * _sign(kw["pay_or_receive"])
+      """Runs ONCE, on the trade date's market. Returns only plain, ABSOLUTE terms: dates, a DECIMAL strike,
+      a signed notional (payer > 0). A tenor or 'ATM' left as a string never ages: silently wrong P&L."""
+      start = _pin(m, lib_spot_date(m), kw.get("effective_date"))
+      end = _pin(m, start, kw["termination_date"])
       fr = kw.get("fixed_rate", "ATM")
       mm = _ATM.match(fr) if isinstance(fr, str) else None
       if mm:
-          par = TODO_par_rate_decimal(m, start, end)                  # TODO: par rate at the trade date, as a DECIMAL
-          k = par + float(mm.group(2) or 0.0) * (-1.0 if mm.group(1) == "-" else 1.0) / 1e4
+          k = lib_par_rate(m, start, end) + float(mm.group(2) or 0.0) * (-1.0 if mm.group(1) == "-" else 1.0) * H
+      elif isinstance(fr, str):
+          raise ValueError(f"unsupported fixed_rate {fr!r} (use 'ATM', 'ATM+x' in bp, or a decimal)")   # '=solvefor(...)': gs server grammar
       else:
-          k = float(fr)                                               # gs fixed_rate is decimal
-      return {"effective_date": _dt.date.fromisoformat(str(start)),   # TODO: convert library dates -> datetime.date
-              "termination_date": _dt.date.fromisoformat(str(end)),
-              "fixed_rate": k, "notional": notional}
+          k = float(fr)                      # gs fixed_rate is DECIMAL
+      return {"effective_date": start, "termination_date": end, "fixed_rate": k,
+              "notional": float(kw["notional_amount"]) * _direction(kw["pay_or_receive"])}
 
-  def build_swap(r):
-      # pricebt terms -> the library's trade object. TODO: rate unit (decimal/percent/bp), side convention, date type.
-      return _CLIENT.swap(str(r["effective_date"]), str(r["termination_date"]),
-                          rate=r["fixed_rate"], notional=r["notional"])
+  def pv(m, t):
+      return lib_pv(m, t)
 
-  def _risk(m, t):                       # memoise per (market, trade): one library call for all per-trade measures
-      memo = m.__dict__.setdefault("_pricebt_memo", {})   # TODO: if m has no __dict__, use a dict keyed by (date, trade)
-      if t not in memo:
-          memo[t] = _CLIENT.price(t, m)                    # TODO: request every measure the functions need at once
-      return memo[t]
+  def own_rate_bp(m, t):
+      return lib_own_rate(m, t) * 1e4        # decimal -> bp
 
-  def delta_ladder(m, trades, weights):
-      out = {"2Y": 0.0, "5Y": 0.0, "10Y": 0.0, "30Y": 0.0}       # TODO: your pillars, as plain tenors
-      live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
-      if not live:
-          return out
-      for (t, w), buckets in zip(live, TODO_batch_bucket_risk(m, [t for t, _ in live])):   # TODO: ONE batched call
-          for key, v in buckets.items():
-              out[TODO_key_to_tenor(key)] += w * v                # TODO: key format + SIGN/UNIT flip as for dv01
+  def _points(m, t, h):
+      """(PVs, own rates in bp) on the -h, 0, +h parallel shifts."""
+      ms = (lib_shift(m, -h), m, lib_shift(m, h))
+      return [pv(x, t) for x in ms], [own_rate_bp(x, t) for x in ms]
+
+  def own_rate_delta(m, t, bump_bp=None, method=None):
+      """IRDelta scalar (pricebt DEV-I12): the TOTAL derivative of PV w.r.t. the own rate r along the parallel
+      shift, per bp of r: [PV(+h) - PV(-h)] / [r(+h) - r(-h)]. bump_bp and method are the request's bump_size
+      (read as bp; gs's default is a centred 1bp) and finite_difference_method."""
+      (n_dn, n_0, n_up), (r_dn, r_0, r_up) = _points(m, t, float(bump_bp or 1.0) * H)
+      how = str(getattr(method, "value", method) or "Centered")
+      if how == "Up":
+          num, den = n_up - n_0, r_up - r_0
+      elif how == "Down":
+          num, den = n_0 - n_dn, r_0 - r_dn
+      else:                                  # Centered, CenteredSecondOrder
+          num, den = n_up - n_dn, r_up - r_dn
+      return num / den if den else 0.0       # a dead trade: 0.0 (never NaN)
+
+  def own_rate_gamma(m, t):
+      """IRGammaParallel: the chain-rule second derivative on the same bumps, per bp^2 of r. NEVER d(pv01)/dr
+      (that is half the gamma at the money)."""
+      (n_dn, n_0, n_up), (r_dn, r_0, r_up) = _points(m, t, H)
+      dr = r_up - r_dn
+      if dr == 0.0:
+          return 0.0
+      delta = (n_up - n_dn) / dr
+      return (n_up + n_dn - 2.0 * n_0 - delta * (r_up + r_dn - 2.0 * r_0)) / (dr / 2.0) ** 2
+
+  def discount_only_delta(m, t):
+      """IRDiscountDeltaParallel: PV change per +1bp of the discount curve only (central difference)."""
+      return (pv(lib_shift_discount(m, H), t) - pv(lib_shift_discount(m, -H), t)) / 2.0
+
+  def theta_one_day(m, t, d):
+      """Theta (pricebt DEV-I15): one calendar day with forwards fixed, ccy PER DAY, total return:
+      PV(d+1) on the translated market + the flows PV drops in (d, d+1] - PV(d)."""
+      d1 = d + _dt.timedelta(days=1)
+      cash = sum(r["payment_amount"] for r in lib_cashflows(m, t) if r["payment_date"] <= d1)
+      return pv(lib_translate(m, 1), t) + cash - pv(m, t)
+
+  def years_to(end, d):
+      """ExpiryInYears (pricebt DEV-I17): max(end - d, 0) in calendar days / 365."""
+      return max((end - d).days, 0) / 365.0
+
+  def key_rate_ladder(m, trades, weights):
+      """IRDelta bucketed: a central 1bp bump of each pillar, weighted over the book, ccy per +1bp. It sums to
+      the PARALLEL curve delta, which differs from the own-rate scalar by dr/ds (R2-2)."""
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) - pv(dn, t)) / 2.0 for t, w in zip(trades, weights))
+      return out
+
+  def diagonal_gamma_ladder(m, trades, weights):
+      """IRGamma bucketed (pricebt DEV-I13: the diagonal only), ccy per bp^2 at each pillar."""
+      base = [pv(m, t) for t in trades]
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) + pv(dn, t) - 2.0 * b) for t, w, b in zip(trades, weights, base))
       return out
 
 market:
-  expr: 'load_market(pricebt_date)'
+  expr: 'lib_market(pricebt_date)'     # TODO: lib_market(pricebt_date, pricebt_csa) if the CSA picks the discount curve
   key: TODO_market_key                 # share one market between configs only if imports/code/expr are identical
 resolve:
   expr: 'resolve_swap(market, kwargs)'
 trade:
-  expr: 'build_swap(resolved)'
-  build_on: resolve_date               # TODO: each_market if the trade object holds market state (fixings)
+  expr: 'lib_swap(market, resolved)'
+  build_on: each_market                # resolve_date if the trade object holds no market state (then built once)
 functions:
-  npv:      {expr: '_risk(market, trade)["TODO_PV"]', unit: ccy}              # TODO: currency, holder's view
-  dv01:     {expr: '_risk(market, trade)["TODO_DV01"]', unit: ccy_per_bp}     # TODO: -> per +1bp, payer > 0
-  par_rate: {expr: '_risk(market, trade)["TODO_PAR"]', unit: bp}              # TODO: -> bp
+  npv:             {expr: 'pv(market, trade)', unit: ccy}
+  # the expression NAMES pricebt_bump_size / pricebt_finite_difference_method, so IRDelta(bump_size=...) reaches
+  # the recipe (pricebt DEV-I10); scale_factor and local_curve are not named, so requesting them raises
+  delta:           {expr: 'own_rate_delta(market, trade, pricebt_bump_size, pricebt_finite_difference_method)', unit: ccy_per_bp}
+  discount_delta:  {expr: 'discount_only_delta(market, trade)', unit: ccy_per_bp}
+  gamma:           {expr: 'own_rate_gamma(market, trade)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # a swap has no vol exposure: vega 0.0 (R2-8); single-curve,
+  zero_per_bp2:    {expr: '0.0', unit: ccy_per_bp2}   # single-currency: basis/xccy 0.0. TODO: map real basis/xccy risk if you have it
+  zero_vol:        {expr: '0.0', unit: bp}            # vol levels 0.0 by convention, so mixed swap+swaption books work
+  par_rate:        {expr: 'own_rate_bp(market, trade)', unit: bp}
+  spot_rate:       {expr: 'lib_spot_rate(market, trade) * 1e4', unit: bp}   # decimal -> bp
+  theta_1d:        {expr: 'theta_one_day(market, trade, pricebt_date)', unit: ccy}
+  expiry_in_years: {expr: 'years_to(resolved["termination_date"], pricebt_date)', unit: decimal}
+  annuity:         {expr: 'lib_annuity(market, trade)', unit: ccy}
+  cashflows:       {expr: 'lib_cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
 portfolio_functions:
   delta_ladder:
-    expr: 'delta_ladder(market, trades, weights)'
+    expr: 'key_rate_ladder(market, trades, weights)'   # a native bucketed delta: map its keys to plain tenors, same sign/unit
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'diagonal_gamma_ladder(market, trades, weights)'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'                                          # a swap has no vol cube: empty (R2-8)
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TODO, mkt_class: SWAPTION}
 attributes:
   effective_date:   'resolved["effective_date"]'
   termination_date: 'resolved["termination_date"]'
   notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
 size_attribute: notional_amount
-risk_measures:
+risk_measures:                         # every row of the IRSwap contract (src/pricebt/risk/contracts.py)
   Price: npv                           # REQUIRED: the engine books cash with it
-  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
   IRFwdRate: par_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+# A measure your library cannot compute: delete its line above and declare it instead (a mapping always wins
+# over a declaration, with a warning). Reasons must be specific and honest, e.g.:
+# unsupported_measures:
+#   IRGamma: "yourlib has no key-rate bump; its curve is fitted to one parallel shift only"
+#   Cashflows: "yourlib's swap object exposes no schedule"
+#   IRDelta: {bucketed: "no key-rate bump in yourlib"}      # one form only

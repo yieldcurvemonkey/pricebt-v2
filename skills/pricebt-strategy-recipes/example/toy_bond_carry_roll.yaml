@@ -1,0 +1,21 @@
+# Recipe (tested by tests/skills/test_skill_recipes.py): hold a 10y bond, re-entering a fresh position
+# every month (carry and roll-down harvest). The engine books entry -Price and exit +Price only, so a
+# coupon paid while held is NOT in Total when the library's Price drops paid coupons (the toy's does):
+# run with pnl_explain=bond_pnl_definition() and read BackTest.pnl_explain_table()'s cashflow_pnl.
+name: toy-bond-carry-roll
+idea: Own the 10y bond, re-entered monthly, to earn its carry and roll-down.
+hypothesis: >
+  The bond's yield above funding plus roll-down on an upward-sloping curve pays for duration risk;
+  fails in a sell-off (rising yields) and when funding (repo) exceeds the coupon.
+assets: [tests/assets/toy_usd_bond.yaml]
+instruments:
+  primary:
+    class: Bond
+    kwargs: {buy_sell: Buy, identifier: TOY 4.25 2034-11-15, size: 10000000, settlement_currency: USD}
+dates: {start: 2024-04-01, end: 2024-06-03, frequency: 1b}   # crosses the 2024-05-15 coupon
+archetype: periodic_roll
+signal: {type: none}
+rebalance: {frequency: 1m, trade_duration: next schedule}
+sizing: {method: notional, notional: null}                    # notional overrides a Bond's `size`
+costs: {model: notional_bp, level: 0.5}                       # reads the config attribute notional_amount (face)
+risks_to_report: [Price, IRDeltaParallel, Theta, Cashflows]  # Cashflows (a table) feeds pnl_explain_table's cashflow_pnl

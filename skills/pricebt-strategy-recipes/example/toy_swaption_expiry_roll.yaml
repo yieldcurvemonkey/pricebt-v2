@@ -1,0 +1,22 @@
+# Recipe (tested by tests/skills/test_skill_recipes.py): buy a 1m-expiry 10y ATM payer swaption every
+# month and hold each one to its expiry -- gs 040303 / "Systematic Selling" shape (unhedged, long side).
+# Toy assets; for your library, point `assets:` at your IRSwaption config (it must expose the attribute
+# `expiration_date` so trade_duration 'expiration_date' can read it).
+name: toy-swaption-expiry-roll
+idea: Buy one-month 10y payers every month and hold them to expiry.
+hypothesis: >
+  One-month implied vol under-prices realised moves in the 10y rate; fails when realised vol runs
+  below implied (quiet markets), where the premium decays to zero.
+assets: [tests/assets/toy_usd_swaption.yaml]
+instruments:
+  primary:
+    class: IRSwaption
+    kwargs: {pay_or_receive: Pay, buy_sell: Buy, expiration_date: 1m, termination_date: 10y,
+             notional_currency: USD, notional_amount: 10000000, strike: ATM}
+dates: {start: 2024-01-02, end: 2024-06-03, frequency: 1b}
+archetype: periodic_roll
+signal: {type: none}
+rebalance: {frequency: 1m, trade_duration: expiration_date}   # exit on each option's own expiry
+sizing: {method: notional, notional: null}
+costs: {model: notional_bp, level: 0.1}                       # 0.1bp of notional per side (reads attribute notional_amount)
+risks_to_report: [Price, IRDeltaParallel, IRVegaParallel, Theta]

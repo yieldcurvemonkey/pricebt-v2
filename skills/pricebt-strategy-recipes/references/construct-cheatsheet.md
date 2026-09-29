@@ -44,7 +44,8 @@ Enums: `TriggerDirection.ABOVE | BELOW | EQUAL`, `AggType.ALL_OF | ANY_OF`. Ever
 ## Actions (`pricebt.backtests.actions`)
 
 Common to the trade-adding actions: `trade_duration` is `None` (held to the end), a tenor (`'1m'`), a date,
-a `timedelta` (DEV-T1), an instrument attribute name (`'termination_date'`), `'next schedule'`, or a
+a `timedelta` (DEV-T1), an instrument attribute name (`'termination_date'`; `'expiration_date'` for a
+swaption, read from the resolved trade, so the asset config must map it under `attributes:`), `'next schedule'`, or a
 `CustomDuration(durations, function)` (final date = `function(*final dates)`, e.g. `min`).
 `transaction_cost_exit=None` means "same as `transaction_cost`". Positions are named
 `<action name>_<instrument name>_<date>`; unnamed actions get a global `Action{N}` name.
@@ -68,7 +69,7 @@ a `timedelta` (DEV-T1), an instrument attribute name (`'termination_date'`), `'n
 | Model (signature) | Cost / accrual |
 |---|---|
 | `ConstantTransactionModel(cost=0)` | `cost` per trade, per side |
-| `ScaledTransactionModel(scaling_type='notional_amount', scaling_level=0.0001)` | `scaling_level × |attribute or measure × quantity|`: a string reads an instrument attribute (the asset config's `attributes`), a risk measure prices it on the trade date (converted to `result_ccy`, DEV-E18) |
+| `ScaledTransactionModel(scaling_type='notional_amount', scaling_level=0.0001)` | `scaling_level × |attribute or measure × quantity|`: a string reads an instrument attribute (the asset config's `attributes`; gs `Bond` has no `notional_amount` field, so a bond config must map one), a risk measure prices it on the trade date (converted to `result_ccy`, DEV-E18), e.g. `IRVegaParallel` for an option cost in bp of vega |
 | `AggregateTransactionModel(transaction_models=(), aggregate_type=TransactionAggType.SUM)` | sum / max / min of the component costs |
 | `ConstantCashAccrualModel(rate=0, annual=True)` | cash grows `(1 + rate/365)^days` between cash dates; `Strategy(cash_accrual=...)` |
 | `DataCashAccrualModel(data_source=None, annual=True)` | as above with the rate read from `data_source` on each accrual start date |
@@ -82,7 +83,10 @@ Costs appear (negative) in `result_summary["Transaction Costs"]`; `Total = price
   hedge / risk-trigger measure.
 - `GenericEngine(action_impl_map=None, price_measure=Price).run_backtest(strategy, start=None, end=None, frequency='1m', states=None, risks=None, show_progress=True, csa_term=None, visible_to_gs=False, initial_value=0, result_ccy=None, holiday_calendar=None, market_data_location=None, is_batch=True, calc_risk_at_trade_exits=False, pnl_explain=None)`:
   the grid is `frequency` dates from `start` to `end` (or `states`) plus every trigger date in range; the
-  engine always adds its `price_measure` to `risks`.
+  engine always adds its `price_measure` to `risks`. `pnl_explain` takes a `PnlDefinition`
+  (`ir_pnl_definition`, `swaption_pnl_definition`, `bond_pnl_definition` or `fx_pnl_definition` from
+  `pricebt.backtests.backtest_objects`); its measures are added to `risks`, and `BackTest.pnl_explain_table()`
+  then gives the per-step actual / cashflow / attributed / residual P&L.
 - Signal data: `GenericDataSource(data_set=None, missing_data_strategy=MissingDataStrategy.fail)` over a pandas
   Series (`fill_forward` never looks ahead, DEV-T13); build the Series with
   `pricebt.data.measure_series(instrument, measure, start, end, frequency='1b')`.

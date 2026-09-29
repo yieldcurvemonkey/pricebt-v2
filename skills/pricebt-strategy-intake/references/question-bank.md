@@ -8,11 +8,11 @@ Questions are in priority order. **Must-ask** questions change what gets built. 
    - *Why:* a mechanism-backed idea survives out of sample; stating the failure regime pre-registers the review. (FA ch. 1, ch. 12; GK ch. 12)
    - *Default:* write the most plausible mechanism, and mark it `assumed` in `assumptions`.
 2. **What exactly is traded?** Currency, tenor(s), instrument, direction convention. → `instruments`, `assets`
-   - *Why:* this decides which asset configs must exist.
-   - *Default:* one instrument at the tenor named in the idea, ATM, spot-starting, `notional_amount` 10mm.
+   - *Why:* this decides which asset configs must exist. For a swaption or a bond, also ask the instrument-specific questions below (they are must-ask for those classes).
+   - *Default:* one instrument at the tenor named in the idea, ATM, spot-starting, size 10mm (`notional_amount`; a Bond's `size`).
 3. **What is the signal, and how is it measured?** Which rate, level or change, and the lookback window. → `signal.*`
    - *Why:* each window is a free parameter. Declare a coarse grid rather than tuning. (Chan ch. 3 p. 53; FA ch. 10)
-   - *Default:* the asset's `par_rate` of the primary instrument; lookback 30 business days for z-scores, 60 for momentum.
+   - *Default:* `IRFwdRate` of the primary instrument (its own quoted rate: a swap's par rate, a swaption's forward, a bond's yield), resolved through the asset config's `risk_measures:`; lookback 30 business days for z-scores, 60 for momentum. Vol ideas: `IRAnnualImpliedVol`. Bond spread ideas: `ParSpread` or `LightningOAS`. A config function name (`par_rate`) also works but only on configs that define it.
 4. **Entry, exit and holding period.** → `signal.params`, `rebalance`, `entry_exit` (in `archetype`)
    - *Why:* there are only four exit types (fixed period, target, opposite signal, stop). Stops suit momentum, not mean reversion. (Chan ch. 7 pp. 140–143)
    - *Default:* mean reversion enters at |z| > 2, with gs's offsetting-trade exit at the mean; momentum and carry rebalance monthly with `trade_duration: next schedule`.
@@ -27,7 +27,28 @@ Questions are in priority order. **Must-ask** questions change what gets built. 
    - *Default:* the full available history of the asset; `in_sample_end` at 70% of the period.
 8. **Costs.** → `costs.*`
    - *Why:* costs decide tradability. Run both with and without them. (Chan ch. 3 pp. 60–65)
-   - *Default:* `dv01_bp` 0.25 (a quarter of a bp of dv01 per side) for liquid swaps; 0.5 for long or off-the-run tenors.
+   - *Default:* `dv01_bp` 0.25 (a quarter of a bp of dv01 per side) for liquid swaps; 0.5 for long or off-the-run tenors. Bonds: `dv01_bp` 0.25 for on-the-run, 0.5 off-the-run (or `notional_bp` if the config maps a `notional_amount` attribute). Swaptions: `notional_bp` or `constant` (a dv01 cost is ~0 for a straddle); a cost in bp of vega needs a hand-built `ScaledTransactionModel(IRVegaParallel, level)`.
+
+## Instrument-specific questions (swaptions and bonds)
+
+Ask these with question 2 whenever the idea trades a swaption or a bond. `spec.py validate` rejects a spec that leaves the starred ones unstated, because the asset config's default would decide them invisibly.
+
+| Question | Spec field (gs kwarg) | Why it matters | Default |
+|---|---|---|---|
+| Buy or sell the option? * | `buy_sell: Buy / Sell` | the **position**. It is what `flipped` and dv01 sizing act on | Buy, unless the idea says sell or short vol |
+| Payer, receiver or straddle? * | `pay_or_receive: Pay / Receive / Straddle` | the **option type**, never the position: "short payers" is Pay + Sell. A Straddle has no delta sign, so it cannot be dv01-sized | from the idea: rates up → payer, rates down → receiver, vol → Straddle |
+| Expiry? | `expiration_date` (tenor `'1m'`, `'3m'`, or a date) | sets the roll (`trade_duration: expiration_date` exits on it) and the theta/gamma profile | the idea's horizon, else 3m |
+| Tail (underlying swap tenor)? | `termination_date` (tenor measured from expiry, e.g. `'10y'`) | which forward rate the option is on | 10y |
+| Strike? | `strike`: `'ATM'`, `'ATM+25'` / `'A-50'` (bp from the forward at entry), or an absolute decimal (`0.04`) | resolved and pinned on the entry date; relative strikes re-strike only on new trades | `'ATM'` |
+| Settlement? | `settlement` (e.g. `'Physical'`, `'Cash.PYU'`) | what Price is on and after expiry: physical = the underlying swap's PV if exercised, cash = intrinsic. The engine closes the option at that value on its expiry date | the library's market default; record it under `assumptions` |
+| Premium and fee? | `premium`, `fee` | must be 0 (unset) in a backtest: the entry cash −Price already is the premium; a premium paid after entry would leave Price without reaching cash | 0 (enforced) |
+| Which bond? * | `identifier` (+ `identifier_type` if not the library's default, e.g. ISIN or CUSIP) | the static data (coupon, maturity, schedule) come from your library's bond master; fixed for the whole backtest | the on-the-run issue at the idea's tenor on the start date |
+| Long or short the bond? * | `buy_sell: Buy / Sell` | a long bond has **negative** `IRDelta` (it loses when yields rise). dv01 sizing signs its level negative | Buy |
+| How much? | `size` (face), not `notional_amount` | `sizing.notional` overrides `size` for a Bond | 10mm face |
+| Settlement date? | `settlement_date` | usually left to the library (T+1/T+2); only set it for a forward-settling trade | unset |
+| Roll into new issues? | an event or `dated_priceables` recipe (see the recipes catalogue) | the spec's `identifier` is fixed; rolling on-the-run needs identifiers known on each date (survivorship) | no roll: one issue |
+| Coupons and financing? | `financing.cash_accrual_rate` (repo proxy on the negative cash balance) | the engine books no coupons (gs parity). Plan to report `pnl_explain_table()`'s `economic_pnl` | repo = 0, noted under `assumptions` |
+| Hedge with what, on which measure? | `instruments.hedge`, `risk_limits.hedge_measure` | e.g. delta-hedge a straddle with a swap on `IRDeltaParallel`; vega-hedge with another swaption on `IRVegaParallel`. Deltas across types are approximate (DEV-I12) | `IRDelta(aggregation_level='Type')` |
 
 ## Should-ask (only if the answer changes the build)
 
@@ -36,7 +57,7 @@ Questions are in priority order. **Must-ask** questions change what gets built. 
 11. **Financing and cash.** Accrue cash? At what rate? Starting value? → `financing.cash_accrual_rate`, `initial_value`. *Default:* 0 and 0. `Total` is then cumulative P&L; a swap needs no cash.
 12. **Currency of the report.** Is it a mixed-currency book? → `result_ccy`, `fx`. *Default:* the asset's local currency. A mixed book needs an FX config.
 13. **Event calendar.** Which dates (central-bank meetings, auctions, month-ends)? → `event_dates`. *Default:* none; if the idea depends on events, this becomes must-ask.
-14. **Benchmark.** → `benchmark`. *Default:* `none` (cash), since swap P&L is already excess of funding. For carry ideas, compare against the always-on version.
+14. **Benchmark.** → `benchmark`. *Default:* `none` (cash), since swap P&L is already excess of funding. A bond or an option bought for cash is not: set `financing.cash_accrual_rate` or say so. For carry ideas, compare against the always-on version.
 15. **Parameter budget.** How many variants are you willing to test? → `trial_budget` (write it under `assumptions`). *Default:* 5. Every run is logged, and the significance test is deflated by the count.
 
 ## Nice-to-ask (report only)
@@ -52,6 +73,7 @@ Questions are in priority order. **Must-ask** questions change what gets built. 
 To build this backtest I need 8 quick answers - reply "defaults" to accept all of them.
 1. Edge / failure regime: <my reading> (default)
 2. Instrument: <ccy tenor instrument, direction> (default)
+   (swaption: <Buy/Sell> <payer/receiver/straddle> <expiry>x<tail>, strike <ATM>; bond: <Buy/Sell> <identifier>, <size> face)
 3. Signal: <measure, lookback> (default)
 4. Entry / exit / holding: <rule> (default)
 5. Size: <notional or dv01 target> (default)

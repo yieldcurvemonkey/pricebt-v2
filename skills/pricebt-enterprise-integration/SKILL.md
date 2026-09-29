@@ -40,7 +40,7 @@ Bank platforms are rarely a pure function of `(trade, date)`. They have sessions
    Write the reason in a comment next to the constant.
 7. **Batch and cache.**
    - Price many trades in one call inside `portfolio_functions` (the engine already groups trades by asset, market and date).
-   - Memoise expensive per-market derived objects (risk curves, calibrations) on the market object (`market.__dict__.setdefault("_memo", {})`) or in a dict keyed by date.
+   - Memoise expensive per-market derived objects (risk curves, calibrations) on the market object (`market.__dict__.setdefault("_memo", {})`), never in a dict keyed by date: under `CloseMarket` one market serves two dates. A memoised *value* also keys on `pricebt_date` and the trade (`pricebt-risk-measures`, implementing-measures section 1).
    - pricebt caches market objects per (market key, date, csa) and unit values per resolved terms, so a well-written config makes each platform call once per date.
 8. **Record, then replay.** Wrap the client with [`scripts/record_replay.py`](scripts/record_replay.py):
 
@@ -51,7 +51,7 @@ Bank platforms are rarely a pure function of `(trade, date)`. They have sessions
    _CLIENT = record_replay.wrap(platform.connect(env="UAT"), store="<private>/recordings/usd_irs")   # mode from PRICEBT_CLIENT_MODE
    ```
 
-   Run once with `PRICEBT_CLIENT_MODE=record` and entitlements. After that, `replay` (the default) serves every call from disk and raises `ReplayMiss` for anything unrecorded, so an offline run can never reach the network. Record *data* (curve nodes, fixings), not live handles, and rebuild the library object in `code:`.
+   Run once with `PRICEBT_CLIENT_MODE=record` and entitlements. After that, `replay` (the default) serves every call from disk and raises `ReplayMiss` for anything unrecorded, so an offline run can never reach the network. Record *data* (curve nodes, fixings, vol surface or cube quotes, bond static data), not live handles, and rebuild the library object in `code:`.
 9. **Budget the cost before a long run.** Calls ≈ dates × (1 market + trades × measures ÷ batch). Time one date with the checker ([`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md)) and multiply before you launch five years of daily history.
 10. **Record versions.** Put the library version, platform environment, snapshot source and config file hash in the report's reproducibility section ([`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md)).
 
@@ -68,7 +68,7 @@ These all happened with the repository's own real-world example (see [`docs/v2/r
 | A process-global side effect (e.g. TLS verification disabled) | other code in the process is affected | avoid the code path; run risky probes in a subprocess |
 | The served snapshot date differs from the requested date | silent look-ahead or stale data | validate the reference date in `load_market` and raise |
 | Holidays raise instead of returning empty | the backtest aborts on the first holiday | catch that specific exception and return `None` |
-| Units and signs differ from pricebt's | the P&L sign is wrong; dv01 is 100× off | convert in the config, and prove it with the checker's rates pack |
+| Units and signs differ from pricebt's | the P&L sign is wrong; dv01 is 100× off | convert in the config, and prove it with the checker's instrument pack (swap, swaption or bond) |
 
 ## Checks
 

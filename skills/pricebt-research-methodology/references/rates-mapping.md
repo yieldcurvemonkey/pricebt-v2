@@ -5,6 +5,7 @@ The reference books are mostly about equities and FX. This page translates their
 | Concept | Equity framing in the books | Rates / pricebt framing |
 |---|---|---|
 | Position size | dollars, shares | **dv01** (currency per bp): `IRDelta(aggregation_level='Type')`. Size with `AddScaledTradeAction(scaling_type=ScalingActionType.risk_measure, scaling_risk=IRDelta(aggregation_level='Type'), scaling_level=±target)` |
+| Option and bond size | delta-adjusted notional; shares | options: **vega** (ccy per bp of normal vol, `IRVega(aggregation_level='Type')`) and **theta** (ccy per day) budgets beside dv01; bonds: the size of dv01 = modified duration × dirty price per unit of face × face × 1e-4, sized with `IRDelta(aggregation_level='Type')` like a swap *(inference)* |
 | Volatility of an instrument | price-return volatility | rate volatility in bp × dv01 *(inference)* |
 | Industry / market neutral | subtract the group mean | **dv01-neutral** (level-neutral) or PCA-neutral (level, slope, curvature) depending on the hypothesis; hedge with `HedgeAction(IRDelta(aggregation_level='Type'), hedge)` *(inference; FA ch. 28 p. 190)* |
 | Breadth | number of stocks | the number of **independent** factors or currencies, not tenors. Ten tenors on one curve are about three factors (GK ch. 6 p. 158; FA ch. 18 p. 117) |

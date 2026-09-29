@@ -31,6 +31,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pricebt-strategy-intake" / "scripts"))
 import spec as specmod  # noqa: E402
+import instrument_terms as terms  # noqa: E402  (same directory as spec.py)
 
 from pricebt import instrument as _instrument_mod  # noqa: E402
 from pricebt.backtests.actions import (  # noqa: E402
@@ -100,27 +101,27 @@ class Built:
 
 
 def make_instrument(key: str, entry: dict, notional: Optional[float] = None) -> Instrument:
-    """`instruments.<key>` of a spec -> an unresolved pricebt instrument named `key`."""
+    """`instruments.<key>` of a spec -> an unresolved pricebt instrument named `key`. `notional`
+    overrides the class's size kwarg (notional_amount; size for a Bond) when the entry sets it."""
     cls = getattr(_instrument_mod, entry["class"])
     kwargs = dict(entry.get("kwargs") or {})
-    if notional is not None and "notional_amount" in kwargs:
-        kwargs["notional_amount"] = notional
+    size_kwarg = terms.SIZE_KWARG.get(entry["class"], "notional_amount")
+    if notional is not None and size_kwarg in kwargs:
+        kwargs[size_kwarg] = notional
     return cls(**kwargs, name=key)
 
 
 def direction_sign(inst: Instrument) -> int:
-    """-1 for a Receive-fixed instrument, else +1: the sign of its unit dv01 under the payer > 0
-    convention, i.e. the sign a risk_measure scaling_level must carry so the leg keeps its direction."""
-    v = inst.kwargs.get("pay_or_receive")
-    return -1 if v is not None and str(getattr(v, "value", v)).lower().startswith("rec") else 1
+    """The sign of the position's unit IRDelta (contract: payer swap > 0, bought payer swaption > 0,
+    long bond < 0), i.e. the sign a risk_measure scaling_level must carry so the leg keeps its
+    direction. ValueError for a Straddle. See instrument_terms.risk_sign."""
+    return terms.risk_sign(inst)
 
 
 def flipped(inst: Instrument, name: str) -> Instrument:
-    """The opposite position: pay_or_receive swapped when the instrument has one, else quantity_ negated."""
-    v = inst.kwargs.get("pay_or_receive")
-    if v is None:
-        return inst.clone(name=name, quantity_=-inst.quantity_)
-    return inst.clone(name=name, pay_or_receive="Pay" if direction_sign(inst) < 0 else "Receive")
+    """The opposite position: IRSwap pay_or_receive swapped; IRSwaption / Bond buy_sell swapped (a
+    swaption keeps its option type); else quantity_ negated."""
+    return terms.opposite(inst, name)
 
 
 def transaction_model(model: str = "none", level: float = 0.0, dv01: RiskMeasure = BOOK_DV01) -> TransactionModel:
@@ -334,7 +335,12 @@ def signal_series(spec: Union[dict, str, Path]) -> Optional[pd.Series]:
         return None
     entry = spec["instruments"][sig["instrument"]]
     fresh = getattr(_instrument_mod, entry["class"])(**(entry.get("kwargs") or {}))
-    return measure_series(fresh, sig["measure"], d["start"], d["end"], frequency=d["frequency"],
+    measure = sig["measure"]
+    try:  # a gs measure name (IRFwdRate, IRAnnualImpliedVol, ParSpread) maps through the config's risk_measures
+        measure = specmod.parse_risk(measure)
+    except ValueError:
+        pass  # else the name of an asset-config function (e.g. par_rate)
+    return measure_series(fresh, measure, d["start"], d["end"], frequency=d["frequency"],
                           holiday_calendar=d.get("holiday_calendar") or None)
 
 
@@ -357,7 +363,8 @@ def build(spec: Union[dict, str, Path]) -> Built:
     reb, sig, rl = spec["rebalance"], spec["signal"], spec["risk_limits"]
     notes = []
     if notional is not None:
-        notes.append(f"sizing notional: notional_amount = {notional} on every instrument that sets it")
+        notes.append(f"sizing notional: size kwarg (notional_amount; Bond size) = {notional} on every instrument that sets it")
+    hedge_risk = with_ccy(specmod.parse_risk(rl["hedge_measure"]), ccy) if rl.get("hedge_measure") else dv01
 
     series = None
     if arch in ("mean_reversion", "momentum"):
@@ -384,18 +391,18 @@ def build(spec: Union[dict, str, Path]) -> Built:
                             trade_duration=reb["trade_duration"], **common)
     elif arch == "delta_hedged":
         parts = delta_hedged(primary, insts["hedge"], start=d["start"], end=d["end"], frequency=reb["frequency"],
-                             risk=dv01, **common)
+                             risk=hedge_risk, **common)
     elif arch == "risk_band":
         pct = rl.get("hedge_risk_percentage", 100)  # optional, not in the template: % of the book risk each hedge removes
         parts = risk_band(primary, insts["hedge"], max_abs_dv01=rl["max_abs_dv01"], frequency=reb["frequency"],
-                          end=d["end"], trade_duration=reb["trade_duration"], risk=dv01, risk_percentage=pct, **common)
+                          end=d["end"], trade_duration=reb["trade_duration"], risk=hedge_risk, risk_percentage=pct, **common)
     elif arch == "event":
         parts = event(primary, spec["event_dates"], trade_duration=reb["trade_duration"], **common)
     else:  # validate_spec rejects anything else
         raise ValueError(arch)
 
     triggers = list(parts.triggers)
-    notes += parts.notes
+    notes += parts.notes + terms.notes(insts, reb["trade_duration"])
     if rl.get("stop_loss_mtm"):
         overlay = stop_loss_overlay(rl["stop_loss_mtm"], price_measure=with_ccy(Price, ccy))
         triggers += overlay.triggers

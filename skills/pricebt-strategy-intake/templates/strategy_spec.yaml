@@ -3,6 +3,7 @@
 # for the rest, and lists every default it relied on under `assumptions:`. Interactive agents ask the
 # follow-up questions in skills/pricebt-strategy-intake/references/question-bank.md first.
 # Units: rates in bp, risk in currency per 1bp (IRDelta / dv01), money in the report currency.
+# Swaptions and bonds: see skills/pricebt-strategy-intake/references/question-bank.md (instrument-specific questions).
 
 spec_version: 1
 name: usd-10y-mean-reversion            # kebab-case; used for the report folder
@@ -18,6 +19,7 @@ assets:                                  # asset configs (paths from the repo ro
 fx: null                                 # FX config path, required only if >1 currency or result_ccy is set
 result_ccy: null                         # e.g. USD; null = local currency (gs semantics)
 instruments:                             # named instrument templates; kwargs are gs constructor kwargs, passed verbatim
+                                         # (checked against the class signature: IRSwap, IRSwaption, Bond, ...)
   primary:
     class: IRSwap
     kwargs: {pay_or_receive: Pay, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
@@ -27,6 +29,12 @@ instruments:                             # named instrument templates; kwargs ar
   # hedge:
   #   class: IRSwap
   #   kwargs: {pay_or_receive: Receive, termination_date: 5y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+  # a swaption: buy_sell is the POSITION, pay_or_receive the option type (Pay | Receive | Straddle); both required
+  #   class: IRSwaption
+  #   kwargs: {pay_or_receive: Pay, buy_sell: Buy, expiration_date: 3m, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, strike: ATM}
+  # a bond: buy_sell and identifier required; `size` is the face amount
+  #   class: Bond
+  #   kwargs: {buy_sell: Buy, identifier: TOY 4.25 2034-11-15, size: 10000000, settlement_currency: USD}
 
 # --- when ---------------------------------------------------------------------------------------
 dates:
@@ -42,7 +50,8 @@ archetype: mean_reversion                # periodic_roll | mean_reversion | mome
 signal:
   type: par_rate_zscore                  # none | par_rate_zscore | rate_momentum | custom
   instrument: primary                    # which named instrument's measure feeds the signal (a fresh, unresolved copy)
-  measure: par_rate                      # asset-config function name (bp for rates)
+  measure: IRFwdRate                     # a level: a gs measure the asset config maps (IRFwdRate = swap par rate, swaption
+                                         # forward, bond yield; IRAnnualImpliedVol; ParSpread) or a config function name
   lookback: 30                           # observations (business days) in the rolling window
   lag: 0                                 # robustness: shift the signal series by N observations (a look-ahead check); keep 0 for real runs
   params:
@@ -56,7 +65,7 @@ event_dates: []                          # archetype event: dates to trade on
 # --- how much -----------------------------------------------------------------------------------
 sizing:
   method: notional                       # notional | dv01_target | nav
-  notional: 10000000                     # method notional: overrides instruments.<name>.kwargs.notional_amount if set
+  notional: 10000000                     # method notional: overrides each instrument's size kwarg (notional_amount; Bond: size)
   dv01_target: null                      # method dv01_target: currency per bp per leg (signed by the leg's direction)
   nav: null                              # method nav: cash budget spent on entry
   kelly_cap: null                        # optional cap on size as a fraction of full-Kelly (report only; see research-methodology)
@@ -67,6 +76,8 @@ risk_limits:
   stop_loss_mtm: null                    # currency; exit when book PV < -X (approximation: gs has no P&L trigger)
   max_positions: null                    # TradeCountTrigger / EarlyExitPositionLimitScaledAction
   max_drawdown: null                     # report-only threshold (flagged in review; not enforced by gs constructs)
+  # hedge_measure: IRDeltaParallel       # optional: the measure delta_hedged / risk_band neutralise (default
+                                         # IRDelta(aggregation_level='Type'); e.g. IRVegaParallel with a swaption hedge)
 
 # --- frictions ----------------------------------------------------------------------------------
 costs:

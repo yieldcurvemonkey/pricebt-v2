@@ -55,18 +55,26 @@ def _report_risk(bt) -> Optional[Any]:
     return ccy_cols[0] if ccy_cols else None
 
 
+_BP_PER_UNIT = {"bp": 1.0, "pct": 100.0, "decimal": 1e4}
+
+
 def _rate_series(spec: dict):
-    """A bp rate series for the P&L-explain check: the signal series if it is in bp, else the primary's par_rate."""
+    """A bp rate series for the P&L-explain check: the signal instrument's own rate (IRFwdRate: swap
+    par rate, swaption forward, bond yield), else its `par_rate` function, converted from the declared unit."""
     from pricebt.data import measure_series
+    from pricebt.risk import IRFwdRate
     import pricebt.instrument as inst_mod
 
-    try:
-        entry = spec["instruments"][(spec.get("signal") or {}).get("instrument") or "primary"]
-        fresh = getattr(inst_mod, entry["class"])(**(entry.get("kwargs") or {}))
-        s = measure_series(fresh, "par_rate", spec["dates"]["start"], spec["dates"]["end"], frequency=spec["dates"]["frequency"])
-        return s if s.attrs.get("unit") == "bp" else None
-    except Exception:
-        return None
+    for measure in (IRFwdRate, "par_rate"):
+        try:
+            entry = spec["instruments"][(spec.get("signal") or {}).get("instrument") or "primary"]
+            fresh = getattr(inst_mod, entry["class"])(**(entry.get("kwargs") or {}))
+            s = measure_series(fresh, measure, spec["dates"]["start"], spec["dates"]["end"], frequency=spec["dates"]["frequency"])
+        except Exception:
+            continue
+        if s.attrs.get("unit") in _BP_PER_UNIT:
+            return s * _BP_PER_UNIT[s.attrs["unit"]]
+    return None
 
 
 def _append_trial(path: Path, spec: dict, metrics: Dict[str, Any]) -> int:

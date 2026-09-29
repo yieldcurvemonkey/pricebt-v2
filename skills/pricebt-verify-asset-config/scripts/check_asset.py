@@ -11,6 +11,10 @@ markdown table and exits 1 if any check FAILed.
 Run from the repository root with PYTHONPATH=src;tests (Windows) or src:tests (POSIX).
 This script never imports a pricing library itself: pricing is reached only through pricebt.
 
+IR rows (measure contract, contract semantics, the IRSwap/IRSwaption/Bond packs, the FD-parameter
+probe) live in check_asset_ir.py next to this file, catalogued in its docstring. `--pack NAME`
+(auto | none | IRSwap | IRSwaption | Bond) picks the pack; auto uses the config's `instrument:`.
+
 Each check, and the realistic mistake it catches:
 
 GENERIC (any asset)
@@ -54,7 +58,11 @@ RATES-SWAP PACK (only when `instrument: IRSwap`)
                       or payer/receiver asymmetry (pay_or_receive ignored by the builder).
   swap_dv01_band      dv01 per 1% or per unit rate instead of per 1bp, or per unit notional.
   swap_par_rate_unit  par rate returned in decimal or percent while declared `bp` (or similar).
-  swap_bucket_sum     a bucketed IRDelta ladder that does not sum to the scalar dv01.
+  swap_par_rate_atm   an ATM trade's par rate on its trade date != its resolved fixed_rate x 1e4
+                      (par rate unit wrong, or strike and par rate priced off different curves).
+  swap_bucket_sum    a bucketed IRDelta ladder that does not sum to the scalar dv01 (FAIL beyond 10% or
+                      of the opposite sign; WARN 2-10%: an own-rate scalar and a curve ladder differ by
+                      dr/ds, IR_RISK_DESIGN R2-2).
   swap_pnl_explain    npv and dv01 with opposite sign conventions: npv(d2)-npv(d1) of the same
                       resolved payer should be ~ dv01 * change in its par rate (bp).
 """
@@ -75,6 +83,7 @@ import numpy as np
 from dateutil.relativedelta import relativedelta
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
+INFO = "INFO"  # a reported number (e.g. an FD-parameter difference), never a verdict
 
 SLOW_EVAL_SECONDS = 1.0
 # ponytail: the size kwarg is hardcoded to the gs field name every sized gs instrument uses; add a
@@ -327,11 +336,23 @@ def check_risk_measures(ctx: _Ctx) -> List[CheckResult]:
 def check_measure_series(ctx: _Ctx) -> List[CheckResult]:
     from pricebt.data import measure_series
 
-    # A rate, else a non-Price amount (dv01, vega): a fresh ATM npv is ~0 every day and would look constant.
+    # The IRFwdRate function, else a rate, else a non-Price amount (dv01, vega): a fresh ATM npv is ~0
+    # every day and would look constant. A literal expression ('0.0', a swap's or bond's vol) is skipped.
+    import ast
+
+    def live(f):
+        try:
+            ast.literal_eval(ctx.cfg.functions[f].expr.strip())
+            return False
+        except (ValueError, SyntaxError, TypeError):
+            return True
+
     price_fn = ctx.cfg.risk_measures["Price"].scalar
+    fwd = ctx.cfg.risk_measures.get("IRFwdRate")
+    preferred = [fwd.scalar] if fwd is not None and fwd.scalar in ctx.cfg.functions else []
     rates = [f for f, s in ctx.cfg.functions.items() if s.unit in _INTENSIVE_UNITS]
     others = [f for f, s in ctx.cfg.functions.items() if s.unit in _EXTENSIVE_UNITS and f != price_fn]
-    fname = (rates or others or [None])[0]
+    fname = ([f for f in preferred + rates + others if live(f)] or [None])[0]
     if fname is None:
         return [CheckResult("measure_series", SKIP, "no rate or non-Price function to track over time")]
     s = measure_series(ctx.inst, fname, ctx.d1, _bday(ctx.d1 + timedelta(days=14)))
@@ -439,8 +460,10 @@ def swap_pack(ctx: _Ctx) -> List[CheckResult]:
         else:
             lazy = svc.value(payer, d1, IRDelta, None)
             total = float((lazy.result() if isinstance(lazy, LazyFuture) else lazy)["value"].sum())
-            ok = math.isclose(total, dp, rel_tol=0.02)
-            out.append(CheckResult("swap_bucket_sum", PASS if ok else FAIL, f"sum of {bucketed} {_fmt(total)} vs scalar {_fmt(dp)} (2% tolerance)"))
+            # an own-rate scalar and a zero/par-pillar ladder differ by dr/ds (IR_RISK_DESIGN R2-2): WARN up to 10%
+            status = PASS if math.isclose(total, dp, rel_tol=0.02) else WARN if total * dp > 0 and math.isclose(total, dp, rel_tol=0.10) else FAIL
+            note = " -- same sign, within 10%: dr/ds between an own-rate IRDelta and a curve ladder (R2-2); explain it" if status == WARN else ""
+            out.append(CheckResult("swap_bucket_sum", status, f"sum of {bucketed} {_fmt(total)} vs scalar {_fmt(dp)} (2% tolerance){note}"))
 
     par_fn = ctx.cfg.risk_measures.get("IRFwdRate")
     par_fn = par_fn.scalar if par_fn is not None else ("par_rate" if "par_rate" in ctx.cfg.functions else None)
@@ -510,9 +533,11 @@ def run_checks(
     kwargs: Optional[Dict[str, Any]] = None,
     sys_path: Sequence[str] = (),
     backtest: bool = True,
+    pack: Optional[str] = "auto",
 ) -> List[CheckResult]:
     """Run every applicable check on one asset config (a path or a mapping). Never raises for a
-    config problem: each failure becomes a FAIL row."""
+    config problem: each failure becomes a FAIL row. `pack`: auto | none | IRSwap | IRSwaption |
+    Bond (check_asset_ir.select_pack)."""
     for p in reversed(list(sys_path)):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
@@ -574,8 +599,9 @@ def run_checks(
         if backtest:
             checks.append(("smoke_backtest", check_smoke_backtest))
         checks.append(("fx_round_trip", check_fx))
-        if cfg.instrument == "IRSwap":
-            checks.append(("swap_pack", swap_pack))
+        import check_asset_ir  # the IR rows and the pack registry (IRSwap -> swap_pack)
+
+        checks = check_asset_ir.with_ir_checks(checks, ctx, pack, swap_pack)
         checks.append(("performance", check_performance))
 
         for name, fn in checks:
@@ -589,7 +615,7 @@ def run_checks(
 def to_markdown(results: Sequence[CheckResult]) -> str:
     lines = ["| check | status | detail |", "|---|---|---|"]
     lines += [f"| {r.name} | {r.status} | {r.detail.replace('|', '/')} |" for r in results]
-    counts = {s: sum(r.status == s for r in results) for s in (PASS, WARN, FAIL, SKIP)}
+    counts = {s: sum(r.status == s for r in results) for s in (PASS, WARN, FAIL, SKIP, INFO)}
     lines.append("")
     lines.append(" ".join(f"{k}={v}" for k, v in counts.items()))
     return "\n".join(lines)
@@ -606,8 +632,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--sys-path", action="append", default=[], help="directory to prepend to sys.path (the pricing library / helper modules)")
     ap.add_argument("--no-backtest", action="store_true", help="skip the smoke backtest")
     ap.add_argument("--json", help="also write the results as JSON to this file")
+    ap.add_argument("--pack", default="auto", choices=["auto", "none", "IRSwap", "IRSwaption", "Bond"], help="contract + check pack: auto uses the config's instrument; name one for a ConfigInstrument asset")
     a = ap.parse_args(argv)
-    results = run_checks(a.config, fx=a.fx, dates=a.date, start=a.start, end=a.end, kwargs=json.loads(a.kwargs), sys_path=a.sys_path, backtest=not a.no_backtest)
+    results = run_checks(a.config, fx=a.fx, dates=a.date, start=a.start, end=a.end, kwargs=json.loads(a.kwargs), sys_path=a.sys_path, backtest=not a.no_backtest, pack=a.pack)
     print(to_markdown(results))
     if a.json:
         Path(a.json).write_text(json.dumps([asdict(r) for r in results], indent=2), encoding="utf-8")

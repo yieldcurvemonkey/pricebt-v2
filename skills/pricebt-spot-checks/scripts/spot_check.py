@@ -49,7 +49,21 @@ def _find(backtest, name, d):
     for inst in backtest.portfolio_dict.get(d, ()):
         if inst.name == name:
             return inst
+    # A HedgeAction's ledger row names the scaled hedge Portfolio (gs parity: 'Scaled_<hedge name>_<date>'),
+    # while portfolio_dict holds its instruments under their own names: return the booked Portfolio.
+    from pricebt.markets.portfolio import Portfolio
+
+    for cps in backtest.cash_payments.values():
+        for cp in cps:
+            if cp.trade.name == name and isinstance(cp.trade, Portfolio):
+                return cp.trade
     return None
+
+
+def _pv(pricing, obj, d, measure) -> float:
+    """PV of one instrument, or the sum over a Portfolio's instruments (see _find)."""
+    insts = getattr(obj, "all_instruments", None)
+    return sum(float(pricing.value(i, d, measure, None)) for i in (insts if insts is not None else (obj,)))
 
 
 def _payments_by_date(backtest) -> pd.Series:
@@ -101,11 +115,11 @@ def check_trade_repricing(bt, pricing, sample, seed) -> CheckResult:
         if inst is None:
             errors.append(f"{name}: not in portfolio_dict[{row['Open']}]")
             continue
-        pv_open = float(pricing.value(inst, row["Open"], bt.price_measure, None))
+        pv_open = _pv(pricing, inst, row["Open"], bt.price_measure)
         if not _close(row["Open Value"], -pv_open):
             errors.append(f"{name}: Open Value {row['Open Value']:.6g} != -PV {-pv_open:.6g}")
         if row["Status"] == "closed":
-            pv_close = float(pricing.value(inst, row["Close"], bt.price_measure, None))
+            pv_close = _pv(pricing, inst, row["Close"], bt.price_measure)
             if not _close(row["Close Value"], pv_close):
                 errors.append(f"{name}: Close Value {row['Close Value']:.6g} != +PV {pv_close:.6g} on {row['Close']}")
         done += 1
@@ -242,6 +256,45 @@ def check_open_positions(bt) -> CheckResult:
     return CheckResult("open at end", INFO, f"{len(open_)} of {len(led)} trades still open on {last}; gross notional {gross:,.0f}")
 
 
+def _attribution():
+    """skills/pricebt-pnl-attribution/scripts/attribution.py (one source for the stats and bands)."""
+    import sys
+    from pathlib import Path
+
+    path = str(Path(__file__).resolve().parents[2] / "pricebt-pnl-attribution" / "scripts")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    import attribution
+
+    return attribution
+
+
+def check_pnl_attribution_generic(bt, warn: Optional[float] = None, fail: Optional[float] = None) -> CheckResult:
+    """Greeks attribution vs the economic P&L it explains, from bt.pnl_explain_table() (any
+    PnlDefinition: ir/swaption/bond, fx, custom), graded by attribution.grade: PASS when the
+    unexplained share (the worst of the residual variance share, sum|residual|/sum|economic| and
+    1 - r2) is <= warn, WARN up to fail, FAIL above it, on any NaN, or above warn with a residual
+    signature naming an attribute; INFO without a definition. Catches a material greek error: a
+    wrong sign or unit, per-year theta, coupons with no Cashflows, NaN levels. A small term (half
+    gamma on a book with little gamma P&L) can stay under warn: the detail then names it as
+    immaterial. Diagnose with skills/pricebt-pnl-attribution/references/diagnosing-residuals.md."""
+    name = "attribution residual"
+    if getattr(bt, "pnl_explain_def", None) is None:
+        return CheckResult(name, INFO, "no PnlDefinition: run_backtest(..., pnl_explain=attribution.definition_for(session)) to attribute P&L")
+    att = _attribution()
+    table = bt.pnl_explain_table()
+    stats = att.explain_stats(table)
+    status = att.grade(stats, warn if warn is not None else att.RESIDUAL_SHARE_WARN, fail if fail is not None else att.RESIDUAL_SHARE_FAIL)
+    if not stats["finite"]:
+        bad = table.columns[~np.isfinite(table.astype(float)).all()].tolist()
+        return CheckResult(name, status, f"NaN/inf in pnl_explain_table columns {bad}: one NaN level poisons every later cumulative value")
+    totals = ", ".join(f"{k} {v:,.0f}" for k, v in stats["totals"].items() if k not in ("actual_pnl", "explained_pnl"))
+    detail = f"{att.grade_reason(stats)} over {stats['steps']} steps; totals {totals}"
+    if stats["worst_date"] is not None:
+        detail += f"; worst residual {stats['worst_residual']:,.2f} on {stats['worst_date']}"
+    return CheckResult(name, status, detail)
+
+
 LIMITATIONS = [
     "coupons paid between marks are not booked as cash (gs parity): carry-heavy P&L is understated",
     "signal and execution on the same close: no next-day fill, no slippage beyond the cost model",
@@ -260,7 +313,8 @@ def run_spot_checks(
     """Run every automated check. `session` defaults to PricebtSession.current (it must hold the
     asset configs the backtest used). `rerun` is a zero-argument callable returning a fresh
     BackTest. `risk` is a scalar ccy/bp result_summary column (e.g. IRDeltaParallel) and
-    `rate_measure` a bp series (e.g. measure_series(..., 'par_rate', ...)) for the P&L explain."""
+    `rate_measure` a bp series (e.g. measure_series(..., <the function mapped to IRFwdRate>, ...) times
+    its unit's factor to bp, as the SKILL shows) for the P&L explain."""
     from pricebt.session import PricebtSession
 
     session = session or PricebtSession.current
@@ -272,6 +326,7 @@ def run_spot_checks(
         ("book repricing", lambda: check_book_repricing(backtest, pricing, sample, seed)),
         ("cash roll-forward", lambda: check_cash_rollforward(backtest)),
         ("P&L explain", lambda: check_pnl_explain(backtest, risk, rate_measure)),
+        ("attribution residual", lambda: check_pnl_attribution_generic(backtest)),
         ("missing market", lambda: check_missing_market(backtest)),
         ("frictions", lambda: check_frictions(backtest)),
         ("determinism", lambda: check_determinism(backtest, rerun)),

@@ -1,0 +1,373 @@
+# Asset-config TEMPLATE: an IRSwaption (European, physically settled) on ANY pricing library, mapping the WHOLE
+# IR measure contract (src/pricebt/risk/contracts.py; docs/v2/IR_RISK_DESIGN.md section 2 and section 00).
+# Same layout as config-template.yaml (the swap): PRIMITIVES (your library) -> RECIPES (pricebt's contract).
+#
+# Copy it to configs/assets/<asset>.yaml. It LOADS as-is; pricing it raises NotImplementedError("TODO ...") at
+# the first primitive you have not filled.
+#   1. PRIMITIVES (code: section 1) are the ONLY calls into your library. Replace every body.
+#   2. RECIPES (code: section 2) derive every contract measure. Keep them, or map a native call converted to
+#      the pricebt unit/sign (vega per bp of NORMAL vol; a lognormal vega is not a rescale: see
+#      skills/pricebt-asset-config-cookbook/references/patterns.md, pattern 18) and check it once against the recipe.
+#   3. A measure your library cannot produce: delete its risk_measures line and declare it (end of this file).
+# pricebt never reads buy_sell or pay_or_receive itself: resolve folds buy_sell into the signed notional, and the
+# trade is a tuple of legs (a Straddle = payer + receiver), so every recipe below prices a straddle correctly.
+# Runnable reference: tests/assets/toy_usd_swaption.yaml (tests/toylib/swaption.py, Bachelier on a flat vol).
+# Proof of this template: tests/skills/test_skill_connect_example.py fills the primitives with the toy library.
+schema_version: 1
+asset: TODO_asset_name                 # unique; e.g. usd_sofr_swaption_<library>
+description: >
+  TODO: instrument, library, vol model (normal / lognormal / SABR) and surface. Units: npv <CCY>, holder's view;
+  delta/gamma <CCY> per bp (bp^2) of the underlying forward swap rate; vega/vanna/volga per bp (bp^2) of NORMAL
+  vol; rates and vols in bp; Theta <CCY> per calendar day. Physically settled; after expiry an exercised leg is
+  the underlying swap and an unexercised one is 0.
+instrument: IRSwaption
+match: {notional_currency: USD}        # TODO: which instruments this config serves
+currency: USD                          # TODO: the currency lib_pv returns
+defaults:
+  pay_or_receive: Straddle             # the GS server's default; TODO: keep only if you price both legs (resolve accepts Pay/Receive/Straddle)
+  buy_sell: Buy
+  expiration_date: 10y                 # the GS server's default expiry
+  termination_date: 10y                # TODO: your default tail
+  notional_currency: USD
+  strike: ATM
+  notional_amount: 1.0e6
+
+imports: |
+  import datetime as _dt
+  import math
+  import re
+  from types import SimpleNamespace
+  # TODO: set import-time env vars first, then import your library:
+  # import yourlib
+
+code: |
+  def _todo(what):
+      raise NotImplementedError("TODO (asset-config template): implement " + what)
+
+  # ================= 1. PRIMITIVES: the only calls into YOUR library. Replace every body. =================
+  # Boundary conventions: dates datetime.date; rates and vols DECIMAL (0.0425; a normal vol of 80bp = 0.0080);
+  # PVs in `currency:`, holder-signed, per leg built from the resolved (signed) notional; shifts h DECIMAL.
+
+  def lib_market(d):
+      """Curves AND vol surface for the close of d as ONE object (e.g. SimpleNamespace(curve=..., vol=...)), or
+      None when any part is missing (never a half market). Catch only the library's no-data exceptions."""
+      _todo("lib_market(d): curves + vol surface for d, or None")
+
+  def lib_add_tenor(m, start, tenor):
+      """start + tenor ('1Y', '10Y') by your library's calendar and roll rule, as a date."""
+      _todo("lib_add_tenor(m, start, tenor)")
+
+  def lib_fwd_par_rate(m, start, end):
+      """DECIMAL par rate of the forward swap from start to end on m (pins 'ATM' / 'A+25' strikes)."""
+      _todo("lib_fwd_par_rate(m, start, end)")
+
+  def lib_swaption(m, r, is_payer):
+      """Your library's European swaption for ONE leg: r has expiration_date, termination_date, strike (DECIMAL),
+      notional (signed: bought > 0); is_payer True = payer (right to pay fixed). Physically settled."""
+      _todo("lib_swaption(m, r, is_payer)")
+
+  def lib_pv(m, leg):
+      """Holder-signed PV of one leg on m (premium excluded unless it is still to be paid). At and after expiry:
+      an exercised leg is worth its underlying swap, an unexercised one 0 (physical settlement, R2-7)."""
+      _todo("lib_pv(m, leg)")
+
+  def lib_fwd_rate(m, leg):
+      """DECIMAL forward swap rate of the leg's underlying (IRFwdRate). After expiry keep returning the live par
+      rate of the underlying's remaining period: finite on every held date."""
+      _todo("lib_fwd_rate(m, leg)")
+
+  def lib_normal_vol(m, leg):
+      """DECIMAL annualised NORMAL implied vol at the leg's strike (IRAnnualImpliedVol). A lognormal / SABR
+      surface: return bachelier_implied_vol(lib_pv(m, leg) / lib_annuity(m, leg), F, K, T, is_payer) below,
+      never sigma_LN * F. After expiry: the last live value (e.g. read on lib_market(expiration_date))."""
+      _todo("lib_normal_vol(m, leg)")
+
+  def lib_atm_normal_vol(m, leg):
+      """DECIMAL NORMAL vol at the money forward for the same expiry and tail (IRAnnualATMImpliedVol)."""
+      _todo("lib_atm_normal_vol(m, leg)")
+
+  def lib_prob_exercise(m, leg):
+      """Probability (0..1) that the leg finishes in the money under the annuity measure: Bachelier
+      N((F-K)/(sigma sqrt T)) for a payer, N(-(F-K)/(sigma sqrt T)) for a receiver; 1.0/0.0 once decided.
+      No native call: -dPV/dK / annuity for a payer, +dPV/dK / annuity for a receiver (strike bump)."""
+      _todo("lib_prob_exercise(m, leg)")
+
+  def lib_annuity(m, leg):
+      """N x A of the underlying's fixed schedule paying 1.0 per annum, ccy, signed by the folded buy_sell: bought > 0
+      for a payer AND a receiver (parity: payer - receiver = Annuity x (F - K)). A QuantLib-style fixedLegBPS of the
+      underlying is negative for a payer swap: use abs(fixedLegBPS) x 1e4 x sign(signed notional)."""
+      _todo("lib_annuity(m, leg)")
+
+  def lib_spot_rate(m, leg):
+      """DECIMAL par rate of the spot-starting swap that ends on the leg's termination date (IRSpotRate)."""
+      _todo("lib_spot_rate(m, leg)")
+
+  def lib_shift(m, h):
+      """Market m with EVERY rate curve shifted in parallel by h and every option's NORMAL vol held fixed
+      (sticky strike). A lognormal surface held fixed is NOT this: re-quote it so normal vols stay put."""
+      _todo("lib_shift(m, h)")
+
+  def lib_shift_discount(m, h):
+      """Market m with ONLY the discount curve shifted by h (single-curve: lib_shift)."""
+      _todo("lib_shift_discount(m, h)")
+
+  def lib_vol_shift(m, h):
+      """Market m with every NORMAL implied vol shifted by h (DECIMAL: 1bp of normal vol = 1e-4), curves fixed."""
+      _todo("lib_vol_shift(m, h)")
+
+  def lib_translate(m, days):
+      """Market m seen `days` calendar days later: curves TRANSLATED (forwards fixed, DF(x)/DF(t+days)), each
+      option's implied vol held at today's value (no roll-down on the surface), valuation date t+days."""
+      _todo("lib_translate(m, days)")
+
+  def lib_cashflows(m, leg):
+      """Rows (dicts: payment_date, payment_amount, currency, payment_type) of flows lib_pv still includes and
+      will drop on their payment date (e.g. a deferred premium). A plain European swaption: []."""
+      _todo("lib_cashflows(m, leg)")
+
+  def lib_pillars(m):
+      """Curve pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y")."""
+      _todo("lib_pillars(m)")
+
+  def lib_shift_pillar(m, pillar, h):
+      """Market m with ONLY that curve pillar shifted by h, vols held."""
+      _todo("lib_shift_pillar(m, pillar, h)")
+
+  # ============ 2. RECIPES: the contract from the primitives (keep, or map a native call instead) ============
+  H = 1e-4                                   # 1bp of a rate or of a normal vol, decimal
+  VOL_EXPIRIES = ("1M", "3M", "6M", "1Y", "2Y", "5Y", "10Y")   # TODO: your surface's expiry pillars
+  VOL_TAILS = ("1Y", "2Y", "5Y", "10Y", "30Y")                 # TODO: and its tails (underlying tenors)
+  _STRIKE = re.compile(r"^\s*(?:atmf?|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATMF', 'A-50' (bp)
+  _TENOR = re.compile(r"^\s*\d+\s*[dwmy]\s*$", re.I)
+
+  def _pin(m, base, x):
+      if isinstance(x, str) and _TENOR.match(x):
+          return lib_add_tenor(m, base, x.strip().upper())
+      if isinstance(x, str):
+          raise ValueError(f"unsupported date {x!r} (use a tenor such as '1y' or a date)")
+      return x.date() if isinstance(x, _dt.datetime) else x
+
+  def _legs(por):
+      """is_payer of each leg: a straddle is a payer plus a receiver (gs Straddle)."""
+      s = str(getattr(por, "value", por)).strip().lower()
+      if s in ("pay", "payer"):
+          return (True,)
+      if s in ("rec", "receive", "receiver"):
+          return (False,)
+      if s == "straddle":
+          return (True, False)            # TODO: raise here instead if your library cannot price both legs
+      raise ValueError(f"pay_or_receive must be Pay, Receive or Straddle, got {por!r}")
+
+  def _side(buy_sell):
+      s = str(getattr(buy_sell, "value", buy_sell)).strip().lower()
+      if s not in ("buy", "sell"):
+          raise ValueError(f"buy_sell must be Buy or Sell, got {buy_sell!r}")
+      return 1.0 if s == "buy" else -1.0
+
+  def resolve_swaption(m, kw, d):
+      """Runs ONCE on the trade date d: pins expiry, maturity and a DECIMAL strike, validates pay_or_receive
+      (rejecting what you cannot price now, not later), and folds buy_sell x sign(notional_amount) into one
+      signed notional: pricebt never reads buy_sell itself."""
+      exp = _pin(m, d, kw["expiration_date"])
+      term = _pin(m, exp, kw["termination_date"])   # TODO: from the underlying's start if your library lags it (spot of expiry)
+      por = kw.get("pay_or_receive", "Straddle")
+      legs = _legs(por)
+      k = kw.get("strike", "ATM")
+      mm = _STRIKE.match(k) if isinstance(k, str) else None
+      if mm:
+          k = lib_fwd_par_rate(m, exp, term) + float(mm.group(2) or 0.0) * (-1.0 if mm.group(1) == "-" else 1.0) * H
+      elif isinstance(k, str):
+          raise ValueError(f"unsupported strike {k!r} (use 'ATM', 'A+x'/'A-x' in bp, or a decimal)")   # '=solvefor(...)', '25d', '10000/pv': gs server grammar
+      n = float(kw["notional_amount"])
+      return {"pay_or_receive": "Straddle" if len(legs) == 2 else ("Pay" if legs[0] else "Receive"),
+              "expiration_date": exp, "termination_date": term, "strike": float(k),
+              "notional": abs(n) * _side(kw.get("buy_sell", "Buy")) * (1.0 if n >= 0 else -1.0)}
+
+  def swaption_trade(m, r):
+      return SimpleNamespace(legs=tuple(lib_swaption(m, r, p) for p in _legs(r["pay_or_receive"])),
+                             expiration_date=r["expiration_date"], termination_date=r["termination_date"])
+
+  def pv(m, t):
+      return sum(lib_pv(m, leg) for leg in t.legs)
+
+  def own_rate_bp(m, t):
+      return lib_fwd_rate(m, t.legs[0]) * 1e4    # every leg shares the underlying; decimal -> bp
+
+  def _points(m, t, h):
+      ms = (lib_shift(m, -h), m, lib_shift(m, h))
+      return [pv(x, t) for x in ms], [own_rate_bp(x, t) for x in ms]
+
+  def own_rate_delta(m, t, bump_bp=None, method=None):
+      """IRDelta scalar (pricebt DEV-I12): TOTAL derivative of PV w.r.t. the forward swap rate along the parallel
+      shift, own-strike vol fixed, per bp: [PV(+h) - PV(-h)] / [F(+h) - F(-h)] (bump_size read as bp)."""
+      (n_dn, n_0, n_up), (r_dn, r_0, r_up) = _points(m, t, float(bump_bp or 1.0) * H)
+      how = str(getattr(method, "value", method) or "Centered")
+      if how == "Up":
+          num, den = n_up - n_0, r_up - r_0
+      elif how == "Down":
+          num, den = n_0 - n_dn, r_0 - r_dn
+      else:
+          num, den = n_up - n_dn, r_up - r_dn
+      return num / den if den else 0.0
+
+  def own_rate_gamma(m, t):
+      """IRGammaParallel: chain-rule second derivative on the same bumps, per bp^2 of F."""
+      (n_dn, n_0, n_up), (r_dn, r_0, r_up) = _points(m, t, H)
+      dr = r_up - r_dn
+      if dr == 0.0:
+          return 0.0
+      delta = (n_up - n_dn) / dr
+      return (n_up + n_dn - 2.0 * n_0 - delta * (r_up + r_dn - 2.0 * r_0)) / (dr / 2.0) ** 2
+
+  def discount_only_delta(m, t):
+      return (pv(lib_shift_discount(m, H), t) - pv(lib_shift_discount(m, -H), t)) / 2.0
+
+  def vol_bump_vega(m, t):
+      """IRVega scalar: PV change per +1bp of NORMAL vol (central). Exactly 0.0 after expiry."""
+      return (pv(lib_vol_shift(m, H), t) - pv(lib_vol_shift(m, -H), t)) / 2.0
+
+  def vol_bump_vanna(m, t):
+      """IRVanna: d(IRDelta scalar)/d(normal vol), per bp x bp."""
+      return (own_rate_delta(lib_vol_shift(m, H), t) - own_rate_delta(lib_vol_shift(m, -H), t)) / 2.0
+
+  def vol_bump_volga(m, t):
+      """IRVolga: second derivative of PV in normal vol, per bp^2 of vol."""
+      return pv(lib_vol_shift(m, H), t) + pv(lib_vol_shift(m, -H), t) - 2.0 * pv(m, t)
+
+  def theta_one_day(m, t, d):
+      """Theta (pricebt DEV-I15): one calendar day, forwards AND vols fixed, ccy PER DAY, total return."""
+      d1 = d + _dt.timedelta(days=1)
+      cash = sum(r["payment_amount"] for leg in t.legs for r in lib_cashflows(m, leg) if r["payment_date"] <= d1)
+      return pv(lib_translate(m, 1), t) + cash - pv(m, t)
+
+  def years_to(end, d):
+      """max(end - d, 0) in calendar days / 365 (ExpiryInYears, pricebt DEV-I17)."""
+      return max((end - d).days, 0) / 365.0
+
+  def bachelier_implied_vol(unit_price, F, K, T, is_payer):
+      """The NORMAL vol that reprices an option worth unit_price per unit of (notional x annuity): for a
+      lognormal/SABR library's IRAnnualImpliedVol. Bisection on the Bachelier price (monotone in sigma)."""
+      if T <= 0.0:
+          raise ValueError("no time value to invert at or after expiry: use the last live vol (R2-7)")
+      def price(s):
+          sd = s * math.sqrt(T)
+          x = (F - K) / sd if is_payer else (K - F) / sd
+          return sd * (x * 0.5 * (1.0 + math.erf(x / math.sqrt(2.0))) + math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi))
+      lo, hi = 1e-8, 0.5
+      for _ in range(200):
+          mid = 0.5 * (lo + hi)
+          lo, hi = (mid, hi) if price(mid) < unit_price else (lo, mid)
+      return 0.5 * (lo + hi)
+
+  def prob_exercise_sum(m, t):
+      return sum(lib_prob_exercise(m, leg) for leg in t.legs)   # a straddle: both legs
+
+  def leg_cashflows(m, t):
+      return [r for leg in t.legs for r in lib_cashflows(m, leg)]
+
+  def _tenor_years(p):
+      return int(p[:-1]) * {"D": 1 / 365.0, "W": 7 / 365.0, "M": 1 / 12.0, "Y": 1.0}[p[-1].upper()]
+
+  def _nearest(pillars, yrs):
+      return min(pillars, key=lambda p: abs(_tenor_years(p) - yrs))
+
+  def key_rate_ladder(m, trades, weights):
+      """IRDelta bucketed: central 1bp bump of each curve pillar (vols held), weighted, ccy per +1bp."""
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) - pv(dn, t)) / 2.0 for t, w in zip(trades, weights))
+      return out
+
+  def diagonal_gamma_ladder(m, trades, weights):
+      """IRGamma bucketed (pricebt DEV-I13: diagonal only), ccy per bp^2 at each pillar."""
+      base = [pv(m, t) for t in trades]
+      out = {}
+      for p in lib_pillars(m):
+          up, dn = lib_shift_pillar(m, p, H), lib_shift_pillar(m, p, -H)
+          out[p] = sum(w * (pv(up, t) + pv(dn, t) - 2.0 * b) for t, w, b in zip(trades, weights, base))
+      return out
+
+  def vega_by_expiry_tail(m, trades, weights, d):
+      """IRVega bucketed: each trade's weighted vega at mkt_point '<tail>;<expiry>' (gs order, e.g. '10Y;1Y'), the
+      pillars nearest its underlying tenor and its time to expiry. A native bucketed vega: map its keys to
+      f'{tail};{expiry}' instead."""
+      out = {}
+      for t, w in zip(trades, weights):
+          key = f"{_nearest(VOL_TAILS, years_to(t.termination_date, t.expiration_date))};{_nearest(VOL_EXPIRIES, years_to(t.expiration_date, d))}"
+          out[key] = out.get(key, 0.0) + w * vol_bump_vega(m, t)
+      return out
+
+market:
+  expr: 'lib_market(pricebt_date)'
+  key: TODO_market_key                 # its OWN key: never share a swap asset's key (their imports/code differ)
+resolve:
+  expr: 'resolve_swaption(market, kwargs, pricebt_date)'
+trade:
+  expr: 'swaption_trade(market, resolved)'
+  build_on: resolve_date               # each_market if your swaption object captures the market it was built on
+functions:
+  npv:             {expr: 'pv(market, trade)', unit: ccy}
+  delta:           {expr: 'own_rate_delta(market, trade, pricebt_bump_size, pricebt_finite_difference_method)', unit: ccy_per_bp}
+  discount_delta:  {expr: 'discount_only_delta(market, trade)', unit: ccy_per_bp}
+  gamma:           {expr: 'own_rate_gamma(market, trade)', unit: ccy_per_bp2}
+  vega:            {expr: 'vol_bump_vega(market, trade)', unit: ccy_per_bp}
+  vanna:           {expr: 'vol_bump_vanna(market, trade)', unit: ccy_per_bp2}
+  volga:           {expr: 'vol_bump_volga(market, trade)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # single curve, single currency: basis/xccy 0.0. TODO: map real ones if you have them
+  theta_1d:        {expr: 'theta_one_day(market, trade, pricebt_date)', unit: ccy}
+  fwd_rate:        {expr: 'own_rate_bp(market, trade)', unit: bp}
+  spot_rate:       {expr: 'lib_spot_rate(market, trade.legs[0]) * 1e4', unit: bp}
+  annual_vol:      {expr: 'lib_normal_vol(market, trade.legs[0]) * 1e4', unit: bp}      # decimal -> bp (gs returns the decimal)
+  atm_vol:         {expr: 'lib_atm_normal_vol(market, trade.legs[0]) * 1e4', unit: bp}
+  daily_vol:       {expr: 'lib_normal_vol(market, trade.legs[0]) * 1e4 / math.sqrt(252.0)', unit: bp}
+  expiry_in_years: {expr: 'years_to(resolved["expiration_date"], pricebt_date)', unit: decimal}
+  prob_exercise:   {expr: 'prob_exercise_sum(market, trade)', unit: decimal}
+  annuity:         {expr: 'lib_annuity(market, trade.legs[0])', unit: ccy}
+  cashflows:       {expr: 'leg_cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+portfolio_functions:
+  delta_ladder:
+    expr: 'key_rate_ladder(market, trades, weights)'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'diagonal_gamma_ladder(market, trades, weights)'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TODO, mkt_class: OIS}
+  vega_cube:
+    expr: 'vega_by_expiry_tail(market, trades, weights, pricebt_date)'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TODO, mkt_class: SWAPTION}
+attributes:
+  expiration_date: 'resolved["expiration_date"]'      # AddTradeAction(swaption, 'expiration_date') exits on it
+  termination_date: 'resolved["termination_date"]'
+  notional_amount: 'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:                         # every row of the IRSwaption contract (src/pricebt/risk/contracts.py)
+  Price: npv
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: vega, bucketed: vega_cube}
+  IRVanna: vanna
+  IRVolga: volga
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: fwd_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: annual_vol
+  IRAnnualATMImpliedVol: atm_vol
+  IRDailyImpliedVol: daily_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  ProbabilityOfExercise: prob_exercise
+# Declaring instead of mapping (delete the mapped line first), e.g.:
+# unsupported_measures:
+#   IRAnnualATMImpliedVol: "yourlib's surface is quoted by strike only; no ATM-forward lookup"
+#   IRVega: {bucketed: "yourlib has no bucketed vega; the scalar is a parallel normal-vol bump"}

@@ -22,6 +22,8 @@ from typing import Any, Union
 
 import yaml
 
+import instrument_terms as terms  # this directory (on sys.path when spec.py is imported or run)
+
 TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "strategy_spec.yaml"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -121,11 +123,6 @@ def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _direction(kwargs: dict) -> Union[str, None]:
-    v = kwargs.get("pay_or_receive")
-    return None if v is None else str(v).split(".")[-1].capitalize()
-
-
 def validate_spec(spec: dict) -> "list[str]":
     """Every problem found, one message each; [] means valid. Run apply_defaults first: a missing
     section is reported as an error here."""
@@ -171,6 +168,8 @@ def validate_spec(spec: dict) -> "list[str]":
         if not isinstance(kw, dict):
             err(f"instruments.{key}.kwargs: must be a mapping")
             continue
+        if hasattr(_instrument_mod, str(inst["class"])):
+            errors.extend(f"instruments.{key}.kwargs: {p}" for p in terms.kwarg_problems(inst["class"], kw))
         if kw.get("notional_currency"):
             ccys.add(str(kw["notional_currency"]).split(".")[-1].upper())
     if len(ccys) > 1 and not spec.get("result_ccy"):
@@ -239,10 +238,10 @@ def validate_spec(spec: dict) -> "list[str]":
     if arch == "curve_trade":
         if "second" not in insts:
             err("curve_trade needs two instruments: 'primary' and 'second'")
-        else:
-            dirs = {_direction((insts[k] or {}).get("kwargs") or {}) for k in ("primary", "second")}
-            if dirs != {"Pay", "Receive"}:
-                err("curve_trade: primary and second must have opposite pay_or_receive (one Pay, one Receive)")
+        elif not terms.opposite_positions(insts["primary"], insts["second"]):
+            err("curve_trade: primary and second must be opposite positions (unit IRDelta of opposite signs): swaps "
+                "opposite pay_or_receive (one Pay, one Receive); swaptions or bonds opposite buy_sell; or a long bond "
+                "against a pay-fixed swap")
     if arch in ("delta_hedged", "risk_band") and "hedge" not in insts:
         err(f"{arch} needs a 'hedge' instrument")
 
@@ -253,9 +252,12 @@ def validate_spec(spec: dict) -> "list[str]":
         err(f"sizing.method: {method!r} is not one of {', '.join(SIZING_METHODS)}")
     elif method == "notional":
         if sz.get("notional") is not None and not (_num(sz["notional"]) and sz["notional"] > 0):
-            err("sizing.notional: must be a positive number (or null to keep the instruments' notional_amount)")
+            err("sizing.notional: must be a positive number (or null to keep each instrument's size kwarg: "
+                "notional_amount, or size for a Bond)")
     elif not (_num(sz.get(method)) and sz[method] > 0):
         err(f"sizing.{method}: sizing.method {method} needs a positive sizing.{method}")
+    if method == "dv01_target":
+        errors.extend(terms.dv01_sizing_problems(insts))
     if arch == "mean_reversion" and method in ("dv01_target", "nav"):
         err("mean_reversion supports sizing.method notional only: the gs MeanReversionTrigger passes its +1/-1 "
             "direction through AddTradeActionInfo.scaling, which AddScaledTradeAction never reads")
@@ -271,6 +273,11 @@ def validate_spec(spec: dict) -> "list[str]":
         v = rl.get(k)
         if v is not None and not (_num(v) and v > 0):
             err(f"risk_limits.{k}: must be a positive number or null")
+    if rl.get("hedge_measure"):  # optional (commented out in the template): the measure delta_hedged / risk_band hedge
+        try:
+            parse_risk(rl["hedge_measure"])
+        except ValueError as e:
+            err(f"risk_limits.hedge_measure: {e}")
     c = spec["costs"]
     if c.get("model") not in COST_MODELS:
         err(f"costs.model: {c.get('model')!r} is not one of {', '.join(COST_MODELS)}")
@@ -299,7 +306,9 @@ _RISK_RE = re.compile(r"^\s*(\w+)\s*(?:\((.*)\))?\s*$")
 
 
 def parse_risk(text: Any):
-    """'Price', 'IRDeltaParallel' or "IRDelta(aggregation_level='Type')" -> the pricebt.risk measure."""
+    """'Price', 'IRDeltaParallel' or "IRDelta(aggregation_level='Type')" -> the pricebt.risk measure.
+    Quoted values stay strings; unquoted ones are read as YAML scalars ("IRVanna(aggregation_level=Type,
+    bump_size=0.5)" passes the float 0.5)."""
     from pricebt import risk as _risk_mod
     from pricebt.common import RiskMeasure
 
@@ -311,7 +320,8 @@ def parse_risk(text: Any):
         kwargs = {}
         for part in filter(None, (p.strip() for p in m.group(2).split(","))):
             k, _, v = part.partition("=")
-            kwargs[k.strip()] = v.strip().strip("'\"")
+            v = v.strip()
+            kwargs[k.strip()] = v[1:-1] if v[:1] in ("'", '"') else yaml.safe_load(v)
         measure = measure(**kwargs)
     return measure
 

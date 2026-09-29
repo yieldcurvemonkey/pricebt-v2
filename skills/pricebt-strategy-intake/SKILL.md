@@ -1,6 +1,6 @@
 ---
 name: pricebt-strategy-intake
-description: Turn a plain-English trading idea into a complete, validated strategy_spec.yaml by asking the portfolio-management follow-up questions (hypothesis, instruments, signal and lookback windows, rebalance and holding period, sizing, risk limits, costs, financing, dates and out-of-sample split, success criteria) - interactively, or autonomously with stated defaults. Use at the start of any "backtest this idea" request, before writing strategy code.
+description: Turn a plain-English trading idea into a complete, validated strategy_spec.yaml by asking the portfolio-management follow-up questions (hypothesis, instruments, signal and lookback windows, rebalance and holding period, sizing, risk limits, costs, financing, dates and out-of-sample split, success criteria) - interactively, or autonomously with stated defaults - for swaps, swaptions (expiry, tail, strike, straddles, buy/sell) and bonds (identifier, size, coupons, financing). Use at the start of any "backtest this idea" request, before writing strategy code.
 ---
 
 # Strategy intake: idea → strategy spec
@@ -23,7 +23,7 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
 
 ## Procedure
 
-1. **Restate the idea** in one sentence, and classify it into an archetype: `periodic_roll` (carry/roll-down), `mean_reversion`, `momentum`, `curve_trade`, `delta_hedged`, `risk_band`, `event`, or `custom`. See [`pricebt-strategy-recipes`](../pricebt-strategy-recipes/SKILL.md).
+1. **Restate the idea** in one sentence, and classify it into an archetype: `periodic_roll` (carry/roll-down), `mean_reversion`, `momentum`, `curve_trade`, `delta_hedged`, `risk_band`, `event`, or `custom`. See [`pricebt-strategy-recipes`](../pricebt-strategy-recipes/SKILL.md). Swaption and bond ideas use the same archetypes (table below); start from the matching spec in `skills/pricebt-strategy-recipes/example/`.
 2. **Draft the spec.** Copy the template and fill in everything the idea states outright.
 3. **Ask the follow-up questions.** Take them from [`references/question-bank.md`](references/question-bank.md), in its priority order.
    - **Interactive mode:** ask the **must-ask** questions in a single message, at most 8, grouped and each with the default you would use. That way the user can answer "defaults are fine". Ask the *should-ask* questions only if the answer changes the build.
@@ -40,7 +40,8 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
    python skills/pricebt-strategy-intake/scripts/spec.py validate reports/<name>/strategy_spec.yaml   # exit 0 = valid
    ```
 
-6. **Check that the instruments exist.** Each `instruments.<name>` must match exactly one registered asset. If no config exists for an instrument, stop the strategy work and go to [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md).
+   `validate` checks every `instruments.<name>.kwargs` against the generated gs class (`IRSwap`, `IRSwaption`, `Bond`, ...): an unknown name (gs would silently ignore a typo such as `expiry`), a bad enum value, an unstated position (`buy_sell` for swaptions and bonds, the option type `pay_or_receive` for swaptions, a bond's `identifier`), and a non-zero `premium`/`fee`. It also checks that curve-trade legs are opposite positions for any class, and that dv01-sized legs have a delta sign (a Straddle has none). The rules live in `skills/pricebt-strategy-intake/scripts/instrument_terms.py`.
+6. **Check that the instruments exist.** Each `instruments.<name>` must match exactly one registered asset. If no config exists for an instrument, stop the strategy work and go to [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md). For a swaption or bond, also confirm the config answers the measures the recipe needs (the recipes catalogue lists them per recipe), e.g. a swaption held to expiry needs `Price` on the expiry date and an `expiration_date` attribute.
 7. **Freeze the spec.** Commit it, or copy it into the report folder, before the first run. Later changes are new trials and go in the trial log.
 
 ## Translating PM language into spec fields
@@ -57,6 +58,13 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
 | "around FOMC / auctions / month-end" | `archetype: event`, `event_dates` |
 | "$X per bp", "10k dv01" | `sizing.method: dv01_target`, `sizing.dv01_target` |
 | "costs of a quarter of a bp" | `costs.model: dv01_bp`, `costs.level: 0.25` |
+| "buy payers / receivers and hold to expiry", "roll 1m options" | `archetype: periodic_roll`, IRSwaption primary, `rebalance.trade_duration: expiration_date` |
+| "sell vol", "short straddle", "vol carry", "theta harvest" | `archetype: delta_hedged`, IRSwaption `pay_or_receive: Straddle`, `buy_sell: Sell`, IRSwap hedge, `risk_limits.hedge_measure: IRDeltaParallel` |
+| "gamma scalp", "long vol hedged" | the same with `buy_sell: Buy` |
+| "vega-neutral", "calendar" | `delta_hedged` with a swaption hedge and `risk_limits.hedge_measure: IRVegaParallel` |
+| "vol is rich / cheap" | `archetype: mean_reversion`, `signal.measure: IRAnnualImpliedVol`, a bought straddle primary |
+| "bond carry and roll-down", "own the 10y" | `archetype: periodic_roll`, Bond primary, `trade_duration: next schedule`; repo as `financing.cash_accrual_rate` |
+| "asset swap", "bonds vs swaps", "swap spread" | `archetype: curve_trade`, Bond `buy_sell: Buy` + IRSwap `pay_or_receive: Pay`, `sizing.method: dv01_target` |
 
 ## Checks
 
@@ -69,9 +77,13 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
 - **Unstated execution timing.** pricebt trades at the close its trigger observes. If the idea is "trade the next morning", record that in `assumptions` and flag it in the review.
 - **Sizing by notional across tenors.** A 10mm 2y and a 10mm 10y are very different risks. Size curve trades by dv01.
 - **Unlimited lookback tuning.** Pick the lookback from a coarse grid declared in advance (e.g. 20/60/120 business days), and log every one you try.
+- **Swaption direction.** "Short payers" is `pay_or_receive: Pay`, `buy_sell: Sell`, not `pay_or_receive: Receive`. The option type and the position are separate kwargs, and both must be stated.
+- **Signal measure names.** Prefer the gs level measure (`signal.measure: IRFwdRate`: a swap's par rate, a swaption's forward, a bond's yield) over a config function name such as `par_rate`, which only some configs define. The name is resolved through each asset config's `risk_measures:`.
+- **Bond coupons and financing.** The engine books no coupons (gs parity), so bond carry is understated in `Total` across coupon dates. Record this under `assumptions`, and plan to report `pnl_explain_table()`'s `economic_pnl`. Bond funding: `financing.cash_accrual_rate` accrues on the negative cash balance (a flat repo rate).
 
 ## Related skills
 
 - Next: [`pricebt-strategy-recipes`](../pricebt-strategy-recipes/SKILL.md).
 - The whole pipeline: [`pricebt-strategy-workflow`](../pricebt-strategy-workflow/SKILL.md).
 - Why these questions: [`pricebt-research-methodology`](../pricebt-research-methodology/SKILL.md).
+- What a swaption or bond config must compute before a spec can trade it: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md).

@@ -1,13 +1,21 @@
 """skills/pricebt-connect-pricing-library: the fictional Meridian SDK, its asset config, and the three
-deliberate-mistake configs. The mistake tests assert the WRONG behaviour, so the example stays honest."""
+deliberate-mistake configs (the mistake tests assert the WRONG behaviour, so the example stays honest);
+and the three contract templates (references/config-template*.yaml): each maps the whole measure
+contract of `pricebt.risk.contracts`, loads blank, fails loudly when priced unfilled, pastes the
+declaration block back, and -- with its library primitives filled by the toy library -- prices every
+contract measure like the toy reference config, which proves its recipes."""
 from __future__ import annotations
 
+import math
 import sys
+import warnings
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "skills" / "pricebt-connect-pricing-library" / "example"
@@ -15,15 +23,17 @@ if str(EXAMPLE) not in sys.path:
     sys.path.insert(0, str(EXAMPLE))
 
 import meridian_sdk as mdn  # noqa: E402
+from pricebt import risk  # noqa: E402
 from pricebt.assets.config import load_asset  # noqa: E402
 from pricebt.backtests.actions import AddTradeAction  # noqa: E402
 from pricebt.backtests.generic_engine import GenericEngine  # noqa: E402
 from pricebt.backtests.strategy import Strategy  # noqa: E402
 from pricebt.backtests.triggers import PeriodicTrigger, PeriodicTriggerRequirements  # noqa: E402
-from pricebt.instrument import IRSwap  # noqa: E402
+from pricebt.errors import AssetEvaluationError, ConfigError, NotSupportedError  # noqa: E402
+from pricebt.instrument import Bond, IRSwap, IRSwaption  # noqa: E402
 from pricebt.markets import PricingContext  # noqa: E402
 from pricebt.markets.portfolio import Portfolio  # noqa: E402
-from pricebt.risk import IRDelta, Price  # noqa: E402
+from pricebt.risk import IRDelta, Price, contracts  # noqa: E402
 from pricebt.session import PricebtSession  # noqa: E402
 
 CONFIG = EXAMPLE / "meridian_usd_irs.yaml"
@@ -83,11 +93,6 @@ def test_config_loads_without_touching_the_sdk():
     assert cfg.name == "meridian_usd_irs"
 
 
-def test_blank_template_loads():
-    template = EXAMPLE.parent / "references" / "config-template.yaml"
-    assert load_asset(template).name == "TODO_asset_name"
-
-
 def test_atm_payer_is_at_par_payer_positive_dv01_and_par_rate_in_bp():
     npv, dv01, par = _vals(CONFIG, _swap(), D1)
     assert abs(npv) < 1e-6 * N
@@ -114,11 +119,15 @@ def test_seasoned_trade_keeps_its_resolved_maturity():
 
 
 def test_ladder_sums_to_dv01_and_is_one_vendor_call_for_the_book():
+    """The zero-pillar ladder sums to the curve DV01 (the `dv01` function), not to the own-rate IRDelta
+    scalar: the two differ by dr/ds (R2-2), about 1.03 on this curve."""
     s = PricebtSession.use(assets=[CONFIG])
     a = _swap(term="5y", name="a", quantity_=2.0)
     b = _swap("Receive", term="10y", name="b", quantity_=0.5)
     c = _swap(term="30y", name="c")
-    scalar = sum(float(s.pricing.value(x, D1, IRDelta(aggregation_level="Type"), None)) for x in (a, b, c))
+    scalar = sum(x.quantity_ * s.pricing.unit_value(s.pricing.resolve(x, D1, None), D1, "dv01", None) for x in (a, b, c))
+    own = sum(float(s.pricing.value(x, D1, IRDelta(aggregation_level="Type"), None)) for x in (a, b, c))
+    assert 1.01 < scalar / own < 1.06
     asset = s.pricing.asset_for(a)
     client = s.pricing.market(asset, D1, None).client    # the config's own module-level client
     before = client.calls
@@ -144,6 +153,59 @@ def test_three_month_backtest_total_identity():
     assert summ["Total"].abs().max() > 0.0
 
 
+# ------------------------------------------------------------------ the contract from first-order vendor codes
+def _bumped_pv_and_par(spec, d, h):
+    """The SDK spec's PV and PAR_PCT on the market of d with every pillar zero shifted by h (test-only:
+    the config cannot do this -- the SDK takes no scenario request)."""
+    c = mdn.connect()
+    m = c.market(d.isoformat(), "USD.SOFR")
+    shifted = mdn.MarketHandle(c, d, "USD.SOFR", tuple(z + h for z in m._zeros))
+    row = c.price([spec], shifted, ["PV", "PAR_PCT"])[0]
+    return row["PV"], row["PAR_PCT"] * 100.0   # PAR_PCT -> bp
+
+
+@pytest.mark.parametrize("por,fixed_rate", [("Pay", "ATM+50"), ("Receive", "ATM-40"), ("Pay", "ATM")])
+def test_derived_measures_match_a_bump_and_reprice(por, fixed_rate):
+    """IRDelta (own-rate, from DV01 at three strikes), Annuity (-dPV/dK), IRSpotRate, ExpiryInYears and
+    the R2-8 zeros, against an independent zero-shift reprice of the SDK."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(por, fixed_rate=fixed_rate), D1, None)
+    val = lambda m: float(s.pricing.value(r, D1, m, None))  # noqa: E731
+    delta = val(IRDelta(aggregation_level="Type"))
+    t = r.resolved_terms
+    spec = mdn.connect().swap("USD", str(t["effective_date"]), str(t["termination_date"]), fixed_rate_pct=t["fixed_rate"] * 100.0,
+                              notional=abs(t["notional"]), direction="PAY" if t["notional"] > 0 else "RECEIVE")
+    (pu, ru), (pd_, rd) = _bumped_pv_and_par(spec, D1, 1e-4), _bumped_pv_and_par(spec, D1, -1e-4)
+    assert delta == pytest.approx((pu - pd_) / (ru - rd), rel=1e-4)            # the TOTAL own-rate derivative
+    assert (delta > 0) == (por == "Pay")
+    annuity = val(risk.Annuity)
+    assert (annuity > 0) == (por == "Pay")                                     # payer-positive signed notional
+    if fixed_rate == "ATM":
+        assert delta == pytest.approx(annuity * 1e-4, rel=1e-9)                # at the money: own-rate delta = annuity pv01
+        assert val(risk.IRSpotRate) == pytest.approx(val(risk.IRFwdRate), rel=1e-12)   # spot-starting: the same swap
+    assert val(risk.ExpiryInYears) == pytest.approx((r.resolved_terms["termination_date"] - D1).days / 365)
+    for m in (risk.IRVega(aggregation_level="Type"), risk.IRVanna(aggregation_level="Type"), risk.IRAnnualImpliedVol, risk.IRBasis(aggregation_level="Type")):
+        assert val(m) == 0.0
+
+
+def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix():
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(fixed_rate="ATM+25"), D1, None)
+    client = s.pricing.market(s.pricing.asset_for(r), D1, None).client
+    s.pricing.value(r, D1, Price, None)
+    before = client.calls
+    for m in (IRDelta(aggregation_level="Type"), risk.Annuity, risk.IRSpotRate, risk.IRFwdRate, risk.IRDiscountDeltaParallel):
+        s.pricing.value(r, D1, m, None)
+    assert client.calls == before                          # all from the one memoised batch
+    sys.path.insert(0, str(ROOT / "skills" / "pricebt-risk-measures" / "scripts"))
+    import measures
+
+    assert measures.main(["matrix", "--strict", str(CONFIG)]) == 0            # no declaration any library could avoid
+    rows = {(x["measure"], x["form"]): x for x in measures.capability_matrix(CONFIG)["rows"]}
+    assert sorted(k[0] for k, x in rows.items() if x["status"] == measures.DECLARED) == ["Cashflows", "IRGamma", "IRGammaParallel", "Theta"]
+    assert measures.main(["matrix", "--strict", str(ROOT / "tests" / "assets" / "toy_usd_irs.yaml")]) == 1   # declares zeros
+
+
 # ------------------------------------------------------------------ deliberate mistakes
 @pytest.mark.parametrize("name", ["dv01_sign_not_flipped", "par_rate_in_percent", "maturity_not_pinned"])
 def test_mistake_configs_load(name):
@@ -156,7 +218,9 @@ def test_mistake_dv01_sign_not_flipped_gives_negative_payer_dv01():
     assert bad[1] < 0 and bad[1] == pytest.approx(-good[1])
     with PricingContext(D1):
         ladder_sum = Portfolio([_swap(name="p")]).calc(IRDelta).aggregate()["value"].sum()
-    assert ladder_sum == pytest.approx(-bad[1])   # ladder and scalar disagree in sign
+        scalar = float(_swap(name="p").calc(IRDelta(aggregation_level="Type")).result())
+    assert ladder_sum == pytest.approx(bad[1])    # the ladder is receiver-positive too: hedges trade the wrong way
+    assert scalar > 0 > ladder_sum                # the ratio-derived own-rate scalar keeps its sign: ladder and scalar disagree
 
 
 def test_mistake_par_rate_in_percent_is_100x_too_small():
@@ -188,3 +252,250 @@ def test_mistake_maturity_not_pinned_lets_the_swap_drift():
     ex = good.pricing.resolve(explicit, D1, None)
     assert good.pricing.unit_value(ex, D2, "dv01", None) == pytest.approx(bad_d2, rel=1e-12)
     assert good.pricing.unit_value(gr, D2, "dv01", None) != pytest.approx(bad_d2, rel=1e-4)
+
+
+# ------------------------------------------------------------------ contract templates (swap, swaption, bond)
+TEMPLATES = EXAMPLE.parent / "references"
+TOY_ASSETS = ROOT / "tests" / "assets"
+TOY_PILLARS = ("2Y", "5Y", "10Y", "30Y")
+
+# Toy implementations of the templates' library primitives, appended to their `code:` (a later `def`
+# replaces the TODO stub; the templates' recipes run unchanged). The key-rate bump adds h times a hat
+# around one pillar to the flat toy curve (the hats sum to 1), so bumping every pillar is a parallel bump.
+_TOY_KEY_RATE = '''
+import math as _math
+from types import SimpleNamespace as _NS
+import toylib.rates as tr
+import toylib.irrisk as tri
+_PILLARS = ("2Y", "5Y", "10Y", "30Y")
+
+
+class _KeyRateCurve:
+    def __init__(self, base, pillar, h):
+        self.base, self.i, self.h = base, _PILLARS.index(pillar), h
+        self.ref_date, self.ccy, self.csa = base.ref_date, base.ccy, base.csa
+
+    def _w(self, t):
+        ys = [tr._tenor_years(p) for p in _PILLARS]
+        if t <= ys[0]:
+            return float(self.i == 0)
+        if t >= ys[-1]:
+            return float(self.i == len(ys) - 1)
+        k = max(j for j in range(len(ys) - 1) if ys[j] <= t)
+        a = (t - ys[k]) / (ys[k + 1] - ys[k])
+        return {k: 1.0 - a, k + 1: a}.get(self.i, 0.0)
+
+    def discount_factor(self, d):
+        t = (d - self.ref_date).days / 365.0
+        return self.base.discount_factor(d) * _math.exp(-self.h * self._w(t) * t)
+
+
+def lib_pillars(m):
+    return _PILLARS
+'''
+
+_TOY_SWAP = _TOY_KEY_RATE + '''
+def lib_market(d): return tr.market(d, "USD", None)
+def lib_spot_date(m): return m.ref_date
+def lib_add_tenor(m, start, tenor): return tr._pin_date(start, tenor)
+def lib_par_rate(m, start, end): return tr._par_rate(m, start, end)
+def lib_swap(m, r): return tr.build_swap(m, r)
+def lib_pv(m, t): return tr.npv(m, t)
+def lib_own_rate(m, t): return tr._par_rate(m, t.effective_date, t.termination_date)
+def lib_spot_rate(m, t): return tri.spot_rate(m, t) / 1e4
+def lib_shift(m, h): return tri.bumped(m, h)
+def lib_shift_discount(m, h): return tri.bumped(m, h)
+def lib_translate(m, days): return tri._TranslatedCurve(m, days)
+def lib_annuity(m, t): return tri.annuity(m, t)
+def lib_cashflows(m, t): return []
+def lib_shift_pillar(m, pillar, h): return _KeyRateCurve(m, pillar, h)
+'''
+
+_TOY_SWAPTION = _TOY_KEY_RATE + '''
+import toylib.swaption as ts
+def lib_market(d): return ts.market(d, "USD", None)
+def lib_add_tenor(m, start, tenor): return tr._pin_date(start, tenor)
+def lib_fwd_par_rate(m, start, end): return tr._par_rate(m.curve, start, end)
+def lib_swaption(m, r, is_payer): return dict(r, pay_or_receive="Pay" if is_payer else "Receive")
+def lib_pv(m, leg): return ts._value(m.curve, m.sigma, leg)
+def lib_fwd_rate(m, leg): return ts._fwd(m.curve, leg)
+def lib_normal_vol(m, leg): return ts.annual_vol(m, leg) / 1e4
+def lib_atm_normal_vol(m, leg): return ts.atm_vol(m, leg) / 1e4
+def lib_prob_exercise(m, leg): return ts.prob_exercise(m, leg)
+def lib_annuity(m, leg): return ts.annuity(m, leg)
+def lib_spot_rate(m, leg): return ts.spot_rate(m, leg) / 1e4
+def lib_shift(m, h): return _NS(curve=tri.bumped(m.curve, h), sigma=m.sigma)
+def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), sigma=m.sigma)
+def lib_vol_shift(m, h): return _NS(curve=m.curve, sigma=m.sigma + h)
+def lib_translate(m, days): return _NS(curve=tri._TranslatedCurve(m.curve, days), sigma=m.sigma)
+def lib_cashflows(m, leg): return []
+def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), sigma=m.sigma)
+'''
+
+_TOY_BOND = _TOY_KEY_RATE + '''
+import toylib.bond as tb
+def lib_market(d): return tb.market(d, "USD", None)
+def lib_bond_static(m, identifier, identifier_type):
+    coupon, maturity, frequency = tb.BONDS[identifier]
+    return {"coupon": coupon, "maturity": maturity, "frequency": frequency}
+def lib_bond(m, r): return dict(r)
+def lib_pv(m, t): return tb.npv(m, t)
+def lib_yield(m, t): return tb._yield(m.curve, m.spread, t)
+def lib_pv_at_yield(t, y, d): return sum(a * _math.exp(-y * (p - d).days / 365.0) for p, a, *_ in tb._flows(t, d))
+def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), spread=m.spread)
+def lib_annuity(m, t): return tb.annuity(m, t)
+def lib_cashflows(m, t): return tb.cashflows(m, t).to_dict("records")
+def lib_oas(m, t): return m.spread
+def lib_par_spread(m, t): return m.spread
+def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), spread=m.spread)
+'''
+
+# instrument class -> (template, toy reference config, toy primitives, pricing date, two instruments)
+CASES = {
+    "IRSwap": ("config-template.yaml", "toy_usd_irs_full.yaml", _TOY_SWAP, date(2024, 1, 2), (
+        lambda: IRSwap("Pay", "10y", "USD", 1e6, fixed_rate="ATM+25"),
+        lambda: IRSwap("Receive", "5y", "USD", 2e6, fixed_rate=0.03, effective_date="1y"),
+    )),
+    "IRSwaption": ("config-template-swaption.yaml", "toy_usd_swaption.yaml", _TOY_SWAPTION, date(2024, 1, 2), (
+        lambda: IRSwaption(pay_or_receive="Pay", buy_sell="Buy", expiration_date="1y", termination_date="10y",
+                           notional_currency="USD", strike="A+25", notional_amount=1e6),
+        lambda: IRSwaption(pay_or_receive="Straddle", buy_sell="Sell", expiration_date="2y", termination_date="5y",
+                           notional_currency="USD", strike="ATM", notional_amount=3e6),
+    )),
+    # 2024-05-14: both toy bonds pay a coupon on 05-15, inside Theta's one-day window
+    "Bond": ("config-template-bond.yaml", "toy_usd_bond.yaml", _TOY_BOND, date(2024, 5, 14), (
+        lambda: Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD"),
+        lambda: Bond(buy_sell="Sell", identifier="TOY 3.5 2027-05-15", size=5e5, settlement_currency="USD"),
+    )),
+}
+# (instrument, measure) -> rel tolerance where the template's recipe is a different (equally valid) method
+# than the toy's: a finite-difference vega/DV01 vs an analytic one, yield bumps vs curve bumps on the bond
+TOL = {("IRSwaption", "IRVega"): 2e-5, ("Bond", "LightningDV01"): 1e-5, ("Bond", "IRDelta"): 1e-7, ("Bond", "IRGammaParallel"): 1e-6}
+
+
+def _template_raw(instrument):
+    return yaml.safe_load((TEMPLATES / CASES[instrument][0]).read_text(encoding="utf-8"))
+
+
+def _filled(instrument):
+    raw = _template_raw(instrument)
+    raw["code"] += CASES[instrument][2]
+    return raw
+
+
+def _requests(instrument):
+    """(measure, form, request) for every form of every row of the instrument's contract."""
+    for req in contracts.contract_for(instrument):
+        obj = getattr(risk, req.measure)
+        is_fd = isinstance(obj, risk.RiskMeasureWithFiniteDifferenceParameter)
+        for form in req.forms:
+            yield req.measure, form, obj(aggregation_level="Type") if form == "scalar" and is_fd else obj
+
+
+def _values(cfg, inst, d, resolve_on=None):
+    s = PricebtSession.use(assets=[cfg])
+    r = s.pricing.resolve(inst, resolve_on or d, None)
+    out = {}
+    with PricingContext(d):
+        for measure, form, request in _requests(type(inst).__name__):
+            v = r.calc(request).result()
+            out[(measure, form)] = float(v) if form == "scalar" else pd.DataFrame(v)
+    return out
+
+
+def _compare(instrument, got, ref):
+    assert got.keys() == ref.keys()
+    for (measure, form), v in got.items():
+        r = ref[(measure, form)]
+        if form == "scalar":
+            assert math.isfinite(v), measure
+            assert v == pytest.approx(r, rel=TOL.get((instrument, measure), 1e-9), abs=1e-9), measure
+        elif form == "frame":
+            assert len(v) == len(r) and v["payment_amount"].sum() == pytest.approx(r["payment_amount"].sum())
+        elif measure == "IRDelta":   # key-rate ladder: sums to the parallel (discount-only, single curve) delta,
+            assert tuple(v["mkt_point"]) == TOY_PILLARS   # up to an option's third-order finite-difference terms
+            assert v["value"].sum() == pytest.approx(got[("IRDiscountDeltaParallel", "scalar")], rel=1e-4, abs=1e-9)
+        elif measure == "IRGamma":
+            assert tuple(v["mkt_point"]) == TOY_PILLARS and np.isfinite(v["value"]).all()
+        else:                        # IRVega cube: same '<tail>;<expiry>' points and values as the toy's
+            assert dict(zip(v["mkt_point"], v["value"])) == pytest.approx(dict(zip(r["mkt_point"], r["value"])), rel=TOL.get((instrument, "IRVega"), 1e-9), abs=1e-9)
+
+
+@pytest.mark.parametrize("instrument", CASES)
+def test_template_loads_blank_and_maps_every_contract_measure(instrument):
+    """Completeness against src/pricebt/risk/contracts.py itself: a new contract row fails this test."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_asset(TEMPLATES / CASES[instrument][0])
+    assert (cfg.name, cfg.instrument, cfg.unsupported_measures) == ("TODO_asset_name", instrument, {})
+    need = {(r.measure, f) for r in contracts.contract_for(instrument) for f in r.forms}
+    assert need <= set(cfg.provided_forms)
+
+
+@pytest.mark.parametrize("instrument", CASES)
+def test_blank_template_fails_loudly_at_the_first_todo(instrument):
+    s = PricebtSession.use(assets=[TEMPLATES / CASES[instrument][0]])
+    with pytest.raises(AssetEvaluationError, match=r"NotImplementedError: TODO .*lib_market"):
+        s.pricing.resolve(CASES[instrument][4][0](), CASES[instrument][3], None)
+
+
+@pytest.mark.parametrize("instrument", CASES)
+def test_template_declaration_path_pastes_back(instrument):
+    """Map only Price: the load error carries the paste-ready block for the rest, and pasting it loads."""
+    raw = _template_raw(instrument)
+    raw["risk_measures"] = {"Price": raw["risk_measures"]["Price"]}
+    with pytest.raises(ConfigError) as exc:
+        load_asset(raw)
+    missing = [(r.measure, f) for r in contracts.contract_for(instrument) if r.measure != "Price" for f in r.forms]
+    block = contracts.unsupported_block(instrument, missing)
+    assert block in str(exc.value)
+    raw["unsupported_measures"] = yaml.safe_load(block)["unsupported_measures"]
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = load_asset(raw)
+    assert set(cfg.unsupported_measures) == {r.measure for r in contracts.contract_for(instrument)} - {"Price"}
+
+
+@pytest.mark.parametrize("instrument,variant", [(i, k) for i in CASES for k in (0, 1)])
+def test_template_filled_with_the_toy_library_matches_the_toy_config_on_every_measure(instrument, variant):
+    _t, ref_cfg, _p, d, instruments = CASES[instrument]
+    got = _values(_filled(instrument), instruments[variant](), d)
+    ref = _values(TOY_ASSETS / ref_cfg, instruments[variant](), d)
+    _compare(instrument, got, ref)
+
+
+def test_swaption_template_after_expiry_matches_the_toy_and_has_no_vol_risk():
+    """R2-7: a physically settled swaption past expiry keeps finite levels and has exactly no vol risk."""
+    def inst():
+        return IRSwaption(pay_or_receive="Pay", buy_sell="Buy", expiration_date="1m", termination_date="5y",
+                          notional_currency="USD", strike="ATM", notional_amount=1e6)
+    later = date(2024, 3, 4)
+    got = _values(_filled("IRSwaption"), inst(), later, resolve_on=date(2024, 1, 2))
+    ref = _values(TOY_ASSETS / "toy_usd_swaption.yaml", inst(), later, resolve_on=date(2024, 1, 2))
+    _compare("IRSwaption", got, ref)
+    assert [got[(m, "scalar")] for m in ("IRVega", "IRVanna", "IRVolga")] == [0.0, 0.0, 0.0]
+
+
+def test_template_bump_size_and_method_reach_the_recipe_and_unreferenced_parameters_raise():
+    """pricebt DEV-I10: the delta expression names pricebt_bump_size and pricebt_finite_difference_method."""
+    s = PricebtSession.use(assets=[_filled("IRSwap")])
+    r = s.pricing.resolve(CASES["IRSwap"][4][0](), date(2024, 1, 2), None)
+
+    def val(**params):
+        return float(s.pricing.value(r, date(2024, 1, 2), IRDelta(aggregation_level="Type", **params), None))
+
+    base = val()
+    assert val(bump_size=1.0) == base                        # the default is a centred 1bp bump
+    for params in ({"bump_size": 10.0}, {"finite_difference_method": "Up"}):
+        assert val(**params) != base and val(**params) == pytest.approx(base, rel=1e-2)
+    with pytest.raises(NotSupportedError, match="does not reference pricebt_scale_factor"):
+        val(scale_factor=2.0)
+
+
+def test_swaption_template_bachelier_inversion_recovers_the_normal_vol():
+    import toylib.swaption as ts
+
+    raw, ns = _template_raw("IRSwaption"), {}
+    exec(raw["imports"] + raw["code"], ns)
+    for F, K, sigma, T, payer in [(0.04, 0.04, 0.008, 1.0, True), (0.04, 0.045, 0.006, 0.5, True), (0.035, 0.03, 0.01, 2.0, False)]:
+        assert ns["bachelier_implied_vol"](ts._unit_price(F, K, sigma, T, payer), F, K, T, payer) == pytest.approx(sigma, rel=1e-9)

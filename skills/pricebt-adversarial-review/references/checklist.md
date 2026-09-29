@@ -7,9 +7,9 @@ Mark each item PASS, FAIL or N/A, and give evidence. Items are ordered by how of
 | # | Check | How | Typical severity if it fails |
 |---|---|---|---|
 | A1 | **Resolve pins the trade.** A seasoned position keeps its maturity and strike | `python skills/pricebt-verify-asset-config/scripts/check_asset.py <config>` passes the pinning check. The ledger's static data shows absolute dates | Blocker |
-| A2 | **Units and signs.** dv01 > 0 for a payer; rates in bp; ladder sum ≈ dv01 | the checker's rates pack; an ATM entry has `Open Value` ≈ 0 | Blocker |
+| A2 | **Units and signs.** dv01 > 0 for a payer swap or payer swaption, < 0 for a long bond; rates in bp; ladder sum ≈ dv01; vega per bp of normal vol, > 0 for a bought option; `Theta` per day, not per year | the checker's instrument pack (swap, swaption or bond) and its contract rows; an ATM swap entry has `Open Value` ≈ 0; a bought option's `Open Value` is minus its premium | Blocker |
 | A3 | **Same-close execution.** The trigger observes date d and trades at d's close | read the signal construction. If the signal uses d's close, the result assumes a fill at the observed price. Run the signal-shift experiment | Major (Blocker if the edge disappears with a one-day shift) |
-| A4 | **Coupons between marks are not booked** (gs parity) | does the strategy hold swaps through coupon dates? Is carry part of the thesis? | Major for carry and roll strategies. Disclose it always |
+| A4 | **Coupons between marks are not booked** (gs parity) | does the strategy hold swaps or bonds through coupon dates? Is carry part of the thesis? For a bond, does its `Price` drop paid coupons (then `Total` understates carry; attribute with `Cashflows`)? Options: is the expiry exit at intrinsic, and is the vol surface point-in-time? | Major for carry and roll strategies. Disclose it always |
 | A5 | **Mean-reversion exits are offsetting trades held forever** | ledger rows are all `open`; gross notional grows with each signal. Report net dv01 and gross notional | Minor to Major (the cost of carrying offsetting trades, and inflated gross) |
 | A6 | **Dropped market dates** (`missing_market='drop'`) | `backtest.missing_market_dates` and `backtest.missing_market_moves`: how many, and where? Do they cluster around the events the strategy trades? | Minor; Major if more than 2% of the grid, or clustered |
 | A7 | **Frictionless defaults** | `Transaction Costs` column all zero? No cash accrual? `initial_value` 0 (Total is P&L, not NAV)? | Major if costs are off |
@@ -56,3 +56,16 @@ Mark each item PASS, FAIL or N/A, and give evidence. Items are ordered by how of
 | D6 | Curve and spread trades are weighted by dv01, and the signal's weights equal the traded weights | leg dv01s on each date | Chan ch. 3 pp. 57–58 (book example gets this wrong) |
 | D7 | Capacity and liquidity are plausible for the tenors and sizes | size vs typical market depth (judgment) | FA ch. 12 p. 88 |
 | D8 | A structural premium (carry, vol premium) is not presented as skill | a long vs short split and the always-on benchmark | AQM ch. 4 pp. 134–135 |
+
+## E. P&L attribution and the measure contract
+
+Run these when the backtest was attributed (`run_backtest(pnl_explain=...)`), or when the thesis rests on a greek (carry, vol, convexity). The procedure and the residual taxonomy are in [`../../pricebt-pnl-attribution/SKILL.md`](../../pricebt-pnl-attribution/SKILL.md).
+
+| # | Check | How | Typical severity if it fails |
+|---|---|---|---|
+| E1 | **The attribution residual is small, or its cause is named** | `spot_check.check_pnl_attribution_generic(bt)` is PASS. For WARN or FAIL, use the diagnosing-residuals taxonomy of the attribution skill. Most common causes: moneyness with a fixed-annuity delta; coupons with no `Cashflows` in `risks=`; gamma units or half gamma; a per-year `Theta`; a unit mismatch (a `ValueError`) | Major; Blocker if the thesis is the component the residual co-moves with |
+| E2 | **The components match the thesis** | a "carry" strategy earns `PNL_theta`; a "vol" strategy earns `VegaPnL`/`PNL_gamma`, not `PNL_delta` | Major (the P&L is not the claimed premium) |
+| E3 | **Every `unsupported_measures:` declaration has a real reason** | read each reason in the asset configs, and run `measures.py matrix --strict` on each (it exits 1 on a declaration every library can avoid). "TODO", "not needed" or "later" is not a reason: the library must truly lack the measure. Every attribute dropped because of one is named in the report | Major (a hidden gap; its term sits in the residual) |
+| E4 | **The measures the attribution multiplies are verified** | `python skills/pricebt-verify-asset-config/scripts/check_asset.py <config>` passes its instrument pack (units, signs, bands) for every asset in the book; `IRDelta` is the total own-rate derivative, not an annuity pv01, if the book goes off-market | Blocker if a sign or unit is wrong |
+| E5 | **Mixed books use one unit per level, and map the 0.0 vol convention for swaps and bonds** | `python skills/pricebt-pnl-attribution/scripts/attribution.py --definition <configs>` prints a definition, not a refusal | Blocker (attribution is refused, or meaningless) |
+| E6 | **Near-expiry and long steps are read as such** | residual steps within days of expiry, or on weekly or monthly grids, are time cross terms and third-order terms, not skill. A swaption held past expiry leaves its exercised swap's carry in the residual (`PNL_theta` stops at expiry). A daily grid is used for attribution | Minor (disclose) |

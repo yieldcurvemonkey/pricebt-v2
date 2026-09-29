@@ -383,10 +383,66 @@ def _md_table(df: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _add_attribution(blocks: List[tuple], pngs: Dict[str, bytes], table: Optional[pd.DataFrame]) -> None:
+    """Optional "P&L attribution" section, inserted before "Spot checks" when build_tearsheet gets
+    attribution=backtest.pnl_explain_table() (skills/pricebt-pnl-attribution); a no-op otherwise.
+    Component totals, the residual statistics graded by attribution.grade (grade_reason says why), and a
+    cumulative chart stacked above and below zero with the economic P&L as a line."""
+    if table is None:
+        return
+    path = str(REPO_ROOT / "skills/pricebt-pnl-attribution/scripts")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    import attribution as att
+
+    stats = att.explain_stats(table)
+    status, totals = att.grade(stats), stats["totals"]
+    attrs = [c for c in table.columns if c not in att.FIXED]
+    econ = totals["economic_pnl"]
+    components = [*attrs, "explained_pnl", "residual_pnl", "actual_pnl", "cashflow_pnl", "economic_pnl"]
+    share = lambda v: v / econ if v is not None and econ else None  # noqa: E731
+    section = [
+        ("h2", "P&L attribution"),
+        ("p", f"Greeks x market moves per step (backtest.pnl_explain_table(), {stats['steps']} steps). "
+              "economic = actual (sum of the held book's price change) + cashflow (coupons paid); "
+              "residual = economic - explained."),
+        ("table", pd.DataFrame([{"component": c, "total": totals[c], "share of economic P&L": share(totals[c])} for c in components])),
+        ("table", pd.DataFrame([
+            {"metric": "unexplained share (worst of the three below)", "value": stats["unexplained"], "status": status},
+            {"metric": "residual variance share var(residual)/var(economic)", "value": stats["residual_share"], "status": ""},
+            {"metric": "r2 (1 - SS residual / SS economic)", "value": stats["r2"], "status": ""},
+            {"metric": "sum abs(residual) / sum abs(economic)","value": stats["abs_residual_ratio"], "status": ""},
+            {"metric": "worst residual (date)", "value": f"{_fmt(stats['worst_residual'])} ({stats['worst_date']})", "status": ""},
+        ])),
+    ]
+    if status in ("WARN", "FAIL"):
+        why = att.grade_reason(stats)
+        section.append(("p", f"{status}: {why}. "
+                             "Diagnose with skills/pricebt-pnl-attribution/references/diagnosing-residuals.md "
+                             "before reading the components."))
+    if stats["finite"]:
+        cum = table[attrs + ["residual_pnl"]].astype(float).cumsum()
+        cum.index = pd.to_datetime(cum.index)
+        colors = [SERIES, ACCENT, *plt.get_cmap("tab10").colors[2:]][: len(attrs)] + [MUTED]
+        fig, ax = _ax("Cumulative P&L attribution (stacked above/below zero; line = economic P&L)")
+        ax.stackplot(cum.index, cum.clip(lower=0).T.values, colors=colors, labels=list(cum.columns), alpha=0.85)
+        ax.stackplot(cum.index, cum.clip(upper=0).T.values, colors=colors, alpha=0.85)
+        ax.plot(cum.index, table["economic_pnl"].astype(float).cumsum().values, color=INK, linewidth=1.6, label="economic P&L")
+        ax.axhline(0, color=MUTED, linewidth=0.8)
+        ax.legend(frameon=False, fontsize=7, ncol=4, labelcolor=MUTED)
+        fig.tight_layout()
+        pngs["pnl_attribution"] = _png(fig)
+        plt.close(fig)
+        section.append(("img", "pnl_attribution"))
+    i = blocks.index(("h2", "Spot checks"))
+    blocks[i:i] = section
+
+
 def build_tearsheet(backtest, out_dir, title, spec=None, risk=None, signal=None, review_findings=None,
-                    spot_checks=None, caveats=None, notes=None) -> Dict[str, str]:
+                    spot_checks=None, caveats=None, notes=None, attribution=None) -> Dict[str, str]:
     """Write tearsheet.html (self-contained), tearsheet.md (+ PNGs), metrics.json, trades.csv and
-    summary.csv into out_dir. Returns {artefact: path}."""
+    summary.csv into out_dir. Returns {artefact: path}. attribution: an optional
+    backtest.pnl_explain_table(), rendered as a "P&L attribution" section."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     in_sample_end = ((spec or {}).get("dates") or {}).get("in_sample_end")
@@ -398,6 +454,7 @@ def build_tearsheet(backtest, out_dir, title, spec=None, risk=None, signal=None,
         plt.close(f)
     generated_at = dt.datetime.now().isoformat(timespec="seconds")
     blocks = _blocks(backtest, title, spec, metrics, criteria, risk, spot_checks, review_findings, caveats, notes, generated_at)
+    _add_attribution(blocks, pngs, attribution)
 
     h, md = [], []
     for kind, payload in blocks:

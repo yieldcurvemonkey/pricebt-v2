@@ -1,0 +1,27 @@
+# Recipe (tested by tests/skills/test_skill_recipes.py): sell a 3m10y ATM straddle and delta-hedge the
+# book every business day with a 10y payer swap on IRDeltaParallel -- vol carry: the book earns Theta
+# and pays Gamma; what is left after the hedge is short vega plus hedging slippage.
+# Toy assets: the swaption and the full-contract swap (tests/assets/toy_usd_irs_full.yaml). For your
+# library, both configs must map IRDelta's scalar form (IRDeltaParallel resolves to it).
+name: toy-short-straddle-delta-hedged
+idea: Sell a 3m10y straddle and keep it delta-neutral with daily swap hedges.
+hypothesis: >
+  Implied vol trades above realised vol (a variance risk premium), so a delta-hedged short straddle
+  earns more Theta than it pays in Gamma; fails in vol spikes and trending rate moves.
+assets: [tests/assets/toy_usd_swaption.yaml, tests/assets/toy_usd_irs_full.yaml]
+instruments:
+  primary:
+    class: IRSwaption
+    kwargs: {pay_or_receive: Straddle, buy_sell: Sell, expiration_date: 3m, termination_date: 10y,
+             notional_currency: USD, notional_amount: 10000000, strike: ATM}
+  hedge:
+    class: IRSwap
+    kwargs: {pay_or_receive: Pay, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, fixed_rate: ATM}
+dates: {start: 2024-01-02, end: 2024-02-01, frequency: 1b}
+archetype: delta_hedged
+signal: {type: none}
+rebalance: {frequency: 1b}                    # hedge cadence
+risk_limits: {hedge_measure: IRDeltaParallel}   # optional key: the measure HedgeAction neutralises
+sizing: {method: notional, notional: null}      # a Straddle cannot be dv01-sized (its delta is ~0 at the money)
+costs: {model: constant, level: 100.0}          # per trade; a vega-scaled option cost needs a hand-built ScaledTransactionModel
+risks_to_report: [Price, IRDeltaParallel, IRVegaParallel, IRGammaParallel, Theta]

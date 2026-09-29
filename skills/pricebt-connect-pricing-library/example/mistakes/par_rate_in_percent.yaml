@@ -5,27 +5,19 @@ asset: meridian_usd_irs_mistake_par_pct
 description: >
   USD SOFR swap priced by the FICTIONAL Meridian SDK (example/meridian_sdk; not a real vendor API).
   Worked example for skills/pricebt-connect-pricing-library: every vendor convention is converted to
-  pricebt's. Units: npv USD; dv01 USD per +1bp (payer > 0); par_rate bp; ladder USD per +1bp (payer > 0).
+  pricebt's, and every contract measure a PV-only service can produce is derived from its first-order
+  codes. Units: npv USD; delta (own-rate) and dv01 (zero curve) USD per +1bp (payer > 0); annuity USD
+  (payer > 0); par_rate bp; ladder USD per +1bp of each zero pillar (payer > 0). Checker WARNs, explained:
+  swap_bucket_sum / ir_ladder_sum -- the zero-pillar ladder sums to the curve DV01, which is dr/ds (about
+  1.03-1.05 on this curve) times the own-rate IRDelta (R2-2).
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
-unsupported_measures:   # what the library cannot compute, with a reason (docs/v2/IR_RISK_DESIGN.md section 2)
-  IRDiscountDeltaParallel: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no discount-only bump"
-  IRGammaParallel: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no gamma"
-  IRGamma: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no gamma ladder"
-  IRVega: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (a swap's vega would be 0.0 by convention, R2-8; not wired in this example)"
-  IRVanna: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
-  IRVolga: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
-  IRBasis: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: one USD.SOFR curve, no basis spread (0.0; not wired in this example)"
-  IRXccyDelta: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: single-currency swap, no cross-currency basis (0.0; not wired in this example)"
-  IRSpotRate: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no spot-starting equivalent"
-  IRAnnualImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
-  IRAnnualATMImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
-  IRDailyImpliedVol: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no vol model (0.0 by convention for a swap, R2-8; not wired in this example)"
-  Theta: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no carry/theta"
-  ExpiryInYears: "not wired in this example (the maturity is known in resolve; no function maps it)"
-  Annuity: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no annuity measure; not wired in this example"
-  Cashflows: "the fictional Meridian SDK prices only PV, DV01, BUCKET_DV01, PAR_PCT and FIXED_PCT: no cashflow schedule"
+unsupported_measures:   # only what a PV-only service without scenario requests cannot produce (docs/v2/IR_RISK_DESIGN.md section 2)
+  IRGammaParallel: "the fictional Meridian SDK takes no scenario request (no curve shift, no valuation-date override) and its DV01 is first order only: no second derivative in the own rate"
+  IRGamma: "the fictional Meridian SDK takes no scenario request: no per-pillar shift, so no diagonal gamma ladder"
+  Theta: "the fictional Meridian SDK takes no valuation-date override: it values only on the market's own date, so no one-day translated-curve reprice"
+  Cashflows: "the fictional Meridian SDK exposes no schedule or fixings call. Its PV drops each paid fixed coupon (Price is not total return), so a hold across a coupon date leaves that coupon in the attribution residual"
 defaults:
   pay_or_receive: Receive          # gs default; coerced to the PayReceive enum (value 'Rec')
   termination_date: 10y
@@ -106,12 +98,35 @@ code: |
           direction="PAY" if r["notional"] > 0 else "RECEIVE",
       )
 
-  def _risk(m, t):
-      # memoise per (market, trade): npv/dv01/par_rate on the same date cost ONE vendor call
+  def _flip(v):
+      return -v   # vendor DV01 / BUCKET_DV01: PV change per 1bp DOWN, receiver > 0 -> pricebt: per +1bp, payer > 0
+
+  def _strike_moved(t, bp):
+      # the same trade with its fixed rate moved by bp (vendor: percent, so 1bp = 0.01)
+      return _CLIENT.swap(t.currency, t.start, t.end, fixed_rate_pct=t.fixed_rate_pct + bp / 100.0,
+                          notional=t.notional, direction=t.direction)
+
+  def _risk(m, t, d):
+      # Every per-trade number from ONE vendor call: the trade, the trade with its fixed rate +-1bp, and
+      # a spot-starting probe to the same end. Memo rule (for every user memo): key on the market object
+      # (the memo lives on it), the pricing date and the trade -- under a CloseMarket override pricebt
+      # hands the same market object to another pricebt_date.
       memo = m.__dict__.setdefault("_pricebt_memo", {})
-      if t not in memo:
-          memo[t] = _CLIENT.price([t], m, _MEASURES)[0]
-      return memo[t]
+      if (d, t) not in memo:
+          if "_pricebt_spot" not in m.__dict__:
+              m._pricebt_spot = _CLIENT.spot_date(m)
+          probe = _CLIENT.swap("USD", m._pricebt_spot, t.end, fixed_rate_pct=None, notional=1e6, direction="PAY")
+          row, up, dn, spot = _CLIENT.price([t, _strike_moved(t, 1), _strike_moved(t, -1), probe], m, _MEASURES)
+          dv01 = _flip(row["DV01"])                     # zero-curve parallel DV01, dPV/ds per +1bp
+          annuity = -(up["PV"] - dn["PV"]) / 2e-4        # Annuity = -dPV/dK (K decimal): N x A, payer > 0, receiver < 0
+          # own-rate IRDelta (dPV/dr, the contract) from first-order codes only: DV01 is linear in K, so the
+          # same swap struck at its par rate r has DV01 dv01 + (r - K) x dDV01/dK, and a par-struck swap moves
+          # only through r: dr/ds = that DV01 / (Annuity x 1e-4). IRDelta = dv01 / (dr/ds).
+          k, r = t.fixed_rate_pct / 100.0, row["PAR_PCT"] / 100.0
+          d_dv01_dk = (_flip(up["DV01"]) - _flip(dn["DV01"])) / 2e-4
+          dr_ds = (dv01 + (r - k) * d_dv01_dk) / (annuity * 1e-4) if annuity else 0.0
+          memo[(d, t)] = dict(row, dv01=dv01, annuity=annuity, delta=dv01 / dr_ds if dr_ds else 0.0, spot_par_pct=spot["PAR_PCT"])
+      return memo[(d, t)]
 
   def delta_ladder(m, trades, weights):
       out = {"1Y": 0.0, "2Y": 0.0, "5Y": 0.0, "10Y": 0.0, "30Y": 0.0}
@@ -121,10 +136,9 @@ code: |
       rows = _CLIENT.price([t for t, _ in live], m, ["BUCKET_DV01"])   # ONE batched call for the whole book
       for (t, w), row in zip(live, rows):
           for key, v in row["BUCKET_DV01"].items():
-              # vendor: key "USD.SOFR:2Y", PV change per 1bp DOWN (receiver > 0)
-              # pricebt: key "2Y", ccy per +1bp (payer > 0) -> strip the curve prefix and flip the sign.
+              # vendor: key "USD.SOFR:2Y"; pricebt: key "2Y" -> strip the curve prefix; sign via _flip.
               # An unknown pillar raises KeyError on purpose: never drop risk silently.
-              out[key.split(":", 1)[1]] -= w * v
+              out[key.split(":", 1)[1]] += w * _flip(v)
       return out
 
 market:
@@ -136,15 +150,27 @@ trade:
   expr: 'build_swap(resolved)'
   build_on: resolve_date              # a TradeSpec holds no market state: build once, price on any market
 functions:
-  npv:      {expr: '_risk(market, trade)["PV"]', unit: ccy}                # vendor PV is ccy, holder's view: same as pricebt
-  dv01:     {expr: '-_risk(market, trade)["DV01"]', unit: ccy_per_bp}      # vendor: per 1bp DOWN, receiver > 0 -> pricebt: per +1bp, payer > 0
-  par_rate: {expr: '_risk(market, trade)["PAR_PCT"]', unit: bp}            # MISTAKE: vendor percent, declared bp
+  npv:       {expr: '_risk(market, trade, pricebt_date)["PV"]', unit: ccy}               # vendor PV is ccy, holder's view: same as pricebt
+  delta:     {expr: '_risk(market, trade, pricebt_date)["delta"]', unit: ccy_per_bp}     # own-rate dPV/dr (see _risk); payer > 0
+  dv01:      {expr: '_risk(market, trade, pricebt_date)["dv01"]', unit: ccy_per_bp}      # zero-curve DV01: single curve, so it is the discount-only delta too
+  par_rate:  {expr: '_risk(market, trade, pricebt_date)["PAR_PCT"]', unit: bp}           # MISTAKE: vendor percent, declared bp
+  spot_rate: {expr: '_risk(market, trade, pricebt_date)["spot_par_pct"] * 100.0', unit: bp}   # percent -> bp
+  annuity:   {expr: '_risk(market, trade, pricebt_date)["annuity"]', unit: ccy}
+  expiry_in_years: {expr: 'max((resolved["termination_date"] - pricebt_date).days, 0) / 365', unit: decimal}   # date arithmetic (DEV-I17)
+  zero_per_bp:  {expr: '0.0', unit: ccy_per_bp}    # a swap has no vol exposure (R2-8); one curve, one currency: no basis/xccy
+  zero_per_bp2: {expr: '0.0', unit: ccy_per_bp2}
+  zero_vol:     {expr: '0.0', unit: bp}            # vol levels 0.0 by convention, so mixed swap + swaption books work
 portfolio_functions:
   delta_ladder:
     expr: 'delta_ladder(market, trades, weights)'
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR, mkt_asset: USD-SOFR, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'                                     # a swap has no vol cube: empty (R2-8)
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: USD, mkt_class: SWAPTION}
 attributes:
   effective_date:   'resolved["effective_date"]'
   termination_date: 'resolved["termination_date"]'
@@ -152,5 +178,17 @@ attributes:
 size_attribute: notional_amount
 risk_measures:
   Price: npv
-  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: dv01
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
   IRFwdRate: par_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity

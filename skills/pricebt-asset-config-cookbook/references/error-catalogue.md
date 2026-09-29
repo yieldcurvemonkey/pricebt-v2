@@ -1,6 +1,10 @@
 # pricebt error catalogue (asset configs, sessions, pricing)
 
-The message fragments below are copied from `src/pricebt/assets/*.py` and `src/pricebt/errors.py`. Every `ConfigError` carries `asset` and `key` attributes and, where possible, a did-you-mean suggestion.
+The message fragments below are copied from `src/pricebt/assets/*.py`, `src/pricebt/risk/contracts.py`,
+`src/pricebt/errors.py`, `src/pricebt/markets/*.py` and `src/pricebt/risk/__init__.py`. Every
+`ConfigError` carries `asset` and `key` attributes and, where possible, a did-you-mean suggestion.
+`tests/skills/test_skill_asset_config_cookbook.py` raises the error behind each literal fragment and
+checks the text still matches.
 
 ## At load (`load_asset`, `PricebtSession.use`)
 
@@ -17,7 +21,41 @@ The message fragments below are copied from `src/pricebt/assets/*.py` and `src/p
 | `must be 1, got` (schema_version) | wrong or missing version | `schema_version: 1` |
 | `duplicate mapping key` | a repeated YAML key (the loader is strict) | delete the duplicate |
 | `duplicate asset name` | two configs with the same `asset:` id | make the ids unique |
-| `market key K: ... differs between assets` | two assets share `market.key` but their imports, code or market expression differ | give each asset its own key |
+| `market key K: ... differs between assets` | two assets share `market.key` but their imports, code or market expression differ | give each asset its own key (a swaption never shares a swap's key) |
+| `is not a class exported by pricebt.instrument` | `instrument:` is misspelt, or names a class pricebt does not generate | use the suggested class (`IRSwap`, `IRSwaption`, `Bond`, ...) or `ConfigInstrument` |
+
+### The measure contract (IRSwap, IRSwaption, Bond; DEV-I11)
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `measure-contract problem(s) for instrument` | one `ConfigError` listing every contract problem of the config | fix each listed line; the message ends with a paste-ready block for the missing measures |
+| `neither mapped nor declared under unsupported_measures` | a contract measure (or one form: `scalar`, `bucketed`, `frame`) has no mapping and no declaration | map it (cookbook patterns 14-27, or the connect skill's template), or paste its line from the block |
+| `Map each missing measure, or declare what the library cannot compute` | the header of the paste-ready `unsupported_measures:` block | paste the block and replace every `"TODO: ..."` with a specific, true reason |
+| `has unit 'X'; allowed [...]` | a mapped function's unit is outside the measure kind's units (e.g. a vega in `bp`) | convert to the allowed unit: `ccy_per_bp` for first-order, `ccy_per_bp2` for second-order, `ccy` for Price/Theta/Annuity, `bp`/`pct`/`decimal` for levels |
+| `level must be intensive (set scale_with_quantity: false)` | a rate, vol, time or probability function scales with quantity (e.g. `unit: number` for `ExpiryInYears`) | use `bp`/`pct`/`decimal` (intensive by default), or set `scale_with_quantity: false` |
+| `this measure is a table: map a functions: entry with` | `Cashflows` is mapped to a scalar function | a `functions:` entry with `returns: frame` (pattern 23) |
+| `returns a frame; this measure needs a number` | a scalar measure is mapped to a `returns: frame` function | map a scalar function |
+| `must include ['payment_amount']` | the `Cashflows` function's `scale_columns` leave out `payment_amount` | `scale_columns: [payment_amount]` (plus any other amount columns) |
+| `its amounts must scale with the position` | the `Cashflows` function has `scale_with_quantity: false` | remove it: cash amounts scale with the position |
+| `must be a non-empty reason string (why the library cannot compute it)` | an `unsupported_measures:` value is empty | give a specific, true reason |
+| `must give a reason, or at least one of` | an `unsupported_measures:` value is an empty mapping | a reason string (the whole measure), or `{scalar: ..., bucketed: ...}` |
+
+Warnings (`UserWarning`; the config still loads, and `python -W error` turns them into failures):
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `the mapping is used -- remove or narrow the stale declaration` | a measure (form) is both mapped and declared; the mapping wins (R2-9) | delete the declaration, or narrow it to the form that is really missing |
+| `is a preset or fallback of IRDelta; declare IRDelta instead` | a preset (`IRDeltaParallel`, `IRVegaParallel`, ...) is declared; it declares nothing the contract counts | declare the base measure |
+| `contract row has only` | a declaration names a form the contract row does not have (e.g. `IRVanna: {bucketed: ...}`) | remove the extra form |
+| `nor a pricebt.risk measure` | a declared name is neither in the contract nor a gs measure: probably misspelt | use the did-you-mean name |
+
+### Schema of `functions:` / `portfolio_functions:`
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `is allowed only with returns: frame` | `scale_columns:` on a scalar function | remove it, or add `returns: frame` |
+| `must list the columns that scale with quantity` | an extensive `returns: frame` function without `scale_columns` | list the amount columns (`[payment_amount]`) |
+| `returns 'frame' is not one of ['buckets', 'scalar']` | `returns: frame` on a portfolio function | frames are per-trade `functions:` only (R2-15) |
 
 ## At first evaluation (`AssetEvaluationError`)
 
@@ -28,10 +66,15 @@ The message fragments below are copied from `src/pricebt/assets/*.py` and `src/p
 | `imports` | the library is not installed or not on `sys.path`; a missing environment variable. The error is cached, so fix it and restart the process. |
 | `code` | an exception in module-level code (client connection, file not found) |
 | `market` | the market loader raised instead of returning `None` (holiday, no data) |
-| `resolve` | kwargs the parser does not accept (`'100k'`, `'=solvefor(...)'`), a missing default |
+| `resolve` | kwargs the parser does not accept (`'100k'`, `'=solvefor(...)'`, `'25d'`, a `Straddle` your library cannot price), a missing default |
 | `trade` | the resolved terms don't match the library's builder |
 | `functions.<name>` / `portfolio_functions.<name>` | a wrong method name or argument order, or a measure the library does not support |
 | `attributes.<name>` | the attribute reads a key that `resolve` does not produce |
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `NameError: name 'market' is not defined` | a comprehension or generator expression inside an `expr`: injected names are `eval` locals, invisible in a comprehension's own scope | move the loop into a `code:` helper and pass `market` (or `trade`, ...) as an argument |
+| `NotImplementedError: TODO (asset-config template)` | a primitive of a connect-skill template is still a stub | implement that `lib_*` primitive with your library's call |
 
 ## At pricing
 
@@ -40,13 +83,36 @@ The message fragments below are copied from `src/pricebt/assets/*.py` and `src/p
 | `no asset matches IRSwap({...})` | no registered asset's `match:` fits these kwargs | register the right config, fix `match:`, or pass `pricebt_asset=` |
 | `ambiguous: IRSwap matches [...]` | two configs match | tighten `match:` or pass `pricebt_asset=` |
 | `unknown asset 'x'; registered: [...]` | `pricebt_asset=` names an unregistered config | add it to `PricebtSession.use(assets=[...])` |
-| `has no mapping for risk measure X` | the strategy requests a measure the config does not map | add `X:` under `risk_measures` (presets such as `IRDeltaParallel` fall back to `IRDelta`) |
-| `has no scalar mapping` / `has no bucketed mapping` | `IRDelta(aggregation_level='Type')` needs `scalar`; a bare `IRDelta` needs `bucketed` | add the missing form |
-| `sets bump_size; pricebt passes only aggregation_level and currency` | a gs measure parameter pricebt cannot honour | drop the parameter, or compute that variant as its own function |
+| `has no mapping for risk measure X` | the strategy requests a measure the config does not map (on a class without a contract, or a measure outside it) | add `X:` under `risk_measures` (presets such as `IRDeltaParallel` fall back to `IRDelta`) |
+| `is declared unsupported (every form)` (or `(scalar)`, `(bucketed)`, `(frame)`) | `UnsupportedMeasureError` (a `ConfigError` and a `NotSupportedError`): the config declares the measure, and the message quotes its reason | map it once your library can compute it; otherwise the strategy must not ask for it (e.g. use `ir_pnl_definition(vega=False, ...)`) |
+| `has no bucketed mapping; request` | a bare finite-difference measure (`IRVanna`, `IRDelta`, ...) asks for the bucketed form, and only the scalar is mapped | request `X(aggregation_level='Type')` for the scalar, or map a ladder |
+| `has no scalar mapping` | the measure has no scalar function to answer a scalar request | map a scalar function |
+| `does not reference pricebt_bump_size` | `bump_size` (or `finite_difference_method`, `scale_factor`, `local_curve`) was requested, and the chosen function's expression does not name `pricebt_<parameter>` (DEV-I10) | name the variable in the expression and honour it (pattern 24), or drop the parameter from the request |
+| `it is honoured GS server-side and pricebt cannot pass it to an asset config` | `mkt_marking_options` was set (DEV-I8) | drop it |
 | `has unit bp; it cannot be converted to USD` | a currency conversion was requested for a rate measure | request it without `currency=`, or give the function a currency unit |
+| `returns a frame (a table); it cannot be converted to` | a table measure (`Cashflows`) under `result_ccy` or a currency parameter | ask for it in its own currency |
+| `frame is missing required column(s)` | a `returns: frame` function's rows lack `payment_date`, `payment_amount`, `currency` or `payment_type` | return every required column (`pd.DataFrame(columns=[...])` when there are no rows) |
+| `are not columns of the frame` | the rows lack a `scale_columns` column | add the column, or fix `scale_columns` |
+| `a frame result must be a DataFrame or a list of dicts` | a `returns: frame` function returned a number or another type | return a DataFrame or a list of row dicts (`[]` is fine) |
 | `no FX config: cannot convert` | a mixed-currency book or `result_ccy` without an FX config | `PricebtSession.use(..., fx=...)` |
 | `no FX rate` (`MarketDataUnavailable`) | the FX config returned `None` or a value ≤ 0 | fix the FX data for that date |
 | `MarketDataUnavailable(asset, date)` | a market was required on a date with `None` | check the envelope and holidays; the engine's `missing_market='drop'` covers grid dates |
 | `is not hashable plain data` / `is not plain data` | `resolve` returned a library object, a list or a dict | return plain values (str/int/float/bool/None/date/tuple) |
 | gs `Cannot aggregate cash in multiple currencies` | a mixed-currency book without `result_ccy` | `run_backtest(result_ccy="USD")` plus an FX config |
 | gs `cannot hedge in a different currency` | the hedge risk measure has no `currency` for a cross-currency hedge | `IRDelta(aggregation_level='Type', currency='USD')` |
+
+## Contexts, PnlExplain, portfolios and P&L
+
+| Message contains | Cause | Fix |
+|---|---|---|
+| `is not supported: pass a CloseMarket(date=...)` | `PricingContext(market=...)` with anything but a `CloseMarket` (DEV-M1) | `PricingContext(pricing_date=d, market=CloseMarket(date=t))`, or no `market` |
+| `references neither market_to nor pricebt_to_date` | `PnlExplain` is mapped to a function that does not read the target market (DEV-M2) | a buckets portfolio function whose expression names `market_to` (pattern 22) |
+| `explains to the pricing date's own close` | `PnlExplainClose()` (or `PnlExplain(CloseMarket())`) priced with no `CloseMarket` override: from and to are the same market | price under `PricingContext(market=CloseMarket(date=...))` of another date, or pass `PnlExplain(CloseMarket(date=...))` |
+| `explains to the live market, which is GS server-side` | `PnlExplainLive()` (or `PnlPredictLive`) | `PnlExplain(CloseMarket(date=...))` |
+| `is GS server-side (portfolio persistence)` | a server-only `Portfolio` method (`save`, `get`, `from_portfolio_id`, `from_book`, ...) | build the `Portfolio` in memory (`Portfolio([...])`, `from_frame`, `from_csv`) |
+| `the definition expects` | `pnl_explain` with an `ir_pnl_definition(rate_unit=..., vol_unit=...)` whose units differ from a held asset's `IRFwdRate` / vol unit (DEV-E21) | pass the units your configs declare (`'bp'`, `'pct'`, `'decimal'`), and give every asset in the book the same units |
+| `every held asset must map every measure the definition reads` | `attribution.definition_for` (`skills/pricebt-pnl-attribution/scripts/attribution.py`): an asset declares, or does not map, a measure the chosen definition prices, e.g. gamma or `Theta` on a PV-only config, or a vol measure on a swap without the R2-8 zeros | map it (the `'0.0'` zeros for a swap or bond), drop the attribute (`kind='bond'`, `vanna=False`, ...), or pass `assets=[...]` to leave out configs the book never trades |
+| `Cannot aggregate results with different units on` | `BackTest.pnl_explain_table()` on a step whose held book mixes `Price` currencies, or pays `Cashflows` in another currency (the `result_summary` rule; `Portfolio(...).calc(...).aggregate()` says `... different units for`) | attribute each currency's book in its own run |
+| `PnlAttribute names must be unique` | two attributes share an `attribute_name`, or one is named like a fixed column (`actual_pnl`, `cashflow_pnl`, `economic_pnl`, `explained_pnl`, `residual_pnl`) | rename the attribute |
+| `rate_unit must be one of` | `ir_pnl_definition(rate_unit=...)` (or `vol_unit=`) given anything but `'bp'`, `'pct'` or `'decimal'` | pass the unit your configs declare; `attribution.definition_for` reads it for you |
+| `second_order cannot be combined with cross_market_data_metric` | a `PnlAttribute` with `second_order=True` and a cross level | a cross term is `k·R·Δm₁·Δm₂`, first order in each: drop `second_order` |

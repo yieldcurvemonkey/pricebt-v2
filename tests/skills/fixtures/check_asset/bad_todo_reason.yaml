@@ -1,0 +1,65 @@
+# Broken on purpose (check_asset fixture): the loader's paste-ready unsupported_measures block pasted
+# without replacing its TODO reason. It loads (any non-empty reason does, R2-12). Must WARN
+# contract[Theta] "declaration reason is a TODO".
+# Copy of tests/assets/toy_usd_irs.yaml with ONE thing broken (unsupported_measures.Theta).
+schema_version: 1
+asset: bad_todo_reason
+description: >
+  Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
+  fixture, never shipped. Exercises build_on: each_market. Units: npv USD; dv01 USD per +1bp
+  (payer > 0); rates in bp.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); R2-20 keeps this config declaration-only
+  IRDiscountDeltaParallel: "toylib.rates has one curve and no discount-only bump function; not wired in this config"
+  IRGammaParallel: "toylib.rates has no own-rate gamma function; not wired in this config"
+  IRGamma: "toylib.rates has no gamma ladder function; not wired in this config"
+  IRVega: "toylib.rates has no volatility (a swap's vega is 0.0 by convention, R2-8, but no zero function is wired here)"
+  IRVanna: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRVolga: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRBasis: "toylib.rates is single-curve (no projection-vs-discount basis); not wired in this config"
+  IRXccyDelta: "single-currency toy swap with no cross-currency basis; not wired in this config"
+  IRSpotRate: "toylib.rates has no spot-starting-equivalent par rate function; not wired in this config"
+  IRAnnualImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRAnnualATMImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  IRDailyImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
+  Theta: "TODO: why your library cannot compute this"   # MISTAKE: the pasted block's placeholder, never replaced
+  ExpiryInYears: "no years-to-final-date function is wired in this config"
+  Annuity: "toylib.rates exposes pv01 but no Annuity function; not wired in this config"
+  Cashflows: "toy npv never drops paid coupons (total return by construction), so its Cashflows would be an empty frame (R2-6); no frame function is wired in this config"
+defaults:
+  pay_or_receive: Receive
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.rates as tr
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+  build_on: each_market
+functions:
+  npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate

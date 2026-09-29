@@ -12,8 +12,8 @@ library such as ARBS is named only inside those config files, never in pricebt's
 
 [`skills/README.md`](skills/README.md) is a skills library for AI agents (and people). It covers two jobs:
 
-- **Hook up a pricing/data library and reach a first backtest fast.** You get a fast path, a discovery questionnaire, a fictional bank-SDK worked example and an automated config checker.
-- **Take a plain-English strategy idea to a reviewed tearsheet.** The steps are intake questions, implementation recipes, adversarial review, spot checks and a report generator.
+- **Hook up a pricing/data library and reach a first backtest fast.** You get a fast path, a discovery questionnaire, a fictional bank-SDK worked example and an automated config checker. For swaps, swaptions and bonds it also covers the IR risk-measure contract: what each measure means, how to derive it from your library by bump-and-reprice, when to declare it unsupported, and how to verify it. It also covers pricing and risking portfolios.
+- **Take a plain-English strategy idea to a reviewed tearsheet.** The steps are intake questions, implementation recipes, adversarial review, spot checks, P&L attribution by greek and a report generator.
 
 Start with [`skills/pricebt-start-here/SKILL.md`](skills/pricebt-start-here/SKILL.md).
 

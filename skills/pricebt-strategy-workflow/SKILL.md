@@ -1,6 +1,6 @@
 ---
 name: pricebt-strategy-workflow
-description: The end-to-end pipeline for a strategy study in pricebt - plain-English idea -> follow-up questions and a frozen strategy spec -> implementation -> adversarial review -> spot checks -> tearsheet delivery - with a gate between stages and a one-command driver (run_study.py) that produces the automated parts. Use whenever someone says "backtest this", "test this idea", or "is this strategy any good".
+description: The end-to-end pipeline for a strategy study in pricebt - plain-English idea -> follow-up questions and a frozen strategy spec -> implementation -> adversarial review -> spot checks -> tearsheet delivery - with a gate between stages and a one-command driver (run_study.py) that produces the automated parts, for swap, swaption and bond strategies. Use whenever someone says "backtest this", "test this idea", or "is this strategy any good".
 ---
 
 # Strategy workflow: idea → tearsheet
@@ -85,6 +85,18 @@ It does **not** do the judgment work: the adversarial review's checklist walk, t
 - Write the verdict paragraph.
 - *Deliver:* the tearsheet path, plus a five-line summary (template below).
 
+### Swaptions and bonds through the pipeline
+
+The stages are the same; these points differ from a swap study.
+
+- **Stage 0.** A swaption or bond config loads only if every measure of its class's contract (`src/pricebt/risk/contracts.py`) is mapped or declared under `unsupported_measures:`. Loading proves nothing about signs, units or expiry behaviour, so still run [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md). Before stage 2, confirm the config answers what the recipe needs, e.g. `Price` on the expiry date and an `expiration_date` attribute for options held to expiry, and `Cashflows` for bond coupons.
+- **Stage 1.** Ask the instrument-specific questions (position vs option type, expiry, tail, strike, settlement, premium 0; bond identifier, `size`, coupons, repo) from the intake question bank. `spec.py validate` rejects unstated positions, unknown kwargs and non-zero premiums.
+- **Stage 2.** Start from the matching spec in `skills/pricebt-strategy-recipes/example/`. Copy the class notes in `built.notes` (premium, expiry exits, coupons not booked, cross-type delta additivity) into the caveats.
+- **P&L decomposition.** The spec has no `pnl_explain` field yet, and `run_study.py` does not pass one. For the attribution, run the backtest yourself: `built = recipes.build(spec)`, `built.run_kwargs["pnl_explain"] = attribution.definition_for(session)` (it reads the configs' units and refuses a book it cannot attribute), then `GenericEngine().run_backtest(built.strategy, **built.run_kwargs)`, and read `bt.pnl_explain_table()`. For a bond book, report its `economic_pnl` next to `Total`: the engine books no coupons. Reading the table and diagnosing residuals: [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md).
+- **Automated gaps in `run_study.py`.**
+  - Its single-factor "P&L explain" spot check (`risk[t-1] × Δrate`) reads the signal instrument's `IRFwdRate` (swap par rate, swaption forward, bond yield; falling back to a `par_rate` function), converted to bp from the declared unit. For an option book it is only a first-order sanity check: vega, gamma and theta are real P&L, so use the decomposition above.
+  - Its standard caveats cover swap archetypes only. Add the class caveats by hand.
+
 If a gate fails, go back to the stage that owns the problem. A bug found in review is fixed in the code (stage 2), and the study re-runs from there. A changed spec is a new trial: log it, and keep the out-of-sample window untouched.
 
 ## Summary message template
@@ -93,7 +105,7 @@ If a gate fails, go back to the stage that owns the problem. A bug found in revi
 <name>: <verdict: promising / inconclusive / reject> - <one clause why>.
 Result: Sharpe <x> (t <t>, <years>y, <trials> trials), total P&L <ccy> <amount>, max drawdown <amount>, <n> trades.
 Robustness: costs x2 -> Sharpe <x>; OOS Sharpe <x>; signal shifted 1d -> <x>.
-Caveats: <top 2-3, e.g. coupons between marks not booked; 2021-2024 only; assumed 0.25bp costs>.
+Caveats: <top 2-3, e.g. coupons between marks not booked; option premium = entry PV, expiry at intrinsic; 2021-2024 only; assumed 0.25bp costs>.
 Tearsheet: reports/<name>/tearsheet.html
 ```
 

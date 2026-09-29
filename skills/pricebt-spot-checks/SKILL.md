@@ -20,7 +20,7 @@ A backtest that runs is not a backtest that is right. This skill checks a finish
 - Optional, strongly recommended:
   - `rerun`: a zero-argument callable that rebuilds the strategy and returns a fresh `BackTest` (for the determinism check);
   - `risk`: a scalar currency-per-bp column that is in `result_summary`, e.g. `IRDeltaParallel` (pass it in `run_backtest(risks=[Price, IRDeltaParallel])`);
-  - `rate_measure`: a bp series for the driving rate, e.g. `measure_series(IRSwap(termination_date="10y", notional_currency="USD"), "par_rate", start, end)` from `pricebt.data`.
+  - `rate_measure`: a bp series for the driving rate, e.g. `measure_series(IRSwap(termination_date="10y", notional_currency="USD"), IRFwdRate, start, end)` from `pricebt.data` (the own rate of any IR class: par rate, swaption forward, bond yield; multiply by 100 or 1e4 if `series.attrs["unit"]` is `pct` or `decimal`). A config function name such as `"par_rate"` also works.
 
 ## Outputs
 
@@ -59,10 +59,11 @@ A list of `CheckResult(name, status, detail)` with status `PASS | WARN | FAIL | 
 |---|---|---|
 | ledger identity | `Total == price + Cumulative Cash + Transaction Costs` on every row (1e-6 relative) | a post-processed frame, a wrong price column, a cost with the wrong sign |
 | closed-trade PnL | `Trade PnL == Close Value + Open Value` | an edited ledger; exit cash booked to another trade name |
-| trade repricing | on a seeded sample: `Open Value == -PV(open)`, `Close Value == +PV(close)`, repriced with **cold caches** | entry/exit sign errors, `quantity_` not applied, exit priced on the wrong date |
+| trade repricing | on a seeded sample: `Open Value == -PV(open)`, `Close Value == +PV(close)`, repriced with **cold caches** (a `HedgeAction` row, `Scaled_<hedge name>_<date>`, is the booked hedge `Portfolio`: its instruments are summed) | entry/exit sign errors, `quantity_` not applied, exit priced on the wrong date |
 | book repricing | on sampled grid dates: sum of held positions' PV == reported price | positions missing from or left in the book, stale ffilled PV |
 | cash roll-forward | cash moves only on payment dates and equals initial + cumulative payments | cash on the wrong date, double-booked exits, accrual that is unexpectedly on |
 | P&L explain | corr(daily ΔTotal, risk(t-1) × Δrate), residual variance share | risk sign flipped against P&L, rates in % not bp, P&L driven by something else. WARN below 0.5 for a directional book |
+| attribution residual | when the run has a `PnlDefinition` (`run_backtest(pnl_explain=...)`): `attribution.grade` of `pnl_explain_table()`, the worst of the residual variance share, 1 − r2 and \|Σ residual\| / Σ\|economic\|. PASS ≤ 5%, WARN ≤ 25%, else FAIL; FAIL on any NaN or on a material residual whose signature names an attribute; INFO without a definition (`check_pnl_attribution_generic`) | a **material** greek error: a wrong sign or unit, per-year theta, a vol level in pct declared bp, coupons with no `Cashflows`, NaN levels. A greek that is small on this book (half gamma on a short run) can stay under 5%: the detail names it as immaterial, and `check_asset.py` tests each greek alone. Diagnose with [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md) |
 | missing market | `missing_market_dates` / `missing_market_moves` | a data hole thinning the grid (WARN above 2% of the grid), late exits |
 | transaction costs / cash accrual | costs modelled at all (WARN if all zero), NaN costs inside the window (FAIL) | a frictionless backtest reported as tradable |
 | determinism | a rerun gives an identical `result_summary` | wall-clock dependence, unseeded randomness, state leaking between runs |
@@ -83,6 +84,7 @@ The repricing checks use a fresh `PricingService` built on the session's registr
 | cash roll-forward FAIL, stray dates | cash accrual or `initial_value` you did not intend | check `strategy.cash_accrual` and `run_backtest(initial_value=...)` |
 | P&L explain corr near -1 | risk sign convention opposite to P&L (receiver dv01 quoted positive) | fix the asset config's dv01 sign, not the P&L |
 | P&L explain corr low on a directional book | rate series is not the one that drives the book (tenor, curve), in %, or the book is dominated by carry/roll | pass the right `rate_measure`; quantify carry separately |
+| attribution residual WARN/FAIL | the attribution does not explain the P&L: see the residual taxonomy | follow `skills/pricebt-pnl-attribution/references/diagnosing-residuals.md`; the detail names the worst date |
 | transaction costs WARN | defaults are frictionless | add a `transaction_cost=` model to the actions |
 | transaction costs FAIL (NaN) | a `ScaledTransactionModel(RiskMeasure)` priced on a date with no value | check the cost date against the grid |
 | determinism FAIL | `date.today()`, random numbers, or mutable state shared between runs | make every input explicit and seeded |
@@ -111,3 +113,4 @@ You are done when all of these hold:
 - [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md): takes these results into the report.
 - [`pricebt-adversarial-review`](../pricebt-adversarial-review/SKILL.md): attacks the strategy once the numbers are known to be right.
 - [`pricebt-strategy-intake`](../pricebt-strategy-intake/SKILL.md): the spec that says what the backtest was supposed to do.
+- [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): the P&L by greek behind the "attribution residual" row, and how to diagnose a large residual.

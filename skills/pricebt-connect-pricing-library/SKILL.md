@@ -1,116 +1,170 @@
 ---
 name: pricebt-connect-pricing-library
-description: Fast path from "I have a bank pricing/data library (a Citi Datapoint/DP-style or JPM Athena-style platform, or an in-house one)" to a running pricebt backtest. Use it when you need to write a pricebt asset config against a new library, work out its units and signs, or connect a library for the first time.
+description: Fast path from "I have a pricing/data library" (a bank platform such as a Citi Datapoint/DP-style or JPM Athena-style service, an in-house library, a QuantLib- or rateslib-style object library, a REST analytics service, a bond-analytics package) to a checked pricebt asset config for an IRSwap, IRSwaption or Bond that answers the whole IR measure contract, and a running backtest. Use it to connect a library, add a swap, swaption or bond asset, work out which of your library's calls give each measure pricebt needs (delta, gamma, vega, vanna, volga, theta, rates, vols, annuity, cashflows, ladders) in which unit and sign, derive the ones it lacks by bumping, or declare them unsupported with a reason.
 ---
 
 # Connect a pricing library to pricebt
 
 pricebt has no pricing and no market data of its own. Every number comes from one YAML **asset
 config** per asset, whose Python strings call *your* library
-([`docs/v2/ASSET_CONFIG_GUIDE.md`](../../docs/v2/ASSET_CONFIG_GUIDE.md)). This skill gets you from
-the library to a checked config and a green smoke backtest. It follows a worked, tested example
-against a **fictional** bank-style SDK, Meridian
-([`example/`](example/README.md)). Meridian's conventions differ from pricebt's on purpose, so the
-example shows every conversion you are likely to need.
+([`docs/v2/ASSET_CONFIG_GUIDE.md`](../../docs/v2/ASSET_CONFIG_GUIDE.md)). For `IRSwap`, `IRSwaption`
+and `Bond` the config must also satisfy a **measure contract** (`src/pricebt/risk/contracts.py`,
+DEV-I11). For every gs IR measure the class supports (about 20: `Price`, the own-rate `IRDelta` and
+`IRGammaParallel`, `IRVega`/`IRVanna`/`IRVolga`, rate and vol levels, `Theta`, `Annuity`,
+`Cashflows`, ladders), the config either maps a function with the contract's unit, or declares the
+measure under `unsupported_measures:` with an honest reason. Anything else fails at load, and the
+error prints a paste-ready declaration block. This skill assumes you know your own library well. It
+tells you what pricebt needs for each measure, in your library's terms.
 
 ## When to use / not use
 
-- **Use** when you are connecting a library to pricebt for the first time, when adding a new
-  instrument or curve from a library you already use, or when a config's numbers look wrong
-  (units, signs, drift).
-- **Do not use** to design a strategy (see `pricebt-strategy-intake`) or to audit a finished config
-  (run `pricebt-verify-asset-config`, which step 6 below calls).
+- **Use** when you connect a library for the first time, add a swap, swaption or bond asset, map a
+  measure your config does not answer yet, or when a config's numbers look wrong (units, signs,
+  drift).
+- **Do not use** to design a strategy (`pricebt-strategy-intake`), or to audit a finished config
+  (`pricebt-verify-asset-config`, which step 7 calls).
 
 ## Inputs and outputs
 
-- **Inputs:** your library, importable in the same Python process. You also need one business date
-  it has data for (the commands use 2024-01-02 and 2024-04-02; change them if your history differs).
-- **Outputs:** a config under `configs/assets/`, a passing checker run, and a 3-month smoke backtest
-  whose `Total == Price + Cumulative Cash + Transaction Costs` on every row.
+- **Inputs:** your library, importable in the same Python process, and one business date it has
+  data for. The commands use 2024-01-02 and 2024-04-02; change them if your history differs.
+- **Outputs:** a config under `configs/assets/` that loads with no warning, a filled capability
+  worksheet (one line per contract measure: mapped, zero by convention, or declared with a reason),
+  a passing checker run, a 3-month smoke backtest, and a test.
 
 ## Procedure
 
-### A. Fast path (about 30 minutes if your library resembles the example)
-
-All commands run from the repository root in PowerShell. First set the environment. To dry-run the
-fast path on the example itself, use the commented values.
+All commands run from the repository root in PowerShell. Set the environment first:
 
 ```powershell
-$cfg = "configs/assets/<asset>.yaml"     # your new config;  example: "skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml"
-$lib = "<dir containing your package>"   # "" if pip-installed; example: "skills/pricebt-connect-pricing-library/example"
+$cfg = "configs/assets/<asset>.yaml"     # your new config
+$lib = "<dir containing your package>"   # "" if it is pip-installed
 $env:PYTHONPATH = "src;tests;$lib"; $env:CFG = $cfg
 ```
 
-1. **See the example pass** (proves your environment):
+### 1. Discover what your library can do, measure by measure
+
+Print the contract for your instrument, then fill the capability worksheet in
+[`references/discovery-questionnaire.md`](references/discovery-questionnaire.md) §9. For each
+measure, write down: is it native (which call)? In what unit and sign? If it is not native, which
+primitives derive it? How will you verify it? Sections 1-8 of that file cover the mechanics:
+session, market by date, holidays, trade construction, codes and batching. Sections 10-12 cover
+bump controls, swaptions and bonds. Answer with evidence (a docstring, the library's own tests, a
+REPL transcript), never from memory.
 
 ```powershell
-$env:PYTHONPATH = "src;tests;skills/pricebt-connect-pricing-library/example"
-python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:cacheprovider -q
-$env:PYTHONPATH = "src;tests;$lib"
+python -c "from pricebt.risk import contracts; [print(r.measure, r.forms, '-', r.doc) for r in contracts.contract_for('IRSwap')]"
+python skills/pricebt-risk-measures/scripts/measures.py contract IRSwap   # the same, as a table with units
 ```
 
-2. **Copy the example config**. Or copy the blank, commented
-   [`references/config-template.yaml`](references/config-template.yaml), which has a TODO at every
-   decision.
+### 2. Copy the template for your instrument
+
+| Instrument | Template (loads blank; maps the whole contract) | Runnable reference (toy library) |
+|---|---|---|
+| `IRSwap` | [`references/config-template.yaml`](references/config-template.yaml) | `tests/assets/toy_usd_irs_full.yaml` on `tests/toylib/irrisk.py` |
+| `IRSwaption` | [`references/config-template-swaption.yaml`](references/config-template-swaption.yaml) | `tests/assets/toy_usd_swaption.yaml` on `tests/toylib/swaption.py` |
+| `Bond` | [`references/config-template-bond.yaml`](references/config-template-bond.yaml) | `tests/assets/toy_usd_bond.yaml` on `tests/toylib/bond.py` |
+
+Each template has two layers in `code:`. **Primitives** (`lib_*`) are the only calls into your
+library. Each is a stub that raises `NotImplementedError("TODO ...")` and whose docstring says what
+pricebt needs back. **Recipes** derive every contract measure from the primitives: own-rate delta
+and chain-rule gamma, a discount-only bump, translated-curve theta, vol-bump vega, vanna and volga,
+key-rate and diagonal-gamma ladders, the `"<tail>;<expiry>"` vega cube, and `ExpiryInYears` from the
+resolved dates. `tests/skills/test_skill_connect_example.py` fills the primitives with the toy
+library and checks every measure against the toy config, so the recipes are tested code. Change
+`asset:`, `description:`, `match:`, `currency:` and `market.key:`.
+
+### 3. Fill the primitives with your library's calls
+
+| Primitive | What pricebt needs back | Typical call by library shape (examples, not APIs) |
+|---|---|---|
+| `lib_market(d)` | the close of `d` (curves, and vols for options) as ONE object, or `None` on a day with no data | service: `client.market(as_of=...)` in a narrow `try/except`; object library: build or look up the day's curve |
+| `lib_pv(m, t)` | holder-signed PV in `currency:` | service: `price(trades, ["PV"])`; QuantLib-style: `swap.NPV()` after setting the engine's curve handle |
+| `lib_own_rate` / `lib_fwd_rate` / `lib_yield` | the own rate as a DECIMAL: swap par rate, forward swap rate, yield to maturity | `fairRate()`-style par rate (convert a percent quote); a bond's yield in the SAME convention as `lib_pv_at_yield` |
+| `lib_shift(m, h)` | every curve shifted in parallel by `h` (decimal); for options, normal vols held | a spread over the curve (QuantLib-style zero-spreaded term structure; rateslib-style `Curve.shift`), or a bump of the par quotes and a re-solve |
+| `lib_shift_discount`, `lib_shift_pillar` | only the discount curve, or only one pillar, shifted | the same mechanism on one curve, or on one input quote |
+| `lib_translate(m, days)` | the market `days` later with **forwards fixed** (and option vols held) | QuantLib-style implied term structure at the new reference date; rateslib-style `Curve.translate`, **not** `roll` |
+| `lib_vol_shift(m, h)` (swaption) | every **normal** vol shifted by `h` (1bp = 1e-4) | a normal surface: add `h`; a lognormal surface: see cookbook pattern 18 |
+| `lib_annuity`, `lib_cashflows`, `lib_spot_rate` | N·A in ccy, **payer-positive** (receive-fixed < 0); the flows the PV will still drop; the spot-starting par rate | `−1e4 × fixedLegBPS` (QuantLib-style BPS is negative for a payer); the leg schedule; a probe swap |
+| `lib_bond_static`, `lib_pv_at_yield` (bond) | plain static data; the dirty PV at a given yield and date | the security master; price-from-yield |
+
+Convert every unit and sign **once, inside the primitive**, with a `# vendor: X -> pricebt: Y`
+comment. The table is in [`references/convention-conversions.md`](references/convention-conversions.md).
+
+### 4. Keep each recipe, or map your native measure
+
+Keep the recipe where your library has no such measure. Where it has one (a native vega, bucketed
+delta, theta or yield DV01), point the function's `expr` at it, converted to the contract's unit
+and sign, and check it once against the recipe. They must agree to about 1e-4 relative, or you
+must be able to explain the difference. Traps: a curve DV01 is not the own-rate delta (it is exact
+only when dr/ds = 1). An annuity pv01 is exact only at the money. A "gamma" that is the change in
+pv01 per bp is half the gamma. A theta per year, per business day, or on a rolled curve is not
+`Theta`. A lognormal vega is not a rescaled normal vega. The recipes behind each of these are in
+[`pricebt-asset-config-cookbook`](../pricebt-asset-config-cookbook/SKILL.md) patterns 14-27.
+
+### 5. Declare what your library cannot compute
+
+Delete the measure's `risk_measures:` line and load the config. The `ConfigError` lists every gap
+and ends with a paste-ready `unsupported_measures:` block. Paste it, and replace each
+`"TODO: ..."` with a specific, true reason ("yourlib's swaption has no vol-surface bump"). A
+request for a declared measure raises `UnsupportedMeasureError` with that reason. Never map a fake
+`0.0` or a NaN instead. The **zero-by-convention** rows are not declarations: map them to `0.0`.
+These are a swap's or a bond's `IRVega`, `IRVanna`, `IRVolga` and vol levels, and `IRBasis` and
+`IRXccyDelta` on a single-curve, single-currency library (R2-8). Mixed books with vol attribution
+need these zeros. `python skills/pricebt-risk-measures/scripts/measures.py matrix $cfg` audits the
+result row by row without running your library, and exits 1 while any row is missing or `TODO`
+(with `--strict`, also while a declaration has a hint: one every library can avoid).
+
+### 6. Load, then verify every measure on one trade
 
 ```powershell
-Copy-Item skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml $cfg
-```
-
-   Change `asset:`, `description:`, `match:`, `currency:` and `market.key:`.
-
-3. **Replace each Meridian call with your library's equivalent.** If you cannot fill a row, work
-   through section B for that row.
-
-   | In the config | Meridian call | What you need from your library |
-   |---|---|---|
-   | `imports:` | `import meridian_sdk as mdn` | the import (set any import-time env vars first) |
-   | `_CLIENT` | `mdn.connect(env="SIM")` | one session per process |
-   | `load_market` | `_CLIENT.market(iso, curve)` and `except (MarketClosed, NoData)` | the market by as-of date, and the exceptions for "no data" |
-   | `resolve_swap` | `spot_date`, `maturity`, and `price(..., ["PAR_PCT"])` | spot date, tenor→date, and the par rate at the trade date |
-   | `build_swap` | `_CLIENT.swap(ccy, start, end, fixed_rate_pct, notional, direction)` | the trade constructor, its rate unit and its side convention |
-   | `_risk` | `_CLIENT.price([t], m, ["PV","DV01","PAR_PCT"])` | PV, scalar DV01 and par rate, in one call if possible |
-   | `delta_ladder` | `_CLIENT.price(trades, m, ["BUCKET_DV01"])` | bucketed delta for many trades in one call |
-
-   Convert every unit and sign **on the line that uses it**, with a `# vendor: X -> pricebt: Y`
-   comment (see the table in section C).
-
-4. **Load it.** This checks the schema and compiles every expression. It never runs your library:
-
-```powershell
-python -c "import os; from pricebt.assets.config import load_asset; print(load_asset(os.environ['CFG']).name)"
-```
-
-5. **Price one ATM payer.** Expect `|npv| < 1e-6 * notional`, `dv01 > 0` (about 900 per 1mm for a
-   10y) and `par_rate` in bp (hundreds). Also expect `fixed_rate * 1e4 == par_rate` on the trade date.
-
-```powershell
+python -W error -c "import os; from pricebt.assets.config import load_asset; print(load_asset(os.environ['CFG']).name)"
 @'
-import os
+import os, pricebt.risk as risk
 from datetime import date
-from pricebt.instrument import IRSwap
+from pricebt.instrument import IRSwap      # or IRSwaption / Bond
+from pricebt.markets import PricingContext
+from pricebt.risk import contracts
 from pricebt.session import PricebtSession
 s = PricebtSession.use(assets=[os.environ["CFG"]])
-d = date(2024, 1, 2)
-r = s.pricing.resolve(IRSwap("Pay", "10y", "USD", 10_000_000, fixed_rate="ATM"), d, None)
-print(r.resolved_terms)                    # absolute dates, decimal strike, signed notional
-for f in ("npv", "dv01", "par_rate"):
-    print(f, s.pricing.unit_value(r, d, f, None))
+inst = s.pricing.resolve(IRSwap("Pay", "10y", "USD", 1e6, fixed_rate="ATM"), date(2024, 1, 2), None)
+print(inst.resolved_terms)                 # absolute dates, a decimal strike, a signed notional
+with PricingContext(date(2024, 1, 2)):
+    for r in contracts.contract_for(type(inst).__name__):
+        m = getattr(risk, r.measure)
+        req = m(aggregation_level="Type") if isinstance(m, risk.RiskMeasureWithFiniteDifferenceParameter) and "scalar" in r.forms else m
+        try:
+            print(r.measure, inst.calc(req).result())
+        except Exception as exc:           # a declared measure prints its reason
+            print(r.measure, type(exc).__name__, exc)
 '@ | python -
 ```
 
-6. **Run the checker.** This is the next step, owned by `pricebt-verify-asset-config`. It probes
-   the config the way a backtest will (market on weekends, resolve pinning, units, signs, ladder sum,
-   P&L explain, smoke backtest) and exits 1 on any FAIL:
+`-W error` makes a stale declaration (a measure both mapped and declared) fail. Then check every
+number against its "Verify with" column (questionnaire §9) and the sign self-tests in the
+conversions reference. ATM payer above: `|npv| < 1e-4 x notional` (as `swap_atm_npv`), delta > 0
+(about 900 per 1mm for a 10y) and equal to `Annuity x 1e-4`, `IRFwdRate` in bp = strike x 1e4, a
+receiver's delta exactly the negative; rerun off the money with `fixed_rate="ATM+25"`. Swaption:
+`Sell` = -`Buy`, `Straddle` = payer + receiver, vega > 0 and 0.0 after expiry. Bond: delta < 0,
+gamma > 0, `Theta` about PV x yield / 365.
+
+### 7. Run the checker
+
+This step belongs to `pricebt-verify-asset-config`. The checker probes the config the way a backtest
+will (market on weekends, resolve pinning, units, signs, ladders, P&L explain, smoke backtest) and
+exits 1 on any FAIL:
 
 ```powershell
 python skills/pricebt-verify-asset-config/scripts/check_asset.py $cfg --sys-path $lib --date 2024-01-02 --date 2024-04-02
 ```
 
-   Fix every FAIL. Read every WARN: a par rate left in percent is only a WARN (see
-   [`example/mistakes/`](example/mistakes/README.md)).
+Fix every FAIL, and read every WARN. A par rate left in percent but declared `bp` **FAILs**
+`swap_par_rate_atm` (the ATM par rate is not the strike x 1e4) and WARNs `swap_par_rate_unit`
+("could be percent"). See [`example/mistakes/`](example/mistakes/README.md).
 
-7. **Run a 3-month smoke backtest** (a monthly-rolled 10y payer):
+### 8. Run a 3-month smoke backtest
+
+This is a monthly-rolled 10y payer; use your instrument:
 
 ```powershell
 @'
@@ -133,109 +187,115 @@ assert ((s["Total"] - (s[Price] + s["Cumulative Cash"] + s["Transaction Costs"])
 '@ | python -
 ```
 
-   The dropped dates should be exactly your library's holidays and data gaps.
+The dropped dates should be exactly your library's holidays and data gaps. For a swaption, add
+`attributes: {expiration_date: ...}` (the template has it) and try `AddTradeAction(option, 'expiration_date')`.
 
-8. **Add a test** that runs your config (copy the shape of
-   `tests/skills/test_skill_connect_example.py`). Mark it so it skips when the library is absent.
+### 9. Add a test
 
-### B. Unknown library: discovery
+Copy the shape of `tests/skills/test_skill_connect_example.py`, and mark the test so it skips when
+your library is absent.
 
-When a row of the step-3 table has no obvious answer, go through
-[`references/discovery-questionnaire.md`](references/discovery-questionnaire.md). It covers
-session/auth, the market handle by date, trade construction, measure codes/units/signs, bucket
-keys, holiday/no-data behaviour, batching, the EOD timestamp and timezone, and fixings. Answer
-each question with evidence (a docstring, the library's own tests, or a REPL transcript), never
-from memory.
+### Worked example: a fictional bank SDK (swap)
 
-### C. Convention conversions (full table: [`references/convention-conversions.md`](references/convention-conversions.md))
+[`example/`](example/README.md) wires a **fictional** bank-style SDK, Meridian, whose conventions all
+differ from pricebt's on purpose (ISO-string dates, percent rates, a receiver-positive DV01, a
+floating tenor). It is the PV-only service with no scenario request: from PV, DV01 and the par rate
+in one batched call it derives the own-rate `IRDelta`, `Annuity` and `IRSpotRate`, maps the zeros,
+and declares only gamma, the gamma ladder, `Theta` and `Cashflows` (`measures.py matrix --strict`
+passes). The README shows each conversion and three one-error variants the checker catches. Run it:
 
-| Vendor convention | pricebt convention | Conversion |
-|---|---|---|
-| rate in percent / decimal | `par_rate` in **bp** | `* 100` / `* 1e4` |
-| strike input in percent | resolved `fixed_rate` is **decimal** | `k * 100` in `build` only |
-| `'ATM+25'` | offset in **bp** | `par + 25 / 1e4` in `resolve` |
-| DV01 per 1bp **down** (receiver > 0) | `ccy_per_bp`, per **+1bp**, payer > 0 | `-x` |
-| delta per 1% / per unit rate | per bp | `/ 100` / `* 1e-4` |
-| risk per unit notional | total for one unit of the instrument | `* abs(notional)` |
-| bucket key `"USD.SOFR:2Y"` | `"2Y"` | `key.split(":", 1)[1]`, and raise on unknown pillars |
-| notional > 0 plus `PAY`/`RECEIVE` | signed notional, payer > 0 | map in `resolve`/`build` |
-| ISO string / datetime dates | `datetime.date` | `date.fromisoformat` / `.date()` |
-| raises on holiday / gap | `None` from `market.expr` | narrow `try/except` in `load_market` |
-| tenor `end` resolved at pricing time | absolute date pinned at the trade date | library maturity helper in `resolve` |
-| strike `None` = "at par" | decimal strike fixed at the trade date | price the par rate once in `resolve` |
+```powershell
+$env:PYTHONPATH = "src;tests;skills/pricebt-connect-pricing-library/example"
+python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:cacheprovider -q
+```
 
-### D. Service-style vs in-process libraries
+### Service-style vs in-process libraries
 
 - **Service-style** (a DP- or Athena-style platform behind a client: every call is a network round
-  trip, and a session needs auth). Make one client at module level in `code:` (it runs once per
-  process). Batch everything. Memoise per market. Keep credentials out of the YAML: read them from
-  the environment or the platform's own credential store. Make the backtest deterministic: pin
-  historical EOD snapshots, never "latest", and check the served as-of date equals the one you
-  asked for. For CI and reruns, record responses once and replay them (see
-  `pricebt-enterprise-integration`).
-- **In-process** (a Python/C++ library such as a QuantLib- or rateslib-style curve builder). The
-  market object is usually expensive, because it builds or calibrates a curve. pricebt already caches
-  one market per (key, date, csa), so never build curves inside a function. Watch for trade objects
-  that cache the fixings of the market they were built on: use `build_on: each_market` or a
-  `remark()` helper (see the ARBS config
+  trip, and a session needs auth). One client at module level in `code:`; batch and memoise
+  (Performance below). The bump recipes cost 2-3 PVs per measure per trade: send them as one batch
+  of shifted scenarios if the platform accepts them. Keep credentials out of the YAML. Pin EOD
+  snapshots, never "latest", and check the served as-of date. Record and replay for CI
+  (`pricebt-enterprise-integration`).
+- **In-process** (a QuantLib- or rateslib-style object library). Building the market is expensive
+  because it calibrates. pricebt caches one market per (key, date, csa), so never rebuild curves
+  inside a function. Build shifted markets from spreads or handles over the base curve. Watch for
+  trade objects that cache the fixings of the market they were built on: use
+  `build_on: each_market` or a `remark()` helper (see the ARBS config
   [`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`](../../configs/assets/usd_sofr_ois_interest_rate_swap.yaml)).
 
-### E. Performance
+### Performance
 
 - **One client per process**, created in `code:`, never per call.
-- **Memoise per market.** Either `m.__dict__.setdefault("_pricebt_memo", {})` (the example's
-  `_risk`), or a module dict keyed by `(date, trade)` when the market object has no `__dict__`.
-  Request every per-trade measure in one call, so `npv`, `dv01` and `par_rate` on one date cost one
-  round trip.
+- **Memoise a value on (market, `pricebt_date`, trade, `pricebt_*` params):** the memo on `m.__dict__`,
+  keyed `(pricebt_date, trade)`, since `CloseMarket` hands one market to two dates. One call per trade.
 - **Batch portfolio calls.** `portfolio_functions:` receive all of this asset's trades on one date
-  (`trades`, `weights`): send them in ONE library call. The example test asserts this with
-  `Client.calls`.
-- **`build_on: resolve_date`** when the trade object is market-independent. It is then built once.
-- Measure it: the checker's `performance` check flags any evaluation slower than 1s.
+  (`trades`, `weights`): send them in ONE library call.
+- **`build_on: resolve_date`** when the trade object is market-independent.
+- The checker's `performance` check flags any evaluation slower than 1s.
 
 ## Checks (definition of done)
 
-- [ ] `load_asset($cfg)` succeeds. Every conversion line has a `# vendor -> pricebt` comment.
-- [ ] `load_market` returns `None` (it does not raise) on a weekend, a holiday and a data gap. It
-      returns a market on a normal business day.
-- [ ] `resolved_terms` hold only absolute `date`s, a **decimal** strike and a signed notional (no
-      `"10y"`, no `"ATM"`).
-- [ ] ATM payer on the trade date: `|npv| < 1e-6 * notional`, `dv01 > 0`, and `par_rate` equals the
-      strike ×1e4 in bp. The receiver's dv01 is exactly the negative.
-- [ ] Ladder keys are plain tenors and sum to `dv01` (state the tolerance). The ladder is one
-      library call for the whole book.
-- [ ] A seasoned trade keeps its resolved maturity when priced on a later date.
+- [ ] `python -W error` loads the config: no contract problem, no stale declaration.
+- [ ] Every contract measure has a worksheet line: mapped (native or recipe), zero by convention, or
+      declared with a specific reason. No reason still starts with `TODO`.
+- [ ] Every conversion line has a `# vendor -> pricebt` comment.
+- [ ] `lib_market` / `load_market` returns `None` (it does not raise) on a weekend, a holiday and a
+      data gap.
+- [ ] `resolved_terms` hold only absolute `date`s, a **decimal** strike and a signed notional or
+      face, with `buy_sell` folded in.
+- [ ] The sign self-tests pass (conversions reference): payer delta > 0 and long bond delta < 0,
+      `Sell` = -`Buy`, `Straddle` = payer + receiver.
+- [ ] Dead instruments: every sensitivity is `0.0`, every level is finite, `Cashflows` is empty.
+- [ ] The native measures agree with the recipes (or the difference is explained). The ladders sum
+      to the parallel delta.
 - [ ] `check_asset.py` has no FAIL, and every WARN is explained.
-- [ ] 3-month smoke backtest: the Total identity holds on every row, the ledger has trades, and
-      `missing_market_dates` equals the library's closed days.
+- [ ] The 3-month smoke backtest holds the Total identity on every row, and `missing_market_dates`
+      equals the library's closed days.
 - [ ] A test runs the config, and it skips cleanly when the library is not installed.
 
 ## Pitfalls
 
-- **Unflipped dv01 sign**: a receiver-positive vendor DV01 used as-is. Hedges and risk-sized
-  trades then go the wrong way. See [`example/mistakes/`](example/mistakes/README.md).
-- **Rate left in percent** but declared `bp`: 100x too small. Thresholds never fire. The checker
-  only WARNs on this.
+- **Unflipped dv01 sign**: a receiver-positive vendor DV01 used as is. Hedges and risk-sized trades
+  go the wrong way. See [`example/mistakes/`](example/mistakes/README.md).
+- **Rate left in percent** but declared `bp`: 100x too small. The checker FAILs
+  `swap_par_rate_atm` and WARNs `swap_par_rate_unit`.
 - **Unpinned maturity or strike**: a tenor passed through to a library that resolves it at pricing
-  time, or a "par" strike (`None`) that re-strikes on every market. The trade never ages and P&L is
-  silently wrong.
-- **Raising instead of returning `None`** on a closed day. The engine only understands `None`. Catch
-  the library's specific exceptions, not bare `Exception`: a real auth or network failure must
-  propagate.
+  time, or a "par" strike that re-strikes on every market. The trade never ages.
+- **Curve DV01 or annuity pv01 as the `IRDelta` scalar** off the money, **half gamma**, a
+  **per-year or rolled-curve theta**, and a **lognormal vega rescaled** as normal: see step 4.
+- **Vol levels in decimal** (0.008) next to bp configs. Every asset of one book must declare the
+  same unit for each level measure, or attribution is meaningless.
+- **NaN on a dead trade.** `pnl_explain` has no NaN guard: one NaN poisons every later cumulative
+  value. Sensitivities go to `0.0`, and levels keep their last live value.
+- **A comprehension inside an `expr`** (`sum(f(market, x) for x in ...)`) raises
+  `NameError: name 'market' is not defined`: injected names are locals of `eval`, and a
+  comprehension's scope cannot see them. Put the loop in a `code:` helper and pass `market` in.
+- **A bump parameter you did not name.** `IRDelta(bump_size=5)` reaches your function only if its
+  expression names `pricebt_bump_size`. Otherwise it raises, which is the honest default.
+- **Raising instead of returning `None`** on a closed day. Catch the library's specific exceptions,
+  not bare `Exception`: a real auth or network failure must propagate.
 - **Stale roll-back**: a library that quietly serves yesterday's curve for a holiday. Compare the
   served as-of date with the requested one.
 - **Timezone and EOD**: an as-of at a London close for a NY strategy shifts every date by one
   session. Set `PricebtSession.use(..., tz=, eod_time=)` or use `pricebt_timestamp`.
 - **Two configs matching the same instrument** in one session is an error. Give each a distinct
-  `match:`, or pass `pricebt_asset=` on the instrument.
-- **Helper names that shadow injected names** (`market`, `trade`, `kwargs`, `resolved`, `trades`,
-  `weights`) break silently. Prefix your helpers.
+  `match:`, or pass `pricebt_asset=` on the instrument. A swaption asset gets its **own**
+  `market.key`, even when it shares a swap asset's curve.
+- **Helper names that shadow injected names** (`market`, `market_to`, `trade`, `kwargs`,
+  `resolved`, `trades`, `weights`) break silently. Prefix your helpers.
 - **Absolute paths or credentials in the YAML.** Configs are code, and they get committed.
+- **A process-global evaluation date** (QuantLib-style `Settings.instance().evaluationDate`): pricebt
+  interleaves dates in one process. Set it inside every pricing primitive, move it for `Theta` in
+  `try/finally`, never at import, and key memos on the date.
 
 ## Related skills
 
-- [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md): the checker that step 6 runs.
-- [`pricebt-asset-config-cookbook`](../pricebt-asset-config-cookbook/SKILL.md): recipes for other instruments and config patterns.
+- [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md): the checker that step 7 runs.
+- [`pricebt-asset-config-cookbook`](../pricebt-asset-config-cookbook/SKILL.md): the measure recipes (patterns 14-27), config patterns and the error catalogue.
+- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): the gs measure catalogue and the semantics of each contract measure.
+- [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): what the greeks you mapped are used for (P&L decomposition).
+- [`pricebt-port-gs-notebook`](../pricebt-port-gs-notebook/SKILL.md): gs swaption, portfolio and pricing-and-risk notebooks on your config.
 - [`pricebt-enterprise-integration`](../pricebt-enterprise-integration/SKILL.md): service-style platforms, record/replay, sessions.
-- [`pricebt-architecture`](../pricebt-architecture/SKILL.md): the mental model and rules you must never break.
+- [`pricebt-architecture`](../pricebt-architecture/SKILL.md): the mental model and the rules you must never break.
 - [`pricebt-strategy-intake`](../pricebt-strategy-intake/SKILL.md): turn a strategy idea into a spec once pricing works.

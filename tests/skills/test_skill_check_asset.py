@@ -125,7 +125,7 @@ MERIDIAN_DATES = [date(2024, 1, 2), date(2024, 4, 2)]
 
 @pytest.mark.parametrize("config,check", [
     ("meridian_usd_irs.yaml", None),
-    ("mistakes/dv01_sign_not_flipped.yaml", "swap_dv01_sign"),
+    ("mistakes/dv01_sign_not_flipped.yaml", "swap_bucket_sum"),  # the ladder flips; the ratio-derived scalar keeps its sign
     ("mistakes/par_rate_in_percent.yaml", "swap_par_rate_atm"),
     ("mistakes/maturity_not_pinned.yaml", "resolve_pins_terms"),
 ])
