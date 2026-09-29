@@ -366,8 +366,29 @@ def test_non_field_names_are_plain_attributes():
     assert vars(swap)["anything_else"] == 1 and vars(swap)["camelExtra"] == 2
     assert "anything_else" not in swap.kwargs
     ci = ConfigInstrument("toy", foo=1)
-    ci.foo = 2  # ConfigInstrument has no gs fields
-    assert ci.kwargs == {"foo": 1} and vars(ci)["foo"] == 2
+    ci.bar = 2  # ConfigInstrument has no gs fields, and bar is not one of its terms
+    assert ci.kwargs == {"foo": 1} and vars(ci)["bar"] == 2
+
+
+def test_setting_a_term_already_in_kwargs_writes_kwargs():
+    """DEV-I14: a ConfigInstrument's term, or a generated class's extra kwarg, is what pricing reads,
+    so assigning it writes `_kwargs` (a plain attribute would read back a value never priced)."""
+    ci = ConfigInstrument("toy", fooBar=1)
+    ci.fooBar = 2
+    assert ci.kwargs == {"foo_bar": 2} and "fooBar" not in vars(ci) and ci.foo_bar == 2
+    ci.foo_bar = None
+    assert ci.kwargs == {}
+    swap = IRSwap("Pay", "7y", "USD", 1e4, pricebt_extra="a")
+    swap.pricebt_extra = "b"
+    assert swap.kwargs["pricebt_extra"] == "b" and "pricebt_extra" not in vars(swap)
+
+
+def test_reading_an_unset_gs_field_raises_dev_i18():
+    swap = IRSwap("Pay", "10y", "USD", 1e4)
+    assert "fixed_rate" in instrument_mod._FIELD_NAMES[IRSwap]
+    with pytest.raises(AttributeError, match="fixed_rate"):
+        swap.fixed_rate  # gs: None
+    assert hasattr(swap, "fixedRate") is False
 
 
 def test_camel_case_reads_resolve_to_the_snake_case_field():
@@ -412,3 +433,21 @@ def test_setting_a_field_changes_the_toy_price():
     assert seven != ten
     with PricingContext(date(2024, 3, 4)):
         assert ten == IRSwap("Pay", "10y", "USD", 1e6, fixed_rate=0.03).price().result()
+
+
+def test_setting_a_config_instrument_term_changes_the_toy_price():
+    from datetime import date
+
+    from pricebt.markets import PricingContext
+    from pricebt.session import PricebtSession
+
+    PricebtSession.use(assets=[Path(__file__).parent / "assets" / "toy_usd_irs.yaml"])
+    ci = ConfigInstrument("toy_usd_irs", pay_or_receive="Pay", termination_date="10y", fixed_rate=0.01, notional_amount=1e6)
+    with PricingContext(date(2024, 3, 4)):
+        pay = ci.price().result()
+        ci.pay_or_receive = "Receive"
+        receive = ci.price().result()
+        resolved = ci.resolve(in_place=False).result()
+    assert ci.pay_or_receive == "Receive" and receive == pytest.approx(-pay) and pay != 0.0
+    with pytest.raises(ValueError, match="resolved"):
+        resolved.pay_or_receive = "Pay"

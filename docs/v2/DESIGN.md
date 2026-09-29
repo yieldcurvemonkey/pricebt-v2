@@ -154,16 +154,20 @@ pricebt-v2/
     errors.py                     PricebtError, ConfigError, AssetEvaluationError, MarketDataUnavailable, NotSupportedError,
                                   UnsupportedMeasureError (IR_RISK_DESIGN §2.4)
     base.py                       EnumBase, Priceable marker, static_field, field_metadata, exclude_none, get_enum_value
+    config/__init__.py            DisplayOptions(show_na=False) and the module default display_options (gs gs_quant.config)
     common.py                     gs enums (see P1.1; plus FiniteDifferenceMethod); RiskMeasure & ParameterisedRiskMeasure
                                   re-exported via module __getattr__
     progress.py                   salvaged v1 notebook-safe tqdm bar
     datetime/__init__.py          business_day_offset, is_business_day, prev_business_date, date_range, business_day_count, today
     datetime/relative_date.py     RelativeDate, RelativeDateSchedule
     risk/__init__.py              risk-measure classes and instances (§8.1) + re-exports of FloatWithInfo, SeriesWithInfo,
-                                  DataFrameWithInfo, ErrorValue from risk.results
-    risk/results.py               RiskKey, ResultInfo, FloatWithInfo, SeriesWithInfo, DataFrameWithInfo, ErrorValue,
-                                  MultipleRiskMeasureResult, PricingFuture, LazyFuture, PortfolioRiskResult
-    risk/transform.py             Transformer (base), ResultWithInfoAggregator
+                                  DataFrameWithInfo, ErrorValue from risk.results, and of the risk.core helpers
+    risk/results.py               RiskKey, FloatWithInfo, StringWithInfo, DictWithInfo, SeriesWithInfo, DataFrameWithInfo,
+                                  ErrorValue, UnsupportedValue, MultipleRiskMeasureResult, PricingFuture, LazyFuture,
+                                  PortfolioPath, PortfolioRiskResult
+    risk/core.py                  aggregate_risk, aggregate_results, subtract_risk, sort_risk, combine_risk_key
+                                  (gs gs_quant.risk.core); re-exported from risk
+    risk/transform.py             Transformer (base), ResultWithInfoAggregator, GenericResultWithInfoTransformer
     risk/contracts.py             per-instrument measure contracts (IR_RISK_DESIGN §2, DEV-I11): MeasureRequirement, KINDS,
                                   CONTRACTS, FRAME_COLUMNS, contract_for, check, unsupported_block, validate_frame, base_measure
     markets/__init__.py           PricingContext, HistoricalPricingContext, and the seams _engine_calc / _engine_resolve
@@ -204,8 +208,10 @@ pricebt-v2/
   tests/
     conftest.py                   markers; autouse isolation fixture (sessions, action counter, caches, toy recorders)
     guards/                       zero-dependency, asset-agnostic, import-order and skeleton guards
-    toylib/                       tiny closed-form "library" used ONLY by tests (never shipped): rates.py, swaption.py
-    assets/                       toy asset configs: toy_usd_irs.yaml, toy_eur_irs.yaml, toy_usd_swaption.yaml, toy_fx.yaml
+    toylib/                       tiny closed-form "library" used ONLY by tests (never shipped): rates.py, swaption.py,
+                                  irrisk.py (IR contract measures on top of rates.py), bond.py
+    assets/                       toy asset configs: toy_usd_irs.yaml, toy_eur_irs.yaml, toy_usd_swaption.yaml, toy_fx.yaml,
+                                  toy_usd_irs_full.yaml, toy_usd_bond.yaml
     data/gs_api_1_5_4.json        signature snapshot (tools/gs_api_snapshot.py)
     data/gs_instruments_1_5_4.json  instrument field snapshot (same tool)
     data/gs_api_exceptions.yaml   documented exceptions to the snapshot, each with a reason
@@ -217,8 +223,8 @@ pricebt-v2/
 ```
 
 **Import DAG (MUST).** Top-level imports only go downward in this order:
-1. `errors` → `base` → `common`. `common` exposes the `RiskMeasure` re-export through a module `__getattr__`, not at import time.
-2. → `datetime` → `risk` (measures) → `risk.results` → `risk.transform`. `transform` imports the result classes; `risk.results` MUST NOT import `transform`, and `PortfolioRiskResult.transform` duck-types `risk_transformation.apply(...)`. `risk.contracts` sits in the `risk`/`risk.results` tier (IR_RISK_DESIGN R2-22): it imports `risk`, and `risk/__init__` never imports it.
+1. `errors` → `base` → `config` → `common`. `common` exposes the `RiskMeasure` re-export through a module `__getattr__`, not at import time. `config` imports nothing; `risk.results` reads `config.display_options` at call time.
+2. → `datetime` → `risk` (measures) → `risk.results` → `risk.transform`. `transform` imports the result classes; `risk.results` MUST NOT import `transform`, and `PortfolioRiskResult.transform` duck-types `risk_transformation.apply(...)`. `risk.contracts` sits in the `risk`/`risk.results` tier (IR_RISK_DESIGN R2-22): it imports `risk`, and `risk/__init__` never imports it. `risk.core` sits in the same tier; `risk/__init__` imports it after `results`; it imports `risk.results` at top level, and `risk.results` imports it only inside function bodies (R2-22).
 3. → `markets`. It MUST NOT import `portfolio`, `instrument`, `session` or `assets` at top level. `markets` only defines the contexts and the two seam functions, whose bodies import `pricebt.assets.pricing` at call time (§6.2).
 4. → `instrument`. It imports `session` and `markets` only inside method bodies.
 5. → `markets.portfolio` → `assets.{yamlio, config, namespace, fx, registry}` → `assets.pricing` → `session` → `data` → `backtests.*`. `assets.config` imports `instrument` (to validate `instrument:`) and `risk.contracts` at top level.
@@ -432,7 +438,7 @@ class Instrument(Priceable):
    - (1) if the instrument is resolved **and** a session exists **and** its asset declares `field` under `attributes:`, evaluate it (§4.3) and return the value. An exception inside that declared expression propagates as `AssetEvaluationError`, so it is loud rather than silently false;
    - (2) if resolved and `field in resolved_terms`, return that value;
    - (3) if `field in _kwargs`, return that value;
-   - (4) raise `AttributeError(field)`. This also happens when no session exists or the asset cannot be matched, because step 1 is then skipped.
+   - (4) raise `AttributeError(field)`, also for a gs field that was never set (DEV-I18; gs returns None). This also happens when no session exists or the asset cannot be matched, because step 1 is then skipped.
 
    So `hasattr(inst, '1m')` is False, which `get_final_date` needs (backtest_utils.py:101).
 3. **`__eq__`/`__hash__`** cover the tuple (class, `pricebt_asset` [the explicit argument only, never `_matched_asset`], frozen `_kwargs`, `quantity_`, `name`, frozen `resolved_terms`). They exclude `position_meta`, `resolution_key`, `resolution_csa`, `unresolved` and `_matched_asset`. The hash therefore never changes when an instrument is first priced. The freeze rule is: a dict becomes a sorted tuple of items, a list or tuple becomes a tuple (recursively), any other hashable value is kept as is, and anything else becomes `repr(v)`.
@@ -676,11 +682,11 @@ pricebt reimplements gs's identity semantics exactly (R03§14.1, R04§9):
 | Class | Must provide |
 |---|---|
 | `RiskKey` | namedtuple `(provider, date, market, params, scenario, risk_measure)`; pricebt fills `date` and `risk_measure`, the rest are `None` |
-| `FloatWithInfo(float)` | `.risk_key`, `.unit` (dict), `.error` (None), `.raw_value`. `+` with an equal unit gives a `FloatWithInfo`; an unequal unit raises `ValueError('FloatWithInfo unit mismatch')`. `repr` is `1500.0 (USD)`. |
-| `DataFrameWithInfo(pd.DataFrame)` | `_metadata = ['risk_key', 'unit', 'error']`; `.raw_value`. A bucketed result has **exactly the columns `mkt_type, mkt_asset, mkt_class, mkt_point, mkt_quoting_style, value`**, all six always present. A missing label is `''`, never NaN. Row order is the order of the portfolio function's returned dict (DEV-R5). |
+| `FloatWithInfo(float)` | `.risk_key`, `.unit` (dict), `.error` (None), `.raw_value`. `+` with an equal unit gives a `FloatWithInfo`; an unequal unit raises `ValueError('FloatWithInfo unit mismatch')`; a `None` unit adds to any unit, and `+ number` and `sum()` stay `FloatWithInfo` (DEV-R14; gs gives plain floats and raises unless the units are equal). `* k` keeps `risk_key`/`unit`; `-`, `/` and unary `-` give a plain float (gs). `repr` is `1500.0 (USD)`. The constructor takes the value first, `FloatWithInfo(value, risk_key=None, unit=None, error=None)` (DEV-R12); `StringWithInfo`, `DictWithInfo` likewise. |
+| `DataFrameWithInfo(pd.DataFrame)` | `_metadata = ['risk_key', 'unit', 'error']`; `.raw_value`. A bucketed result has **exactly the columns `mkt_type, mkt_asset, mkt_class, mkt_point, mkt_quoting_style, value`**, all six always present. A missing label is `''`, never NaN. Row order is the order of the portfolio function's returned dict (DEV-R5). A **historical bucketed** result is one `DataFrameWithInfo` indexed by `date` (gs `compose`); its `raw_value` moves the index to a `dates` column; per-date selection is `df[df.index == d]`, a `DataFrameWithInfo` carrying `d` in its risk key, empty for a priced date whose ladder had no rows (DEV-R16, IR_RISK_DESIGN R2-27); `pricebt_dates` carries the priced dates, and a date outside them raises `KeyError` (gs). A **table** (`returns: frame`, `pricebt_table = True`, DEV-R11) has its own columns and keeps its `pricebt_scale_columns`; historically it is one table with a `date` column first, marked historical by its `pricebt_dates` (never by a column name). |
 | `SeriesWithInfo(pd.Series)` | the same metadata; historical scalar results are indexed by date |
 | `ErrorValue` | `(risk_key, error)`; `.raw_value = None` |
-| `MultipleRiskMeasureResult(dict)` | keyed by measure; `.transform(t)` applies per measure |
+| `MultipleRiskMeasureResult(dict)` | gs constructor `MultipleRiskMeasureResult(instrument, dict_values)`, keyed by measure in the order given; `.instrument`, `.dates`, date indexing (non-historical raises `ValueError('Can only index by date on historical results')`), `to_frame`, `+` composes dates of the same instrument, `* k` (DEV-R9); `.transform(t)` applies per measure |
 | `PricingFuture(result=None, exception=None)` | `.result()` returns the value or raises the stored exception; `.done()` is True |
 | `LazyFuture(PricingFuture)` | `(thunk, group_key, member, service)`. `.result()` calls `thunk()` once and memoises the value; `.done()` is True. It is used only for per-instrument bucketed values (below). |
 
@@ -691,28 +697,35 @@ pricebt reimplements gs's identity semantics exactly (R03§14.1, R04§9):
   - `futures` holds exactly one future per **direct child** of `portfolio`, in `portfolio.priceables` order. For an Instrument child, `future.result()` is the value (for one measure) or a `MultipleRiskMeasureResult` (for several). For a nested Portfolio child, it is a nested PRR. Plain values passed in are wrapped as `PricingFuture(value)`.
   - The constructor MUST accept any list with that alignment, because ExitTradeActionImpl rebuilds results from sliced `futures` (impls:447-485).
 - `.portfolio`, `.risk_measures`, `.futures` (a tuple), and `.dates` (the result dates; one for a non-historical result).
-- `__len__` → `len(self.futures)`; `__bool__` follows `__len__`; `__iter__` yields the per-child results (for a single measure, e.g. the resolved instruments).
+- `__len__` → `len(self.futures)` (direct children); `__bool__` follows `__len__`; `__iter__` yields the **leaf** values in `all_paths` order, walking nested results (gs; e.g. the resolved instruments of a resolve calc).
 - `__getitem__(item)`, following the gs error contract:
   - a RiskMeasure not in `risk_measures` raises `ValueError(f'{item} not computed')`;
   - with exactly one computed measure, `self[measure]` returns `self`; otherwise it returns a single-measure view;
-  - an `Instrument` or a name `str` returns that instrument's value(s); if the item is not in `.portfolio`, it raises `KeyError(str(item))`. Indexing by a resolved Instrument that is not found falls back to `item.unresolved` (results.py:925-940);
-  - a `date` returns the single-date view; on a non-historical result this raises `RuntimeError('Can only index by date on historical results')`;
+  - an `Instrument` or a name `str` returns the **first** match's value(s) at any depth (gs quirk kept); if the item is not in `.portfolio`, it raises `KeyError(str(item))`. Indexing by a resolved Instrument that is not found falls back to `item.unresolved` (results.py:925-940);
+  - a list of instruments or a slice returns `subset(...)`; a list of measures a view over those measures; a `PortfolioPath` the member at that path (DEV-R7);
+  - a `date` returns the single-date view, dispatched per child as gs (no up-front `dates` check); a non-historical leaf raises `RuntimeError('Can only index by date on historical results')`, a date the leaf was not priced on `KeyError`;
   - an `int` indexes by position.
 - `.get(item, default)` → `self[item]`, or `default` if that raises `KeyError` or `ValueError` (results.py:968; used by generic_engine.py:700).
-- `__contains__`: by instrument, name or measure.
+- `__contains__`: by instrument, name or measure, at any depth (DEV-P1).
+- `subset(paths, name=None)`: gs; a single path to a sub-portfolio returns that nested result (DEV-R7).
 - `__add__(other)`: gs semantics (results.py:731-775).
   - If the measures, the dates and the instrument sets all overlap: `ValueError('Results overlap on risk measures, instruments or dates')`.
   - If the portfolios are equal: merge futures pairwise.
-  - Otherwise: portfolio = `self.portfolio + other.portfolio` and futures = `self.futures + other.futures`.
+  - Otherwise: portfolio = `self.portfolio + other.portfolio` and futures = `self.futures + other.futures`; when the sum holds several measures, each leaf of a single-measure side is wrapped as `{measure: future}` (gs `as_multiple_result_futures`), so a measure a leaf lacks is a `KeyError` on read, never another measure's value. gs's `set_value` fill-in is not ported (DEV-R13).
   - `risk_measures` of the sum is an **ordered** union: self's measures first, then other's new ones (DEV-E14; gs uses a set).
+  - A single-date result's date is its first leaf's `risk_key.date` (read from `group_key[2]` of a `LazyFuture`, never by evaluating it, R2-26), so `Σ_d p(d)` over one portfolio stitches a historical result (gs `_compose`).
+  - Adding a number raises `ValueError('Can only add instances of PortfolioRiskResult')` (DEV-R8).
+- `* k` scales every leaf (only a bucketed frame's `value` column, a table's scale columns); a non-number raises `ValueError` (DEV-R9).
 - `.transform(risk_transformation=None)`:
   - with `None`, return `self`;
   - with several measures, return a `MultipleRiskMeasureResult` of per-measure transforms;
-  - with one measure, compute `vals = risk_transformation.apply(tuple(self))` (the per-instrument results, in leaf order) and return `PortfolioRiskResult(self.portfolio, self.risk_measures, [PricingFuture(v) for v in vals])` (results.py:820-837).
+  - with one measure, compute `vals = risk_transformation.apply(...)` over the leaf results and rebuild the same tree: one nested result per sub-portfolio, one `PricingFuture(v)` per instrument child (DEV-R7; gs rebuilds a flat list, results.py:820-837).
 - `.aggregate(allow_mismatch_risk_keys=False, allow_heterogeneous_types=False)`:
-  - scalars: a `FloatWithInfo` sum, where unequal units raise gs's `ValueError`;
-  - bucketed: see below.
-- `.to_frame(values='default', index='default', columns='default', aggfunc='sum')`: at least `values='value', index='instrument_name', columns='risk_measure'` MUST work, with bucketed values summed per instrument (R03§7).
+  - gs's error contract on both the plain and the grouped (lazy) path: an error value → `ValueError('Cannot aggregate results in error')`; mixed types → `ValueError('Cannot aggregate heterogeneous types: ...')` unless `allow_heterogeneous_types`; unequal units → `ValueError('Cannot aggregate results with different units for ...')`; different dates/keys → `ValueError('Cannot aggregate results with different pricing keys')` unless `allow_mismatch_risk_keys` (the engine passes it);
+  - scalars: a `FloatWithInfo` sum (left to right, as gs); historical scalars: a `SeriesWithInfo` summed per date;
+  - bucketed: see below; historical bucketed groups by `dates` and the five `mkt_*` columns; tables are concatenated (adding `instrument_name`), never summed (DEV-R11);
+  - no leaves: `FloatWithInfo(0.0)`; plain-float leaves (a transformer's output) sum like `FloatWithInfo`s (DEV-R15).
+- `.to_frame(values='default', index='default', columns='default', aggfunc='sum', display_options=None)`: the gs layouts (R10§2.5): records depth-first in `futures` order, each labelled from its own path (`portfolio_name_{k}`, `instrument_name`; DEV-R6), plus `risk_measure` and, for historical results, `dates`; the gs default pivots; a bucketed/table branch indexed by its label columns; rows and columns in **first-appearance** order (no alphabetical sort); a `value` pivot leaves table measures out (DEV-R11); empty frames and `UnsupportedValue`s appear only with `show_na` (a `pricebt.config.DisplayOptions`; None reads `pricebt.config.display_options`; anything else raises gs's `TypeError`); `None` when there are no records. The engine's `values='value', index='instrument_name', columns='risk_measure'` sums bucketed values per instrument (R03§7).
 - `.result()` → self; `.done()` → True.
 
 **`ResultWithInfoAggregator(risk_col='value', filter_coord=None).apply(results)`** returns a **list** with one entry per input result:
@@ -929,6 +942,17 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 | DEV-R2 | backtest_objects (P3.2) | `get_risk_summary_df` is computed once and never invalidated | recomputed on each call |
 | DEV-R4 | backtest_objects (P3.2) | bucketed cells are ffilled on flat dates | follow DEV-R1 (zero) |
 | DEV-R5 | risk/results (P1.3) | bucketed frames are ordered by `sort_risk`/`point_sort_order` (asset-class regexes, relative to today) | the config's bucket order, first appearance across groups; no point parsing |
+| DEV-R6 | risk/results (Phase B) | `PortfolioRiskResult.to_frame` pairs depth-first leaf records with breadth-first portfolio labels, so rows are mislabelled when a level mixes leaves and sub-portfolios | every record is labelled from its own path (`portfolio_name_{k}`, `instrument_name`), depth-first in `futures` order |
+| DEV-R7 | risk/results (Phase B) | `PortfolioRiskResult.transform` on a nested result rebuilds one future per leaf, misaligned with the nested portfolio; `subset` of a single sub-portfolio path pairs it with one future; `prr[PortfolioPath]` raises `KeyError` | the tree is kept (one nested result per sub-portfolio); a single sub-portfolio path returns that nested result; `prr[PortfolioPath]` returns the member at that path |
+| DEV-R8 | risk/results (Phase B) | `PortfolioRiskResult + number` raises `RuntimeError('... cannot be composed')` | `ValueError('Can only add instances of PortfolioRiskResult')` |
+| DEV-R9 | risk/results (Phase B) | `MultipleRiskMeasureResult * k` on a historical Series raises `AttributeError`; `PortfolioRiskResult`/`MultipleRiskMeasureResult * non-number` *returns* a `ValueError` instead of raising it; `PortfolioRiskResult * k` also multiplies string label columns; `MultipleRiskMeasureResult + MultipleRiskMeasureResult` of different instruments builds a `PortfolioRiskResult` over `Portfolio((i1, i2))` | a Series is multiplied directly; a non-number raises `ValueError`; only a bucketed frame's `value` column is scaled, and a table's `pricebt_scale_columns`; different instruments raise `NotSupportedError`, because `risk.results` may not import `Portfolio` (§3.2) |
+| DEV-R10 | risk/core (Phase B) | `subtract_risk` asserts `'value' in left.columns.names`, so it always raises `AssertionError` | the intent, `aggregate_risk((left, -right))`; the two frames need identical columns including `value`, else `ValueError` |
+| DEV-R11 | risk/results + risk/core + assets/pricing (Phase B; the `BackTest` views land with the P&L phase, IR_RISK_DESIGN R2-15) | no table (frame-valued) measures | a table is a `DataFrameWithInfo` with `pricebt_table = True`. `PortfolioRiskResult.to_frame` pivoted on `value` leaves tables out; the default `to_frame` shows them indexed by their own columns; `aggregate()`/`aggregate_results` concatenate tables (adding `instrument_name`) and never sum them; a historical table is one table with a `date` column first, rows concatenated in date order (`assets/pricing._date_indexed`), marked historical by its `pricebt_dates` (never by a column name) and emitting `dates` in records like a ladder; with the P&L phase, `get_risk_summary_df`/`result_summary`/`risk_summary`/`strategy_as_time_series`/`summary_stats`/`pnl_bps` skip table measures |
+| DEV-R12 | risk/results (Phase B) | `FloatWithInfo(risk_key, value, unit, error, request_id)` | value first: `FloatWithInfo(value, risk_key=None, unit=None, error=None)`, because every pricebt producer passes the value positionally; `StringWithInfo` and `DictWithInfo` follow the same order |
+| DEV-R13 | risk/results (Phase B) | `PortfolioRiskResult + PortfolioRiskResult` over different portfolios with several measures fills each leaf's missing measure from the other result where it holds the same instrument (`set_value`), mutating a multi-measure input's results in place | leaves are wrapped per measure as gs (`as_multiple_result_futures`), but nothing is filled in: reading a measure a leaf lacks raises `KeyError`, never another measure's value |
+| DEV-R14 | risk/results (Phase B) | `FloatWithInfo + number` and `sum([x, y])` give plain floats; `+` of two `FloatWithInfo`s raises `ValueError('FloatWithInfo unit mismatch')` unless the units are equal | `+ number` and `sum()` keep a `FloatWithInfo` (the left unit and key); a `None` unit adds to any unit (e.g. an empty `aggregate()`'s `0.0`); unequal non-None units still raise |
+| DEV-R15 | risk/results + risk/core (Phase B) | `PortfolioRiskResult.aggregate()` with no leaves returns `None`; `aggregate_results` of plain floats raises `AttributeError` reading `.error` | `FloatWithInfo(0.0)`; plain floats (a transformer's output) sum like `FloatWithInfo`s, left to right |
+| DEV-R16 | risk/results + assets/pricing (Phase B) | a historical frame has no row for a date whose ladder was empty (`compose` drops it), so `result[date]` raises `KeyError`; an all-empty result is returned undated | a composed frame carries its priced dates (`pricebt_dates`): a priced date with no rows gives an empty `DataFrameWithInfo` carrying the date (so a hedge sized on it aggregates to 0, IR_RISK_DESIGN R2-27); a date outside the priced set raises `KeyError` as gs |
 
 (DEV-R3 from revision 1 was removed: 2.1.17 already returns an empty frame when there are no results.)
 
@@ -949,9 +973,23 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
 | DEV-I11 | risk/contracts + assets/config + assets/pricing + errors (Phase A) | any measure is answered; an inapplicable one silently returns `UnsupportedValue` | IRSwap/IRSwaption/Bond configs must map every contract measure/form with an allowed unit or declare it under `unsupported_measures:` with a reason (one `ConfigError` at load listing every gap, with a paste-ready block); mapped and declared loads with a `UserWarning` and the mapping wins; requesting a declared form whose mapping slot is empty raises `UnsupportedMeasureError` before "no mapping" (IR_RISK_DESIGN §2, §8.1 rule 3b); a preset or fallback key the contract counts toward a base measure (e.g. `IRDeltaParallel` → `IRDelta` scalar) also serves the base's request (§8.1 rule 3, R2-10); a declaration the contract cannot count (a preset name, a form outside the row, a name neither in the contract nor in `pricebt.risk`) loads with a `UserWarning` |
 | DEV-I12 | risk/contracts (Phase A: contract text; numbers from asset configs) | IR delta/gamma are curve sensitivities; `IRFwdRate` is defined for swaps/swaptions only | own-rate semantics: the `IRDelta` scalar is the total derivative of `Price` w.r.t. the instrument's own quoted rate (`IRFwdRate`: swap par rate, swaption forward rate, bond yield to maturity), `IRGammaParallel` the chain-rule second derivative on the same bumps. Additivity caveat: summing `IRDeltaParallel` across different instrument types is approximate (exact for a hedge of the same type) (IR_RISK_DESIGN R2-1, R2-2). The shipped toy and ARBS swap configs map the `IRDelta` scalar to a fixed-annuity pv01, which is **at-the-money-exact** only: off-market it misses the first-order term `N·(F−K)·ΔA` (R14), and the load check cannot detect that |
 | DEV-I13 | risk/contracts (Phase A: contract text; ladders from asset configs) | `IRGamma` returns a 12-column cross-gamma frame | `IRGamma` (bucketed only) is a **diagonal** gamma ladder: the 6-column bucketed frame, ccy per bp² at each pillar (IR_RISK_DESIGN §2.2) |
+| DEV-I14 | instrument (Phase B) | `Base.__setattr__` coerces a field and writes it on the dataclass, resolved or not | the name is normalised camelCase → snake_case first; a gs field of the class other than `name`, or a name already in `_kwargs` (a `ConfigInstrument` term, an extra kwarg), is coerced (§5.2) and written to `_kwargs`, the terms pricing reads (None deletes the key); on a resolved instrument it raises `ValueError` (the `clone` rule); `asset_class`/`type_` raise `ValueError('<key> cannot be set')` as in gs; every other name is a plain attribute (IR_RISK_DESIGN R2-29) |
 | DEV-I15 | risk/contracts (Phase A: contract text) | IR `Theta` is undocumented | `Theta` = one calendar day of carry, total return, own `IRFwdRate` and `IRAnnualImpliedVol` held fixed (curve translated, never rolled), ccy **per day**; a per-year `IRTheta` = 365 × `Theta` (IR_RISK_DESIGN R2-4) |
 | DEV-I16 | risk (Phase A) | `IRGammaParallelLocalCcy` / `IRDiscountDeltaParallelLocalCcy` need their own mapping | `base_name='IRGammaParallel'` / `'IRDiscountDeltaParallel'`: a mapping of the base measure serves the LocalCcy variant (decision 0.5 makes them identical) |
 | DEV-I17 | risk/contracts (Phase A: contract text) | `ExpiryInYears` is defined for options only | `max(final_or_expiry − t, 0).days / 365` for every class: a swaption's expiry, a swap's or bond's final date (IR_RISK_DESIGN R2-5) |
+| DEV-I18 | instrument (Phase B) | reading a gs field that was never set returns `None` (a dataclass default) | raises `AttributeError(field)` (§5.1 item 2 step 4), so a typo or an unset term is loud and `hasattr` is False |
+
+**Portfolio**
+
+| ID | File (task) | gs behaviour | pricebt behaviour |
+|---|---|---|---|
+| DEV-P1 | markets/portfolio + risk/results (Phase B) | `Portfolio.all_portfolios` returns only the direct sub-portfolios; `Portfolio.__contains__` looks in itself and those only, with bare `==` | `all_portfolios` recurses and de-duplicates; `Portfolio.__contains__` and `PortfolioRiskResult.__contains__` match at any depth, and also through `.unresolved` (as gs `paths` does) |
+
+**Markets**
+
+| ID | File (task) | gs behaviour | pricebt behaviour |
+|---|---|---|---|
+| DEV-M1 | markets (Phase B) | `PricingContext(market=...)` prices on that market | any non-None `market` raises `NotSupportedError` at construction (it was silently ignored: a wrong-number path); the P&L-explain phase relaxes this for `CloseMarket` (IR_RISK_DESIGN §8, R2-30) |
 
 **Kept on purpose** (documented in DEVIATIONS.md as "parity kept"):
 - ALL_OF short-circuits, while ANY_OF evaluates every child.
@@ -985,7 +1023,7 @@ Each row gets an entry in `docs/v2/DEVIATIONS.md` and a test. The "File (task)" 
    - Scan NAME, non-docstring STRING and FSTRING_MIDDLE tokens for `gs_quant`.
    - Each hit fails the guard with file:line.
 3. **Import blocker.** A subprocess installs a `sys.meta_path` finder that raises `ImportError` for `gs_quant`, `rateslib`, `QuantLib`, `MDP`, `Query`, `Caching` and `dataclasses_json`. It then imports every pricebt module, and (from P4) runs the toy MR backtest end to end.
-4. **Asset-agnostic scan (MUST-5).** Tokenize-scan (as in item 2) **only** `src/pricebt/assets/**`, `src/pricebt/markets/**`, `src/pricebt/risk/results.py` and `src/pricebt/risk/transform.py`. Fail on `(?i)(?<![a-z])(notional|tenor|swaption|swap|fixed_rate|termination_date|expiration_date|pay_or_receive|strike|dv01|pv01|par_rate|sofr|libor|estr)(?![a-z])`. `instrument/`, `risk/__init__.py` and `backtests/` are not scanned, because gs names and the ported gs text legitimately live there.
+4. **Asset-agnostic scan (MUST-5).** Tokenize-scan (as in item 2) **only** `src/pricebt/assets/**`, `src/pricebt/markets/**`, `src/pricebt/risk/results.py`, `src/pricebt/risk/transform.py` and `src/pricebt/risk/core.py`. Fail on `(?i)(?<![a-z])(notional|tenor|swaption|swap|fixed_rate|termination_date|expiration_date|pay_or_receive|strike|dv01|pv01|par_rate|sofr|libor|estr)(?![a-z])`. `instrument/`, `risk/__init__.py` and `backtests/` are not scanned, because gs names and the ported gs text legitimately live there.
 5. **Import order.** Each pricebt module is imported alone, in a fresh subprocess, in reverse DAG order (§3.2).
 6. **Skeleton.** The set of `src/pricebt/**/*.py` paths equals a literal list copied from §3.2.
 7. **Non-vacuity twins.** Every scanning guard has twins fed with synthetic files:
@@ -1061,9 +1099,9 @@ Nothing in §4–§11 is swap-specific, and the CI toy swaption (§12.4) proves 
    - a `resolve` that pins `expiration_date`, `termination_date` and the strike;
    - functions `npv`, `dv01`, `vega` (`unit: ccy_per_bp`, per bp of normal vol) and `gamma`;
    - `attributes: {expiration_date: 'resolved["expiration_date"]'}`, so that `AddTradeAction(option, 'expiration_date')` works;
-   - `risk_measures: {Price: npv, IRDelta: {scalar: dv01}, IRVega: {scalar: vega}}`.
+   - `risk_measures: {Price: npv, IRDelta: {scalar: dv01}, IRVega: {scalar: vega}}`, plus every other measure of the IRSwaption contract, each mapped or declared under `unsupported_measures:` with a reason (DEV-I11, IR_RISK_DESIGN §2.2); the CI toy `tests/assets/toy_usd_swaption.yaml` maps the whole contract.
 
-   A bucketed IRVega needs a `returns: buckets` portfolio function with `';'`-joined `'expiry;tenor'` keys (§8.2).
+   A bucketed IRVega needs a `returns: buckets` portfolio function with `';'`-joined `'<tail>;<expiry>'` keys in gs order, e.g. `'10Y;1Y'` (§8.2; IR_RISK_DESIGN §2.2).
 3. **Sign and strike.** pricebt never reads `buy_sell`.
    - The swaption `resolve` MUST fold it into a signed resolved notional: `sign = -1 if buy_sell == 'Sell' else +1`, times the sign of `notional_amount` (040307 sells with a negative notional).
    - It MUST reject `pay_or_receive` values it does not price (e.g. `Straddle`, unless it prices it as payer + receiver).

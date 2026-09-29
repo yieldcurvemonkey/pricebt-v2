@@ -10,6 +10,8 @@ import datetime as dt
 import pandas as pd
 import pytest
 
+import pricebt.config
+from pricebt.config import DisplayOptions
 from pricebt.errors import NotSupportedError
 from pricebt.instrument import IRSwap
 from pricebt.markets.portfolio import Portfolio
@@ -179,9 +181,14 @@ def test_to_frame_bucketed_is_indexed_by_labels_and_empty_frames_need_show_na():
     assert df.index.names == ["instrument_name", "risk_measure"] and list(df["value"]) == [1.0, 2.0]
     summed = prr.to_frame(values="value", index="instrument_name", columns="risk_measure")
     assert list(summed.index) == ["a"] and summed.loc["a", IRDelta] == 3.0  # the empty ladder is dropped
-    na = prr.to_frame(values="value", index="instrument_name", columns="risk_measure", display_options=type("D", (), {"show_na": True})())
+    na = prr.to_frame(values="value", index="instrument_name", columns="risk_measure", display_options=DisplayOptions(show_na=True))
     assert na.loc["b", IRDelta] == 0.0
     assert _prr(Portfolio([a]), [_ladder({})], measures=(IRDelta,)).to_frame() is None
+    # gs: None reads the module default at call time; anything but a DisplayOptions is a TypeError
+    pricebt.config.display_options.show_na = True
+    assert prr.to_frame(values="value", index="instrument_name", columns="risk_measure").loc["b", IRDelta] == 0.0
+    with pytest.raises(TypeError, match="^display_options must be of type DisplayOptions$"):
+        prr.to_frame(display_options=type("D", (), {"show_na": True})())
 
 
 def test_to_frame_value_pivot_drops_table_measures_dev_r11():
@@ -238,6 +245,33 @@ def test_add_and_dates_never_evaluate_a_lazy_future_r2_26():
     assert calls == []
 
 
+def test_add_of_different_portfolios_and_measures_never_serves_one_measure_for_another_dev_r13():
+    """gs `as_multiple_result_futures`: once the sum holds two measures, a leaf answers only for its
+    own; a measure it lacks is a KeyError (gs), never the other measure's value. DEV-R13: gs's
+    `set_value` fill-in from the other side is not ported."""
+    s1, s2, s3 = _swap("s1"), _swap("s2", "7y"), _swap("s3", "10y")
+    b = _prr(Portfolio([s2]), [_v(5.0, m=DollarPrice)], (DollarPrice,))
+    c = _prr(Portfolio([s1]), [_v(1.0)]) + b
+    assert c.risk_measures == (Price, DollarPrice)
+    assert c[DollarPrice][s2] == 5.0 and c[Price][s1] == 1.0
+    for measure, lacking in ((DollarPrice, s1), (Price, s2)):
+        with pytest.raises(KeyError):
+            c[measure][lacking]
+        with pytest.raises(KeyError):
+            c[measure].aggregate(True, True)
+    assert list(c[DollarPrice].to_frame(None, None, None)["instrument_name"]) == ["s2"]  # gs get_records
+    frame = c.to_frame()
+    assert frame.loc["s1", Price] == 1.0 and frame.loc["s2", DollarPrice] == 5.0 and pd.isna(frame.loc["s1", DollarPrice])
+    nested = _prr(Portfolio([s1, Portfolio([s3], name="sub")]), [_v(1.0), [_v(3.0)]]) + b
+    with pytest.raises(ValueError, match="not computed"):
+        nested[DollarPrice]  # the nested sub-result keeps its own measures (gs)
+    raw = nested.to_frame(None, None, None)
+    rows = list(zip(raw["instrument_name"], raw["risk_measure"], raw["value"]))
+    assert rows == [("s1", Price, 1.0), ("s3", Price, 3.0), ("s2", DollarPrice, 5.0)]
+    only_price = nested[Price].to_frame(None, None, None)  # a leaf lacking Price adds no row
+    assert list(zip(only_price["instrument_name"], only_price["risk_measure"])) == [("s1", Price), ("s3", Price)]
+
+
 def test_mul_scales_every_leaf_and_rejects_non_numbers_dev_r9(nested):
     prr, _ = nested
     doubled = prr * 2
@@ -247,6 +281,19 @@ def test_mul_scales_every_leaf_and_rejects_non_numbers_dev_r9(nested):
     assert list(ladder["value"]) == [6.0] and list(ladder["mkt_type"]) == ["IR"]  # labels untouched
     with pytest.raises(ValueError, match="Can only multiply by an int or float"):
         prr * "x"
+
+
+def test_scaling_a_table_scales_its_scale_columns_only_dev_r9():
+    a = _swap("a")
+    table = make_table_frame([{"payment_amount": 7.0, "currency": "USD"}], risk_key=_key(m=IRDelta), scale_columns=["payment_amount"])
+    alone = _prr(Portfolio([a]), [table], (IRDelta,)) * 2
+    assert list(alone["a"]["payment_amount"]) == [14.0] and list(alone["a"]["currency"]) == ["USD"]
+    both = PortfolioRiskResult(Portfolio([a]), (Price, IRDelta), [PricingFuture(MultipleRiskMeasureResult(a, {Price: _v(1.0), IRDelta: table}))])
+    doubled = (both * 2)["a"]
+    assert doubled[Price] == 2.0 and list(doubled[IRDelta]["payment_amount"]) == [14.0] and doubled[IRDelta].pricebt_table
+    assert list((both["a"] + 1)[IRDelta]["payment_amount"]) == [8.0]
+    empty = make_table_frame(pd.DataFrame(columns=["currency"]), scale_columns=["payment_amount"])
+    assert (_prr(Portfolio([a]), [empty], (IRDelta,)) * 2)["a"].empty  # no scale column to scale
 
 
 # ================================================================================ aggregate contract
@@ -285,7 +332,7 @@ def test_aggregate_group_path_applies_the_same_checks():
 def test_aggregate_historical_bucketed_and_tables():
     a, b = _swap("a"), _swap("b")
     hist_a = DataFrameWithInfo.compose([_ladder({"1y": 1.0}, D0), _ladder({"1y": 2.0}, D1)])
-    hist_b = DataFrameWithInfo.compose([_ladder({"1y": 10.0}, D0)])  # no rows on D1
+    hist_b = DataFrameWithInfo.compose([_ladder({"1y": 10.0}, D0), _ladder({}, D1)])  # priced on D1, no rows
     prr = _prr(Portfolio([a, b]), [hist_a, hist_b], (IRDelta,))
     agg = prr.aggregate()
     assert list(agg["dates"]) == [D0, D1] and list(agg["value"]) == [11.0, 2.0]
@@ -294,6 +341,53 @@ def test_aggregate_historical_bucketed_and_tables():
     tables = [make_table_frame([{"payment_amount": x}], risk_key=_key(m=IRDelta)) for x in (1.0, 2.0)]
     rows = _prr(Portfolio([a, b]), tables, (IRDelta,)).aggregate()
     assert rows.pricebt_table is True and list(rows["instrument_name"]) == ["a", "b"] and list(rows["payment_amount"]) == [1.0, 2.0]
+
+
+def test_a_date_the_history_was_not_priced_on_is_a_key_error_dev_r16():
+    """Only a priced date whose ladder had no rows gives the R2-27 empty frame; a date outside the
+    priced set is gs's KeyError (never a silent zero), also after stitching with `+`."""
+    a = _swap("a")
+    hist = DataFrameWithInfo.compose([_ladder({"1y": 1.0}, D0), _ladder({}, D1)])
+    prr = _prr(Portfolio([a]), [hist], (IRDelta,))
+    assert prr[D1]["a"].empty and prr[D1]["a"].risk_key.date == D1
+    with pytest.raises(KeyError):
+        prr[dt.date(2024, 1, 9)]
+    with pytest.raises(KeyError):
+        prr[[D0, dt.date(2024, 1, 9)]]
+    assert list(prr[[D0, D1]]["a"]["value"]) == [1.0]
+    d2 = dt.date(2024, 1, 4)
+    stitched = prr + _prr(Portfolio([a]), [_ladder({}, d2)], (IRDelta,))
+    assert stitched[d2]["a"].empty and stitched[D0]["a"]["value"].tolist() == [1.0]
+    with pytest.raises(KeyError):
+        stitched[dt.date(2024, 1, 9)]
+
+
+def test_date_indexing_dispatches_per_leaf_so_an_all_empty_history_still_slices():
+    """gs has no up-front `dates` check: ladders empty on every date (no dates) still slice by a
+    priced date; a single-date ladder still raises."""
+    a = _swap("a")
+    hv = _prr(Portfolio([a]), [DataFrameWithInfo.compose([_ladder({}, D0), _ladder({}, D1)])], (IRDelta,))
+    assert hv.dates == ()
+    assert hv[D0]["a"].empty and hv[D0]["a"].risk_key.date == D0
+    with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
+        _prr(Portfolio([a]), [_ladder({"1y": 1.0})], (IRDelta,))[D0]
+    with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
+        _prr(Portfolio([a]), [_v(1.0)])[D0]
+
+
+def test_a_table_is_historical_by_its_priced_dates_never_by_a_date_column():
+    a = _swap("a")
+    june = dt.date(2024, 6, 1)
+    own = make_table_frame([{"date": june, "amount": 5.0}], risk_key=_key(m=IRDelta))  # a single-date table
+    single = _prr(Portfolio([a]), [own], (IRDelta,))
+    assert single.dates == ()
+    with pytest.raises(RuntimeError, match="Can only index by date on historical results"):
+        single[june]
+    day = [make_table_frame([{"amount": x}], risk_key=_key(d, IRDelta), scale_columns=["amount"]) for x, d in ((1.0, D0), (2.0, D1))]
+    hist = _prr(Portfolio([a]), [day[0]], (IRDelta,)) + _prr(Portfolio([a]), [day[1]], (IRDelta,))
+    assert hist.dates == (D0, D1) and hist[D1]["a"]["amount"].tolist() == [2.0]
+    assert list(hist["a"].raw_value.columns) == ["dates", "amount"]  # records carry `dates`, like a ladder
+    assert (hist * 3)["a"]["amount"].tolist() == [3.0, 6.0]
 
 
 # ================================================================================ MultipleRiskMeasureResult
@@ -336,6 +430,20 @@ def test_float_with_info_arithmetic_follows_gs():
     s = a + b
     assert s == 4.0 and s.risk_key.date is None and s.risk_key.risk_measure is Price  # combine_risk_key
     assert a.to_frame() is a
+
+
+def test_float_with_info_keeps_its_type_under_sum_and_a_none_unit_adds_dev_r14():
+    a = _v(3.0)
+    assert type(a + 1.0) is FloatWithInfo and type(sum([a, a])) is FloatWithInfo and sum([a, a]).unit == USD
+    assert (a + FloatWithInfo(1.0)).unit == USD and (FloatWithInfo(1.0) + a).unit == USD
+    with pytest.raises(ValueError, match="FloatWithInfo unit mismatch"):
+        a + _v(1.0, unit={"EUR": 1})
+
+
+def test_aggregate_of_no_leaves_is_zero_and_plain_floats_sum_dev_r15():
+    empty = PortfolioRiskResult(Portfolio([]), (Price,), []).aggregate()
+    assert type(empty) is FloatWithInfo and empty == 0.0
+    assert type(aggregate_results([1.0, 2.0])) is FloatWithInfo and aggregate_results([1.0, 2.0]) == 3.0
 
 
 def test_other_value_classes():

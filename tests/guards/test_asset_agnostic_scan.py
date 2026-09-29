@@ -1,5 +1,5 @@
-"""DESIGN.md section 12.2 item 4 (MUST-5): assets/**, markets/**, risk/results.py and
-risk/transform.py must not name a rates/swap vocabulary word -- the engine and the pricing layer
+"""DESIGN.md section 12.2 item 4 (MUST-5): assets/**, markets/**, risk/results.py,
+risk/transform.py and risk/core.py must not name a rates/swap vocabulary word -- the engine and the pricing layer
 must not special-case any asset class. instrument/, risk/__init__.py and backtests/ are exempt:
 gs names and the ported gs text legitimately live there."""
 from __future__ import annotations

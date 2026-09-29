@@ -120,13 +120,15 @@ def _exercised(curve, trade, is_call: bool) -> bool:
     return F > K if is_call else F < K
 
 
-def _value(curve, sigma: float, trade: dict) -> float:
+def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False) -> float:
+    """`exercise_on_curve`: at T == 0 decide exercise on this curve's F (intrinsic value) rather
+    than the toy world's expiry F -- theta's frozen-F step onto expiry (R2-4)."""
     exp, term, K = trade["expiration_date"], trade["termination_date"], trade["strike"]
     ann, F = tr._annuity(curve, exp, term), _fwd(curve, trade)
     T = (exp - curve.ref_date).days / 365.0
     total = 0.0
     for is_call in _legs(trade["pay_or_receive"]):
-        if T > 0.0:
+        if T > 0.0 or (T == 0.0 and exercise_on_curve):
             total += _unit_price(F, K, sigma, T, is_call)
         elif _exercised(curve, trade, is_call):  # physical: the leg is now the underlying swap
             total += (F - K) if is_call else (K - F)
@@ -187,9 +189,10 @@ def volga(market, trade: dict) -> float:
 
 def theta_1d(market, trade: dict) -> float:
     """pricebt DEV-I15: one calendar day on the translated curve, F and sigma fixed (T - 1/365),
-    ccy per day; premium 0 and nothing dropped, so no cash term."""
+    ccy per day; premium 0 and nothing dropped, so no cash term. A step landing on expiry exercises
+    on the frozen F; after expiry the decision already made stands."""
     c = market.curve
-    return _value(ir._TranslatedCurve(c, 1), market.sigma, trade) - _value(c, market.sigma, trade)
+    return _value(ir._TranslatedCurve(c, 1), market.sigma, trade, exercise_on_curve=True) - _value(c, market.sigma, trade)
 
 
 def fwd_rate(market, trade: dict) -> float:

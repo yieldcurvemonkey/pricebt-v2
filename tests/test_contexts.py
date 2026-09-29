@@ -263,6 +263,24 @@ def test_current_setter_is_the_default_while_no_context_is_entered():
     assert PricingContext.current is ctx
 
 
+def test_entering_the_default_context_itself_never_makes_it_its_own_ancestor():
+    """`with PricingContext.current:` after assigning it (gs tutorial idiom), directly or below a
+    context that inherits from it: un-set fields read without recursing."""
+    ctx = PricingContext(pricing_date=date(2024, 3, 4))
+    PricingContext.current = ctx
+    with PricingContext.current as entered:
+        assert entered is ctx and ctx.pricing_date == date(2024, 3, 4) and ctx.csa_term is None
+    with PricingContext() as outer:  # inherits from the default ...
+        with ctx:  # ... which is now entered below it
+            assert ctx.csa_term is None and outer.csa_term is None and outer.pricing_date == date(2024, 3, 4)
+    other = PricingContext(csa_term="Y")
+    with other:
+        with ctx:
+            assert ctx.csa_term == "Y"
+    with other:  # ctx kept no parent from that exit, so `other` still inherits the default's date
+        assert other.pricing_date == date(2024, 3, 4)
+
+
 def test_current_cannot_be_set_inside_an_entered_context():
     with PricingContext(pricing_date=date(2024, 3, 4)):
         with pytest.raises(ValueError, match="Cannot set current while in a nested context"):

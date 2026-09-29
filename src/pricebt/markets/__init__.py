@@ -67,21 +67,28 @@ class PricingContext(metaclass=_ContextMeta):
         self._is_entered = False
         self._parent: Optional["PricingContext"] = None
 
+    def _inherited(self, field: str):
+        """This context's own `field`, else the nearest parent's. The walk stops at a context it has
+        seen: `with PricingContext.current:` after assigning it (or entering the default below a
+        context that inherits from it) makes a context its own ancestor (gs guards with
+        `current is not self`)."""
+        ctx, seen = self, set()
+        while ctx is not None and id(ctx) not in seen:
+            value = getattr(ctx, field)
+            if value is not None:
+                return value
+            seen.add(id(ctx))
+            ctx = ctx._parent
+        return None
+
     @property
     def pricing_date(self) -> date:
-        if self._pricing_date is not None:
-            return self._pricing_date
-        if self._parent is not None:
-            return self._parent.pricing_date
-        return date.today()
+        found = self._inherited("_pricing_date")
+        return found if found is not None else date.today()
 
     @property
     def csa_term(self):
-        if self._csa_term is not None:
-            return self._csa_term
-        if self._parent is not None:
-            return self._parent.csa_term
-        return None
+        return self._inherited("_csa_term")
 
     @property
     def is_entered(self) -> bool:

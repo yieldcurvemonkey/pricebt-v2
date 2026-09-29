@@ -150,10 +150,11 @@ def all_py_files(pkg: Path) -> List[Path]:
 
 
 def asset_agnostic_files(pkg: Path) -> List[Path]:
-    """DESIGN.md section 12.2 item 4's scope: assets/**, markets/**, risk/results.py, risk/transform.py."""
+    """DESIGN.md section 12.2 item 4's scope: assets/**, markets/**, risk/results.py, risk/transform.py,
+    risk/core.py."""
     out = []
     for p in all_py_files(pkg):
         parts = p.relative_to(pkg).parts
-        if parts[0] in ("assets", "markets") or parts in (("risk", "results.py"), ("risk", "transform.py")):
+        if parts[0] in ("assets", "markets") or parts in (("risk", "results.py"), ("risk", "transform.py"), ("risk", "core.py")):
             out.append(p)
     return sorted(out)

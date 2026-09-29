@@ -20,6 +20,7 @@ SKELETON_PATHS: List[str] = [
     "__init__.py",
     "errors.py",
     "base.py",
+    "config/__init__.py",
     "common.py",
     "progress.py",
     "datetime/__init__.py",
@@ -88,6 +89,7 @@ def path_to_module(path: str) -> str:
 DAG_TIERS: List[List[str]] = [
     ["", "errors"],  # pricebt/__init__.py imports errors eagerly, by design (section 3.2's own text)
     ["base"],
+    ["config"],  # gs_quant.config (DisplayOptions): imports nothing; risk.results reads it
     ["common"],
     ["progress"],  # not in the DAG text either; self-contained (tqdm only), placed at its section 3.2 table position
     ["datetime", "datetime.relative_date"],

@@ -12,7 +12,7 @@ from typing import Iterable, Optional, Tuple
 
 import pandas as pd
 
-from pricebt.risk.results import DataFrameWithInfo, FloatWithInfo, PricingFuture, RiskKey, SeriesWithInfo
+from pricebt.risk.results import DataFrameWithInfo, FloatWithInfo, PricingFuture, RiskKey, SeriesWithInfo, _table_like
 
 __all__ = ["aggregate_risk", "aggregate_results", "subtract_risk", "sort_risk", "combine_risk_key"]
 
@@ -81,9 +81,10 @@ def aggregate_results(results: Iterable, allow_mismatch_risk_keys=False, allow_h
     if isinstance(inst, tuple):
         return tuple(set(itertools.chain.from_iterable(results)))
     if isinstance(inst, float):
-        # pricebt: a plain float (e.g. a transformer's output) sums like a FloatWithInfo (gs returns
-        # None). Left to right, as gs's sum() over float subclasses does (builtin sum() of exact
-        # floats is compensated, which would change the last digits).
+        # pricebt DEV-R15: a plain float (e.g. a transformer's output) sums like a FloatWithInfo (gs
+        # raises AttributeError reading `.error` on it). Left to right, as gs's sum() over float
+        # subclasses does (builtin sum() of exact floats is compensated, which would change the
+        # last digits).
         total = 0.0
         for r in results:
             total += float(r)
@@ -93,8 +94,9 @@ def aggregate_results(results: Iterable, allow_mismatch_risk_keys=False, allow_h
     if isinstance(inst, DataFrameWithInfo):
         if all(getattr(r, "pricebt_table", False) for r in results):
             # pricebt DEV-R11: a table result is concatenated (its rows are records, not buckets)
-            out = DataFrameWithInfo(pd.concat([pd.DataFrame(r) for r in results], ignore_index=True), risk_key=risk_key, unit=unit)
-            out.pricebt_table = True
+            dates = tuple(dict.fromkeys(itertools.chain.from_iterable(r.pricebt_dates or () for r in results))) or None
+            out = _table_like(pd.concat([pd.DataFrame(r) for r in results], ignore_index=True), inst, risk_key, dates)
+            out.unit = unit  # the checked unit, not only the first table's
             return out
         return DataFrameWithInfo(aggregate_risk(results, allow_heterogeneous_types=allow_heterogeneous_types), risk_key=risk_key, unit=unit)
     return None

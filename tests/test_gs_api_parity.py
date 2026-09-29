@@ -429,14 +429,14 @@ def test_risk_measure_exception_expect_is_enforced(monkeypatch):
 def test_pending_row_excuses_only_an_absent_symbol(monkeypatch):
     """R2-23's later-phase symbols: without the `pending` row the absence fails; once pricebt has
     the symbol, the row itself fails (so Phase B/E must delete it and get a real comparison)."""
-    key = "gs_quant.risk.aggregate_risk"
+    key = "gs_quant.risk.PnlExplain"
     assert resolve(key) is None and diff_symbol(key) == []
     real = list(EXCEPTIONS)
     monkeypatch.setitem(globals(), "EXCEPTIONS", [e for e in real if not (e["symbol"] == key and e.get("pending"))])
     assert diff_symbol(key) == ["missing from pricebt entirely"]
     monkeypatch.setitem(globals(), "EXCEPTIONS", real)
-    monkeypatch.setattr(pb_risk, "aggregate_risk", lambda results, threshold=None, allow_heterogeneous_types=False: None, raising=False)
-    assert diff_symbol(key) == ["pricebt now has it, but a `pending: Phase B` row still excuses it: delete that row so it is compared"]
+    monkeypatch.setattr(pb_risk, "PnlExplain", type("PnlExplain", (), {}), raising=False)
+    assert diff_symbol(key) == ["pricebt now has it, but a `pending: Phase E` row still excuses it: delete that row so it is compared"]
 
 
 @pytest.mark.parametrize("name", COMMON_ENUM_NAMES, ids=COMMON_ENUM_NAMES)

@@ -344,6 +344,34 @@ def test_frozen_world_theta_identity_swap_and_swaption(frozen):
     assert ts.theta_1d(m0, o) == pytest.approx(ts.npv(m1, o) - ts.npv(m0, o), rel=1e-9)
 
 
+def test_swap_theta_translates_the_curve_and_never_rolls_it():
+    """Not frozen, so tomorrow's toy market (a roll) differs from today's curve translated one day
+    (R2-4): the toy npv is linear in DFs, so the translation gives npv * (1/DF(t+1) - 1)."""
+    m, s = _swap(fixed_rate=0.025)
+    t1 = D + timedelta(days=1)
+    theta = tri.theta_1d(m, s)
+    assert theta == pytest.approx(tr.npv(m, s) * (1 / m.discount_factor(t1) - 1), rel=1e-9)
+    assert abs(theta - (tr.npv(tr.market(t1, "USD"), s) - tr.npv(m, s))) > 1.0
+    assert tri._TranslatedCurve(tr.market(D, "USD", "CSA-X"), 1).csa == "CSA-X"
+
+
+def test_swaption_theta_onto_expiry_exercises_on_the_frozen_forward():
+    """R2-4 holds F fixed, so the step onto expiry pays intrinsic on today's F, even where the toy
+    world's own expiry F sits on the other side of the strike (the post-expiry decision is kept)."""
+    _, o = _swaption()
+    exp, term = o["expiration_date"], o["termination_date"]
+    t = exp - timedelta(days=1)
+    m = ts.market(t, "USD")
+    f_live, f_exp = tr._par_rate(m.curve, exp, term), tr._par_rate(tr.market(exp, "USD"), exp, term)
+    assert abs(f_live - f_exp) > 1e-5
+    k = (f_live + f_exp) / 2
+    ann_t1 = tr._annuity(m.curve, exp, term) / m.curve.discount_factor(exp)  # the curve translated onto expiry
+    for pay_or_receive, intrinsic in (("Pay", max(f_live - k, 0.0)), ("Receive", max(k - f_live, 0.0))):
+        trade = dict(o, pay_or_receive=pay_or_receive, strike=k)
+        expected = trade["notional"] * ann_t1 * intrinsic - ts.npv(m, trade)
+        assert ts.theta_1d(m, trade) == pytest.approx(expected, rel=1e-9)
+
+
 def test_frozen_world_theta_identity_bond_including_a_coupon_step(frozen):
     _, b = _bond("TOY 4.25 2034-11-15")
     for t in (D, date(2024, 5, 14)):  # an ordinary day; the day before the 2024-05-15 coupon

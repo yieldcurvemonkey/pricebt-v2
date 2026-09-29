@@ -103,7 +103,7 @@ def test_twin_asset_agnostic_scan_must_pass_a_neutral_module(tmp_path):
     assert scan.scan_asset_agnostic_tokens(src / "pricebt" / "assets" / "a.py", src) == []
 
 
-def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_two_risk_files(tmp_path):
+def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_three_risk_files(tmp_path):
     pkg = (
         tree(
             tmp_path,
@@ -112,6 +112,8 @@ def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_two_risk_f
                 "pricebt/markets/b.py": "",
                 "pricebt/risk/results.py": "",
                 "pricebt/risk/transform.py": "",
+                "pricebt/risk/core.py": "",
+                "pricebt/risk/contracts.py": "",
                 "pricebt/risk/__init__.py": "",
                 "pricebt/instrument/__init__.py": "",
                 "pricebt/backtests/actions.py": "",
@@ -120,4 +122,4 @@ def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_two_risk_f
         / "pricebt"
     )
     got = sorted(p.relative_to(pkg).as_posix() for p in scan.asset_agnostic_files(pkg))
-    assert got == ["assets/a.py", "markets/b.py", "risk/results.py", "risk/transform.py"]
+    assert got == ["assets/a.py", "markets/b.py", "risk/core.py", "risk/results.py", "risk/transform.py"]

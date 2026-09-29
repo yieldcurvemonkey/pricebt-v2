@@ -90,6 +90,23 @@ def test_historical_bucketed_value_is_one_date_indexed_frame(toy):
     pd.testing.assert_frame_equal(pd.DataFrame(picked), pd.DataFrame(one_day))
     with HistoricalPricingContext(dates=[D1, D2]):
         assert isinstance(swap.calc(Price).result(), SeriesWithInfo)  # scalars unchanged
+    with pytest.raises(KeyError):
+        by_leaf[D3]  # not priced: gs's KeyError, never an empty (zero) ladder
+
+
+def test_calculated_and_stitched_histories_aggregate_together(toy):
+    """Both carry gs's `historical_risk_key` (date None), so their keys agree."""
+    a, b = IRSwap("Pay", "10y", "USD", 1e6, name="a"), IRSwap("Receive", "5y", "USD", 1e6, name="b")
+    with HistoricalPricingContext(dates=[D1, D2]):
+        ha = Portfolio([a]).calc(Price)
+    with PricingContext(D1):
+        b1 = Portfolio([b]).calc(Price)
+    with PricingContext(D2):
+        b2 = Portfolio([b]).calc(Price)
+    hb = b1 + b2
+    assert ha["a"].risk_key.date is None and hb["b"].risk_key.date is None
+    total = (ha + hb).aggregate()
+    assert list(total.index) == [D1, D2] and total[D2] == pytest.approx(ha["a"][D2] + b2["b"])
 
 
 # ------------------------------------------------------------------------------ Grid (item 17, gs 030006)
@@ -152,6 +169,10 @@ def test_hedge_with_a_leg_whose_ladder_is_empty_on_some_dates_r2_27():
     assert set(gap_days) <= checked and len(checked) == 3
 
 
-@pytest.mark.xfail(strict=True, raises=ValueError, reason="HANDOFF: results._value_for_date returns an all-empty historical frame with an undated key")
 def test_one_day_hedge_whose_leg_ladder_is_empty_on_its_only_date_r2_27():
-    _run_gappy_hedge("1b")
+    """A 1b hedge placed on a gap day holds a leg whose historical ladder is empty on every date it
+    spans: its per-date slice is still a dated empty frame, so the hedge aggregates and nets."""
+    bt = _run_gappy_hedge("1b")
+    for d in (D1, D2, D3):
+        net = bt.results[d][IRDelta].transform(ResultWithInfoAggregator()).aggregate()
+        assert float(net) == pytest.approx(0.0, abs=1e-6)

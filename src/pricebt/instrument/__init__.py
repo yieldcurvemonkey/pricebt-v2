@@ -190,7 +190,7 @@ class Instrument(Priceable):
                 return self.resolved_terms[field]
         if field in self._kwargs:
             return self._kwargs[field]
-        raise AttributeError(field)
+        raise AttributeError(field)  # pricebt DEV-I18: gs returns None for a field never set
 
     # --- attribute assignment (IR_RISK_DESIGN R2-29) ---------------------------------------------
     def __setattr__(self, key: str, value: Any) -> None:
@@ -198,13 +198,15 @@ class Instrument(Priceable):
             field = _to_snake(key)
             if field in ("asset_class", "type_", "type"):
                 raise ValueError(f"{key} cannot be set")  # gs: init=False fields
-            if field in _FIELD_NAMES.get(type(self), ()):
+            if field in _FIELD_NAMES.get(type(self), ()) or field in self.__dict__.get("_kwargs", ()):
                 # pricebt DEV-I14: gs stores the coerced value on the dataclass field; pricebt
-                # stores it in _kwargs, the terms pricing reads (None deletes the key). gs lets a
-                # resolved instrument's field change; pricebt raises (the clone rule).
+                # stores it in _kwargs, the terms pricing reads (None deletes the key) -- so does a
+                # term already in _kwargs (a ConfigInstrument's, or an extra kwarg), else reading
+                # it back would disagree with what is priced. gs lets a resolved instrument's field
+                # change; pricebt raises (the clone rule).
                 if self.__dict__.get("resolved_terms") is not None:
                     raise ValueError(f"cannot set {key} on a resolved instrument; set it on the unresolved instrument or clone that")
-                value = _coerce(_ENUM_MAP[type(self)], field, value)
+                value = _coerce(_ENUM_MAP.get(type(self), {}), field, value)
                 kwargs = self.__dict__["_kwargs"]
                 if value is None:
                     kwargs.pop(field, None)

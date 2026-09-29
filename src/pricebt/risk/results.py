@@ -21,6 +21,7 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 
+import pricebt.config
 from pricebt.base import Priceable
 from pricebt.errors import NotSupportedError
 
@@ -64,6 +65,8 @@ class FloatWithInfo(float):
         return float(self)
 
     def __add__(self, other):
+        # pricebt DEV-R14: `+ number` and `sum()` keep a FloatWithInfo and a None unit adds to any
+        # unit (gs: plain floats, and "unit mismatch" unless the units are equal)
         other_unit = getattr(other, "unit", None)
         if self.unit is not None and other_unit is not None and other_unit != self.unit:
             raise ValueError("FloatWithInfo unit mismatch")
@@ -172,10 +175,14 @@ class DataFrameWithInfo(_InfoFrameMixin, pd.DataFrame):
     mkt_point, mkt_quoting_style, value` (a missing label is `''`, never NaN); a historical bucketed
     result is the same columns indexed by `date` (gs `compose`) -- or, when `pricebt_table` is True,
     a table result (`make_table_frame`, docs/v2/IR_RISK_DESIGN.md R2-15) with the asset function's
-    own columns (historical: a `date` column first)."""
+    own columns (historical: a `date` column first). `pricebt_dates` is a historical frame's priced
+    dates (a date whose frame had no rows included; None for a single-date frame) and
+    `pricebt_scale_columns` a table's quantity-scaled columns."""
 
-    _metadata = _InfoFrameMixin._metadata + ["pricebt_table"]
-    pricebt_table = False  # a class default, so a bucketed frame never falls into column lookup
+    _metadata = _InfoFrameMixin._metadata + ["pricebt_table", "pricebt_dates", "pricebt_scale_columns"]
+    pricebt_table = False  # class defaults, so a bucketed frame never falls into column lookup
+    pricebt_dates = None
+    pricebt_scale_columns = ()
 
     @property
     def _constructor(self):
@@ -187,7 +194,10 @@ class DataFrameWithInfo(_InfoFrameMixin, pd.DataFrame):
 
     @property
     def raw_value(self) -> pd.DataFrame:
-        """A plain DataFrame; a date index becomes a leading `dates` column (gs)."""
+        """A plain DataFrame; a date index becomes a leading `dates` column (gs), and so does a
+        historical table's `date` column."""
+        if self.pricebt_table:
+            return pd.DataFrame(self).rename(columns={"date": "dates"}) if self.pricebt_dates is not None else pd.DataFrame(self)
         if self.empty or not isinstance(self.index.values[0], dt.date):
             return pd.DataFrame(self)
         return pd.DataFrame(self).rename_axis("dates").reset_index()
@@ -202,7 +212,9 @@ class DataFrameWithInfo(_InfoFrameMixin, pd.DataFrame):
         components = tuple(components)
         frames = [pd.DataFrame(c).assign(date=_date_of(c)) for c in components]
         df = pd.concat([f for f in frames if len(f)] or frames).set_index("date")
-        return DataFrameWithInfo(df, risk_key=_historical_key(components[0].risk_key), unit=components[0].unit)
+        out = DataFrameWithInfo(df, risk_key=_historical_key(components[0].risk_key), unit=components[0].unit)
+        out.pricebt_dates = tuple(_date_of(c) for c in components)
+        return out
 
 
 class ErrorValue:
@@ -303,13 +315,15 @@ def make_table_frame(rows, risk_key: Optional[RiskKey] = None, unit: Optional[di
             for c in scale_columns:
                 df[c] = df[c] * factor
     out = DataFrameWithInfo(df, risk_key=risk_key, unit=unit)
-    out.pricebt_table = True
+    out.pricebt_table, out.pricebt_scale_columns = True, scale_columns
     return out
 
 
-def _as_table(df, risk_key=None, unit=None) -> DataFrameWithInfo:
-    out = DataFrameWithInfo(pd.DataFrame(df), risk_key=risk_key, unit=unit)
-    out.pricebt_table = True
+def _table_like(df, like, risk_key=None, dates=None) -> DataFrameWithInfo:
+    """`df`'s rows as a table with `like`'s unit and scale columns (pandas drops `_metadata` across
+    `pd.concat` and re-wrapping); `dates` marks a historical table by its priced dates."""
+    out = DataFrameWithInfo(pd.DataFrame(df), risk_key=risk_key, unit=like.unit)
+    out.pricebt_table, out.pricebt_scale_columns, out.pricebt_dates = True, like.pricebt_scale_columns, dates
     return out
 
 
@@ -345,16 +359,20 @@ def _is_dates(item) -> bool:
 
 
 def _show_na(display_options) -> bool:
-    return bool(getattr(display_options, "show_na", False))
+    """gs `_to_records` of an empty frame or an `UnsupportedValue`: a `DisplayOptions` or None (the
+    module default `pricebt.config.display_options`, read at call time)."""
+    if display_options is not None and not isinstance(display_options, pricebt.config.DisplayOptions):
+        raise TypeError("display_options must be of type DisplayOptions")
+    return (display_options if display_options is not None else pricebt.config.display_options).show_na
 
 
 def _value_dates(value) -> set:
-    """The dates a historical value spans (gs `dates`): a PRR/MRMR's own, a table's `date` column,
-    a Series'/frame's index when every entry is a date; empty for a single-date value."""
+    """The dates a historical value spans (gs `dates`): a PRR/MRMR's own, a historical table's
+    `date` column, a Series'/frame's index when every entry is a date; empty for a single-date value."""
     if isinstance(value, (PortfolioRiskResult, MultipleRiskMeasureResult)):
         return set(value.dates)
-    if _is_table(value) and "date" in value.columns:
-        return set(value["date"])
+    if _is_table(value):
+        return set(value["date"]) if value.pricebt_dates is not None else set()
     if isinstance(value, (pd.Series, pd.DataFrame)) and len(value.index) and all(isinstance(i, dt.date) for i in value.index):
         return set(value.index)
     return set()
@@ -370,29 +388,47 @@ def _with_info(value, risk_key, unit, error):
     return FloatWithInfo(value, risk_key=risk_key, unit=unit, error=error)
 
 
+def _priced_dates(frame) -> Optional[set]:
+    """A historical frame's priced dates: its `pricebt_dates` (set wherever one is composed, so a
+    date whose frame had no rows still counts) or, for a bucketed frame built by hand, its `date`
+    index; None for a single-date frame."""
+    dates = getattr(frame, "pricebt_dates", None)
+    if dates is None and not _is_table(frame) and frame.index.name == "date":
+        dates = frame.index
+    return None if dates is None else set(dates)
+
+
 def _value_for_date(result, date):
     """One date's (or a list of dates') slice of a historical value (gs `_value_for_date`), carrying
-    the selected date(s) in its risk key. A date-indexed frame is selected with
-    `df[df.index == date]` (IR_RISK_DESIGN R2-27), so a date with no rows gives an empty
-    `DataFrameWithInfo` rather than a KeyError; a single date drops the date index. A table selects
-    on its `date` column (a single date drops the column)."""
-    if result.empty:
+    the selected date(s) in its risk key; a date the value was not priced on is a KeyError (gs
+    `.loc`). A bucketed frame is selected with `df[df.index == date]` and a table on its `date`
+    column (IR_RISK_DESIGN R2-27); a single date drops the index/column. A single-date frame raises
+    gs's RuntimeError."""
+    if result.empty and not isinstance(result, pd.DataFrame):
         return result
     single = isinstance(date, dt.date)
     key = getattr(result, "risk_key", None)
     risk_key = key._replace(date=date if single else tuple(date)) if key is not None else None
     unit, error = getattr(result, "unit", None), getattr(result, "error", None)
     if isinstance(result, pd.DataFrame):
+        priced = _priced_dates(result)
+        if priced is None:
+            raise RuntimeError("Can only index by date on historical results")
+        missing = [d for d in ((date,) if single else date) if d not in priced]
+        if missing:
+            raise KeyError(f"{missing} not among the dates this result was priced on")
+        # pricebt DEV-R16: a priced date whose frame had no rows gives an empty frame carrying the
+        # date (gs: a KeyError, or an all-empty result returned undated), so a hedge sized on it
+        # aggregates to 0 (IR_RISK_DESIGN R2-27)
+        dates = None if single else tuple(date)
         if _is_table(result):
             rows = result[result["date"] == date] if single else result[result["date"].isin(date)]
-            return _as_table(rows.drop(columns="date").reset_index(drop=True) if single else rows, risk_key, unit)
+            return _table_like(rows.drop(columns="date").reset_index(drop=True) if single else rows, result, risk_key, dates)
         rows = result[result.index == date] if single else result[result.index.isin(date)]
-        return DataFrameWithInfo(pd.DataFrame(rows.reset_index(drop=True) if single else rows), risk_key=risk_key, unit=unit, error=error)
+        out = DataFrameWithInfo(pd.DataFrame(rows.reset_index(drop=True) if single else rows), risk_key=risk_key, unit=unit, error=error)
+        out.pricebt_dates = dates
+        return out
     raw = result.loc[date] if single else result.loc[list(date)]
-    if isinstance(raw, DataFrameWithInfo):
-        # one date's frame held in a Series (the pricing layer's pre-R2-27 historical bucketed
-        # shape): it already carries its own date, unit and key
-        return raw
     return _with_info(raw, risk_key, unit, error)
 
 
@@ -402,14 +438,20 @@ def _compose(lhs, rhs):
     if isinstance(lhs, MultipleRiskMeasureResult) and isinstance(rhs, MultipleRiskMeasureResult):
         return lhs + rhs
     if _is_table(lhs) and _is_table(rhs):
-        lhs, rhs = (t if "date" in t.columns else t.assign(date=_date_of(t))[["date", *t.columns]] for t in (lhs, rhs))
-        rows = pd.concat([lhs[~lhs["date"].isin(rhs["date"])], rhs]).sort_values("date", kind="stable")
-        return _as_table(rows.reset_index(drop=True), _historical_key(lhs.risk_key), lhs.unit)
+        lhs, rhs = (t if t.pricebt_dates is not None else _table_like(t.assign(date=_date_of(t))[["date", *t.columns]], t, t.risk_key, (_date_of(t),)) for t in (lhs, rhs))
+        l_dates, r_dates = set(lhs.pricebt_dates), set(rhs.pricebt_dates)
+        rows = pd.concat([lhs[~lhs["date"].isin(r_dates)], rhs]).sort_values("date", kind="stable")
+        return _table_like(rows.reset_index(drop=True), lhs, _historical_key(lhs.risk_key), tuple(l_dates | r_dates))
     if isinstance(lhs, DataFrameWithInfo) and isinstance(rhs, DataFrameWithInfo):
         lhs, rhs = (f if f.index.name == "date" else DataFrameWithInfo.compose((f,)) for f in (lhs, rhs))
-        # gs uses DataFrame.append, which pandas 2 removed; pd.concat is the same operation
-        rows = pd.concat([lhs[~lhs.index.isin(rhs.index)], rhs]).sort_index(kind="stable")
-        return DataFrameWithInfo(pd.DataFrame(rows), risk_key=lhs.risk_key, unit=lhs.unit)
+        l_dates, r_dates = _priced_dates(lhs), _priced_dates(rhs)
+        # gs uses DataFrame.append, which pandas 2 removed; pd.concat is the same operation (empty
+        # parts left out, as in compose: concatenating them trips a pandas FutureWarning)
+        parts = [lhs[~lhs.index.isin(r_dates)], rhs]
+        rows = pd.concat([p for p in parts if len(p)] or parts).sort_index(kind="stable")
+        out = DataFrameWithInfo(pd.DataFrame(rows), risk_key=lhs.risk_key, unit=lhs.unit)
+        out.pricebt_dates = tuple(l_dates | r_dates)
+        return out
     if isinstance(lhs, FloatWithInfo) and isinstance(rhs, FloatWithInfo):
         return rhs if _date_of(lhs) == _date_of(rhs) else FloatWithInfo.compose((lhs, rhs))
     lhs_s = FloatWithInfo.compose((lhs,)) if isinstance(lhs, FloatWithInfo) else lhs
@@ -421,13 +463,16 @@ def _compose(lhs, rhs):
 
 
 def _map_value(value, fn):
-    """Apply a scalar operation to a result: a frame's `value` column only (gs would also repeat the
-    string label columns), a Series or scalar directly, an MRMR/PRR per value."""
+    """Apply a scalar operation to a result: a bucketed frame's `value` column only (gs would also
+    repeat the string label columns), a table's scale columns (pricebt DEV-R9), a Series or scalar
+    directly, an MRMR/PRR per value."""
     if isinstance(value, (MultipleRiskMeasureResult, PortfolioRiskResult)):
         return value._map(fn)
     if isinstance(value, pd.DataFrame):
         out = value.copy()
-        out["value"] = fn(out["value"])
+        # an empty table may lack its scale columns (make_table_frame)
+        for c in [c for c in value.pricebt_scale_columns if c in value] if _is_table(value) else ["value"]:
+            out[c] = fn(out[c])
         return out
     return fn(value)
 
@@ -877,24 +922,28 @@ class PortfolioRiskResult:
 
     @staticmethod
     def _measure_future(future, item, items) -> PricingFuture:
+        """One direct child's future restricted to `items`, without evaluating a lazy leaf. gs keeps
+        only the measures the leaf has (`_value_for_measure_or_scen`), so reading one it lacks is a
+        later KeyError, never another measure's value; a single present measure is its own future."""
         sub = _sub_prr(future)
         if sub is not None:
             return PricingFuture(sub[item])
         if isinstance(future, _MultiMeasureFuture):
-            if len(items) > 1:
-                return _MultiMeasureFuture({m: future.future_for(m) for m in items}, future.instrument)
-            one = future.future_for(items[0])
-            return one if one is not None else PricingFuture(future.result()[items[0]])
-        res = future.result()
-        if not isinstance(res, MultipleRiskMeasureResult):
-            return PricingFuture(res)
-        if len(items) > 1:
-            return PricingFuture(MultipleRiskMeasureResult(res.instrument, ((m, res[m]) for m in items)))
-        return PricingFuture(res[items[0]])
+            present = {m: f for m in items if (f := future.future_for(m)) is not None}
+            instrument = future.instrument
+        else:
+            res = future.result()
+            if not isinstance(res, MultipleRiskMeasureResult):
+                return PricingFuture(res)
+            present = {m: PricingFuture(res[m]) for m in items if m in res}
+            instrument = res.instrument
+        if len(items) == 1 and present:
+            return present[items[0]]
+        return _MultiMeasureFuture(present, instrument)
 
     def _by_date(self, item) -> "PortfolioRiskResult":
-        if not self.dates:
-            raise RuntimeError("Can only index by date on historical results")
+        # gs has no up-front `dates` check: each child raises for itself, so a result whose ladders
+        # are all empty (no dates) still slices by a date it was priced on
         futures = []
         for f in self.futures:
             res = f.result()
@@ -955,6 +1004,9 @@ class PortfolioRiskResult:
         if measures_overlap and dates_overlap and instruments_overlap:
             raise ValueError("Results overlap on risk measures, instruments or dates")
 
+        # pricebt DEV-E14: an ordered union (self's measures first, then other's new ones), not the
+        # gs `set(chain(self.risk_measures, other.risk_measures))`, whose column order is non-deterministic.
+        risk_measures = tuple(dict.fromkeys((*self.risk_measures, *other.risk_measures)))
         if self.portfolio is other.portfolio or self.portfolio == other.portfolio:
             portfolio = self.portfolio
             futures = [
@@ -963,12 +1015,27 @@ class PortfolioRiskResult:
             ]
         else:
             portfolio = self.portfolio + other.portfolio
-            futures = list(self.futures) + list(other.futures)
-
-        # pricebt DEV-E14: an ordered union (self's measures first, then other's new ones), not the
-        # gs `set(chain(self.risk_measures, other.risk_measures))`, whose column order is non-deterministic.
-        risk_measures = tuple(dict.fromkeys((*self.risk_measures, *other.risk_measures)))
+            # pricebt DEV-R13: gs's `set_value` then fills a leaf's missing measure from the other
+            # result where it holds the same instrument (mutating a multi-measure input); pricebt
+            # does not, so reading a measure a leaf lacks is a KeyError
+            futures = [*self._as_multiple(risk_measures).futures, *other._as_multiple(risk_measures).futures]
         return PortfolioRiskResult(portfolio, risk_measures, futures)
+
+    def _as_multiple(self, risk_measures: tuple) -> "PortfolioRiskResult":
+        """gs `as_multiple_result_futures`: once the combined result holds several measures, each
+        leaf of a single-measure result is `{measure: future}`, so it never answers for another
+        measure (a lone leaf value is served for whichever measure is asked)."""
+        if len(risk_measures) == 1 or len(self.risk_measures) != 1:
+            return self
+        m = self.risk_measures[0]
+        futures = []
+        for priceable, f in zip(self.portfolio.priceables, self.futures):
+            sub = _sub_prr(f)
+            if sub is not None:
+                futures.append(PricingFuture(sub._as_multiple(risk_measures)))
+            else:
+                futures.append(f if isinstance(f, _MultiMeasureFuture) else _MultiMeasureFuture({m: f}, priceable))
+        return PortfolioRiskResult(self.portfolio, self.risk_measures, futures)
 
     def _add_futures(self, fs, fo, other_measures, priceable) -> PricingFuture:
         """Same-portfolio `+` for one direct child: nested results add recursively; a leaf merges
@@ -1035,7 +1102,7 @@ class PortfolioRiskResult:
         else:
             values = [self._value(f) for f in leaves]
             if not values:
-                return FloatWithInfo(0.0)
+                return FloatWithInfo(0.0)  # pricebt DEV-R15: gs returns None
             if all(_is_table(v) for v in values):
                 values = [_named_table(v, _label(p(self.portfolio), p.path[-1])) for v, p in zip(values, paths)]
         return aggregate_results(values, allow_mismatch_risk_keys=allow_mismatch_risk_keys, allow_heterogeneous_types=allow_heterogeneous_types)
@@ -1056,8 +1123,13 @@ class PortfolioRiskResult:
                 if sub is not None:
                     walk(sub, {**labels, f"portfolio_name_{depth}": _label(priceable, idx)}, depth + 1)
                 else:
+                    # gs `get_records`: the leaf's own value, a multi-measure one per measure (so a
+                    # measure the leaf lacks adds no row); a lone value is its result's measure
                     extra = {**labels, "instrument_name": _label(priceable, idx)}
-                    records.extend(_records_of(prr._value(future), extra, display_options, drop_tables))
+                    res = future.result()
+                    if not isinstance(res, MultipleRiskMeasureResult):
+                        extra["risk_measure"] = prr.risk_measures[0]
+                    records.extend(_records_of(res, extra, display_options, drop_tables))
 
         walk(self, {}, 0)
         return records
@@ -1108,10 +1180,11 @@ class PortfolioRiskResult:
         return _pivot_to_frame(ori_df, values, index, columns, aggfunc)
 
     def _has_table(self) -> bool:
-        return any(_is_table(v) or (isinstance(v, MultipleRiskMeasureResult) and any(_is_table(x) for x in v.values())) for v in self._results())
+        leaves = (f.result() for f in self._leaf_futures())
+        return any(_is_table(v) or (isinstance(v, MultipleRiskMeasureResult) and any(_is_table(x) for x in v.values())) for v in leaves)
 
 
 def _named_table(table, name: str) -> DataFrameWithInfo:
     out = table.copy()
     out.insert(0, "instrument_name", name)
-    return _as_table(out, table.risk_key, table.unit)
+    return _table_like(out, table, table.risk_key, table.pricebt_dates)

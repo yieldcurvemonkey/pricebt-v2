@@ -40,7 +40,9 @@ from pricebt.risk.results import (
     RiskKey,
     SeriesWithInfo,
     _DeferredFuture,
+    _historical_key,
     _MultiMeasureFuture,  # noqa: F401 -- purpose-built for exactly this: a per-measure-lazy multi-measure future
+    _table_like,
     make_bucketed_frame,
     make_table_frame,
 )
@@ -613,8 +615,8 @@ class PricingService:
 
 
 def _instrument_calc_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str]):
-    """The raw computed value(s) for a standalone `Instrument.calc()` -- unwrapped; the caller
-    applies context-based future-wrapping."""
+    """One date's raw value(s) for a historical instrument result (`_historical_instrument_value`
+    unwraps any LazyFuture in them)."""
     if len(measures) == 1:
         return service.value(inst, d, measures[0], csa)
     return MultipleRiskMeasureResult(inst, ((m, service.value(inst, d, m, csa)) for m in measures))
@@ -632,9 +634,17 @@ def _instrument_future(service: PricingService, inst: Instrument, measures: Tupl
 
 
 def _with_fn(future: PricingFuture, fn) -> PricingFuture:
-    """gs `Instrument.calc(fn=)` inside `Portfolio.calc`: `fn` applied to one leaf's value, an
-    exception it raises stored in that leaf's future (gs instrument/core.py, `ret.set_exception`)."""
+    """gs `Instrument.calc(fn=)`, also per leaf inside `Portfolio.calc`: `fn` applied to the
+    evaluated value, an exception it raises stored in the future (gs instrument/core.py,
+    `ret.set_exception`)."""
     return future if fn is None else _DeferredFuture(lambda: fn(future.result()))
+
+
+def _instrument_result(ctx: PricingContext, future: PricingFuture, fn):
+    """gs `Instrument.calc`: the future inside an entered (or async) context, else its value -- so
+    `PricingContext.current = ...; inst.calc(measure)` gives the value, never a LazyFuture."""
+    future = _with_fn(future, fn)
+    return future if ctx.is_entered or ctx.is_async else future.result()
 
 
 def _calc_portfolio_one_date(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], d: _date, csa: Optional[str], fn=None) -> PortfolioRiskResult:
@@ -662,6 +672,7 @@ def _date_indexed(by_date: dict, rep):
         # checked on the values: `rep` is still the unevaluated LazyFuture of a bucketed measure
         return DataFrameWithInfo.compose(by_date.values())
     if getattr(rep, "pricebt_table", False):
+        # pricebt DEV-R11: gs has no table measures; a historical table is one table, date column first
         frames = []
         for d, table in by_date.items():
             frame = pd.DataFrame(table, copy=True)
@@ -669,8 +680,10 @@ def _date_indexed(by_date: dict, rep):
             frames.append(frame)
         # dates with no rows add nothing (and concatenating empty frames trips a pandas warning)
         frames = [f for f in frames if len(f)] or frames
-        return make_table_frame(pd.concat(frames, ignore_index=True), risk_key=rep.risk_key, unit=rep.unit)
-    return SeriesWithInfo(pd.Series(by_date), unit=getattr(rep, "unit", None), risk_key=getattr(rep, "risk_key", None))
+        # the priced dates mark it historical (never its column names) and keep a date with no rows
+        return _table_like(pd.concat(frames, ignore_index=True), rep, _historical_key(rep.risk_key), tuple(by_date))
+    # a historical key has no date (gs `historical_risk_key`), as `FloatWithInfo.compose` gives
+    return SeriesWithInfo(pd.Series(by_date), unit=getattr(rep, "unit", None), risk_key=_historical_key(getattr(rep, "risk_key", None)))
 
 
 def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str]):
@@ -728,22 +741,12 @@ def engine_calc(priceable, measures, fn=None):
         dates, csa = ctx.date_range, ctx.csa_term
         if isinstance(priceable, Portfolio):
             return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn)
-        result = _historical_instrument_value(service, priceable, measures_t, dates, csa)
-        if fn is not None:
-            result = fn(result)
-        if ctx.is_entered or ctx.is_async:
-            return result if isinstance(result, PricingFuture) else PricingFuture(result)
-        return result
+        return _instrument_result(ctx, PricingFuture(_historical_instrument_value(service, priceable, measures_t, dates, csa)), fn)
 
     d, csa = ctx.pricing_date, ctx.csa_term
     if isinstance(priceable, Portfolio):
         return _calc_portfolio_one_date(service, priceable, measures_t, d, csa, fn)
-    result = _instrument_calc_value(service, priceable, measures_t, d, csa)
-    if fn is not None:
-        result = fn(result)
-    if ctx.is_entered or ctx.is_async:
-        return result if isinstance(result, PricingFuture) else PricingFuture(result)
-    return result
+    return _instrument_result(ctx, _instrument_future(service, priceable, measures_t, d, csa), fn)
 
 
 def _resolve_instrument(service: PricingService, inst: Instrument, in_place: bool, ctx: PricingContext, is_historical: bool):

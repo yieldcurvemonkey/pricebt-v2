@@ -123,6 +123,13 @@ thing. Requesting an FX conversion of a non-currency unit is a `ConfigError`.
   mkt_point, mkt_quoting_style, value` (`value` required; `labels` fill the missing coordinates).
   A `functions:` entry with `returns: frame` returns a DataFrame or a list of dicts (`[]` is
   allowed); quantity scales only its `scale_columns`, and it is never FX-converted.
+- **What a request returns** (DESIGN §8.2). A scalar function gives a `FloatWithInfo` (with
+  `.unit` and `.risk_key`); a bucketed request a `DataFrameWithInfo` with the six columns
+  `mkt_type, mkt_asset, mkt_class, mkt_point, mkt_quoting_style, value`; a `returns: frame`
+  function a table `DataFrameWithInfo` with its own columns (DEV-R11). Under a
+  `HistoricalPricingContext` a scalar becomes a `SeriesWithInfo` indexed by date, a bucketed result
+  one `DataFrameWithInfo` indexed by `date` (a date with no buckets simply has no rows), and a
+  table one table with a `date` column first.
 - **Measure contracts.** An `IRSwap`, `IRSwaption` or `Bond` config must map every measure of its
   class's contract or declare it under `unsupported_measures:` with a reason; the load error lists
   every gap and prints a paste-ready block (DEV-I11, [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §2).
@@ -224,12 +231,18 @@ a new config — the CI toy swaption
    same underlying rates world.
 3. **`resolve` pins `expiration_date`, `termination_date` and the strike**, and — because pricebt
    never reads `buy_sell` itself — folds `buy_sell` × `sign(notional_amount)` into one signed
-   resolved notional (`toylib.swaption.resolve_swaption`); it also rejects an un-priceable
-   `pay_or_receive` at resolve time, not later.
-4. **Functions** `npv` (Bachelier/normal price) and `vega` (`ccy_per_bp`, per bp of normal vol);
-   `attributes: {expiration_date: 'resolved["expiration_date"]'}` so
-   `AddTradeAction(swaption, 'expiration_date')` can read its exit date; `risk_measures: {Price:
-   npv, IRVega: {scalar: vega}}`.
+   resolved notional (`toylib.swaption.resolve_swaption`); it also rejects a `pay_or_receive` it
+   cannot price at resolve time, not later. The toy prices `Pay`, `Receive` and `Straddle` (payer
+   + receiver), so only an unknown value is rejected.
+4. **Functions and the measure contract.** An `IRSwaption` config must map or declare every
+   measure of the IR contract (DEV-I11, [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §2.2). The toy
+   maps all of them: `npv` (Bachelier/normal price), own-rate `delta`/`gamma`, `vega`/`vanna`/
+   `volga` (per bp of normal vol), `theta_1d` (ccy per day), the rate and vol levels in bp,
+   `expiry_in_years`, `annuity`, `prob_exercise`, a `cashflows` frame (`returns: frame`), and
+   three `returns: buckets` portfolio functions: the delta and diagonal gamma ladders and a vega
+   cube keyed `'<tail>;<expiry>'` (e.g. `'10Y;1Y'`). `attributes: {expiration_date:
+   'resolved["expiration_date"]'}` lets `AddTradeAction(swaption, 'expiration_date')` read its
+   exit date.
 
 Nothing in the engine, the pricing layer or the result objects changed to make this work — the
 asset-agnostic guard (`tests/guards/test_asset_agnostic_scan.py`) fails the build if a later change

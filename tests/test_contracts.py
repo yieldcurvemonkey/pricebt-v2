@@ -30,6 +30,8 @@ IR_CONFIGS = [
     "tests/assets/toy_usd_irs.yaml",
     "tests/assets/toy_eur_irs.yaml",
     "tests/assets/toy_usd_swaption.yaml",
+    "tests/assets/toy_usd_irs_full.yaml",
+    "tests/assets/toy_usd_bond.yaml",
     "configs/assets/usd_sofr_ois_interest_rate_swap.yaml",
     "tests/skills/fixtures/check_asset/bad_dv01_sign.yaml",
     "tests/skills/fixtures/check_asset/bad_par_rate_decimal.yaml",

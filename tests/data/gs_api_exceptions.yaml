@@ -236,10 +236,13 @@
   missing: [active_context, is_batch, is_current, market, market_behaviour, market_data_location,
             provider, request_priority, set_parameters_only, show_progress, timeout, use_cache,
             use_historical_diddles_only, use_server_cache, visible_to_gs]
+  dev_id: DEV-M1
   reason: >
     markets/__init__.py's own module docstring: only pricing_date and csa_term actually do anything;
-    every other constructor parameter is accepted for signature parity and ignored (DESIGN.md
-    section 6.5).
+    a non-None market raises NotSupportedError (DEV-M1, IR_RISK_DESIGN R2-30), so there is no
+    market to expose; every other constructor parameter is accepted for signature parity and
+    ignored (DESIGN.md section 6.5). The `PricingContext.current` getter and setter (gs) are on the
+    metaclass, like gs's ContextMeta.
 
 - symbol: gs_quant.markets.PricingContext
   aspect: methods
