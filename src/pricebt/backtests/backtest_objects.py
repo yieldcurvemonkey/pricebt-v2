@@ -14,7 +14,8 @@ specific language governing permissions and limitations
 under the License.
 """
 # Ported to pricebt from gs_quant 2.1.17 (Apache-2.0); see NOTICE. Changes: DEV-R1, DEV-R2, DEV-R4,
-# DEV-E12, DEV-E14, DEV-E15
+# DEV-R11, DEV-E12, DEV-E14, DEV-E15, DEV-E19, DEV-E20, DEV-E21; pricebt additions
+# BackTest.pnl_explain_table, ir_pnl_definition, swaption_pnl_definition, bond_pnl_definition
 #
 # BackTest (+ pnl_bps, missing_market_dates/missing_market_moves -- pricebt-only additions, no DEV
 # marker: they are new API, not a deviation from existing gs behaviour), ScalingPortfolio,
@@ -27,6 +28,7 @@ under the License.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 from abc import ABC
 from collections import defaultdict
 from contextvars import ContextVar
@@ -39,13 +41,30 @@ import numpy as np
 import pandas as pd
 
 from ..base import field_metadata, static_field
-from ..common import ParameterisedRiskMeasure, RiskMeasure
+from ..common import AggregationLevel, ParameterisedRiskMeasure, RiskMeasure
 from ..errors import NotSupportedError
 from ..instrument import Instrument
 from ..markets import PricingContext
 from ..markets.portfolio import Portfolio
-from ..risk import ErrorValue, FXAnnualImpliedVol, FXDeltaLocalCcy, FXGammaLocalCcy, FXSpot, FXVegaLocalCcy
-from ..risk.results import PortfolioRiskResult, PricingFuture
+from ..risk import (
+    Cashflows,
+    ErrorValue,
+    ExpiryInYears,
+    FXAnnualImpliedVol,
+    FXDeltaLocalCcy,
+    FXGammaLocalCcy,
+    FXSpot,
+    FXVegaLocalCcy,
+    IRAnnualImpliedVol,
+    IRDeltaParallel,
+    IRFwdRate,
+    IRGammaParallel,
+    IRVanna,
+    IRVegaParallel,
+    IRVolga,
+    Theta,
+)
+from ..risk.results import FloatWithInfo, PortfolioRiskResult, PricingFuture, _is_table
 from ..risk.transform import Transformer
 from .backtest_utils import make_list
 from .data_sources import DataSource
@@ -91,9 +110,22 @@ class PnlAttribute:
     market_data_metric: RiskMeasure
     scaling_factor: float
     second_order: bool = False
+    # pricebt DEV-E19: appended (positional gs calls unchanged). When set, the step P&L is
+    # scaling_factor * risk(t-1) * dm1 * dm2 (no 1/2; e.g. vanna), m2 read exactly like m1.
+    cross_market_data_metric: Optional[RiskMeasure] = None
+    # pricebt DEV-E21: appended. When set, every level read for this attribute must be a value whose
+    # unit is {unit: 1}, else pnl_explain raises (a wrong unit scales the P&L by 1e4 silently).
+    market_data_unit: Optional[str] = None
+    cross_market_data_unit: Optional[str] = None
+
+    def __post_init__(self):
+        if self.second_order and self.cross_market_data_metric is not None:
+            raise ValueError(f"{self.attribute_name}: second_order cannot be combined with cross_market_data_metric")
 
     def get_risks(self):
-        return [self.attribute_metric, self.market_data_metric]
+        # pricebt DEV-E19: the cross metric too; None metrics are left out
+        risks = (self.attribute_metric, self.market_data_metric, self.cross_market_data_metric)
+        return [r for r in risks if r is not None]
 
 
 @dataclass
@@ -102,6 +134,60 @@ class PnlDefinition:
 
     def get_risks(self):
         return [risk for attribute in self.attributes for risk in attribute.get_risks()]
+
+
+def _level(attribute: PnlAttribute, results, measure: RiskMeasure, unit: Optional[str], instrument):
+    """`results[measure]`, checked against the attribute's declared unit (pricebt DEV-E21)."""
+    value = results[measure]
+    if unit is not None and isinstance(value, FloatWithInfo) and value.unit != {unit: 1}:
+        raise ValueError(
+            f"{attribute.attribute_name}: {measure} on {getattr(instrument, 'name', instrument)} has unit"
+            f" {value.unit}; the definition expects {unit}"
+        )
+    return value
+
+
+def _attribute_step_pnl(attribute: PnlAttribute, held) -> float:
+    """One attribute's P&L over one step of BackTest._explain_steps: gs's per-instrument formula,
+    verbatim, plus the DEV-E19 cross term. A zero risk never reads a level (gs)."""
+    metric_pnl = 0.0
+    for prev_date_inst, prev_results, cur_results in held:
+        prev_date_risk = prev_results[attribute.attribute_metric]
+        if prev_date_risk == 0:
+            continue
+        unit = attribute.market_data_unit
+        prev_date_mkt_data = _level(attribute, prev_results, attribute.market_data_metric, unit, prev_date_inst)
+        cur_date_mkt_data = _level(attribute, cur_results(), attribute.market_data_metric, unit, prev_date_inst)
+        if attribute.second_order:
+            metric_pnl += (
+                0.5
+                * attribute.scaling_factor
+                * prev_date_risk
+                * (cur_date_mkt_data - prev_date_mkt_data)
+                * (cur_date_mkt_data - prev_date_mkt_data)
+            )
+        elif attribute.cross_market_data_metric is not None:
+            # pricebt DEV-E19: the cross metric is read like the first one (exit results on an exit date)
+            cross, cross_unit = attribute.cross_market_data_metric, attribute.cross_market_data_unit
+            prev_date_cross = _level(attribute, prev_results, cross, cross_unit, prev_date_inst)
+            cur_date_cross = _level(attribute, cur_results(), cross, cross_unit, prev_date_inst)
+            metric_pnl += (
+                attribute.scaling_factor
+                * prev_date_risk
+                * (cur_date_mkt_data - prev_date_mkt_data)
+                * (cur_date_cross - prev_date_cross)
+            )
+        else:
+            metric_pnl += attribute.scaling_factor * prev_date_risk * (cur_date_mkt_data - prev_date_mkt_data)
+    return metric_pnl
+
+
+def _cash_due(table, prev_date: dt.date, cur_date: dt.date):
+    """The rows of a Cashflows table with prev_date < payment_date <= cur_date."""
+    if not len(table):
+        return table
+    paid = pd.to_datetime(table["payment_date"])
+    return table.loc[(paid > pd.Timestamp(prev_date)) & (paid <= pd.Timestamp(cur_date))]
 
 
 @dataclass
@@ -250,13 +336,22 @@ class BackTest(BaseBacktest):
             return pd.DataFrame(columns=self.risks)
         dates_with_results = list(filter(lambda x: len(x[1]), self._results.items()))
         summary_dict = defaultdict(dict)
+        # pricebt DEV-R11: a table measure (its results carry the `pricebt_table` marker; never
+        # found by name) has no summary cell, so it is left out here and in every fill below.
+        table_risks = set()
         for date, results in dates_with_results:
             for risk in results.risk_measures:
+                if risk in table_risks:
+                    continue
                 try:
                     value = results[risk].aggregate(True, True)
                 except TypeError:
                     value = ErrorValue(None, error='Could not aggregate risk results')
+                if _is_table(value):
+                    table_risks.add(risk)
+                    continue
                 summary_dict[date][risk] = value
+        risks = [r for r in self.risks if r not in table_risks]
         self._risk_summary_dict = summary_dict
         zero_risk_sd_copy = summary_dict.copy()
         # pricebt DEV-R1/DEV-R4: a flat date (see _flat_dates) gets 0 for every risk -- including a
@@ -265,17 +360,17 @@ class BackTest(BaseBacktest):
         # Unlike gs's own zero_on_empty_dates block below, this runs unconditionally, because it is
         # what fixes result_summary (which calls this with zero_on_empty_dates=False).
         for flat_date in self._flat_dates() - set(zero_risk_sd_copy):
-            for risk in self.risks:
+            for risk in risks:
                 zero_risk_sd_copy[flat_date][risk] = 0
         if zero_on_empty_dates:
             for cash_only_date in set(self._cash_dict.keys()).difference(zero_risk_sd_copy.keys()):
-                for risk in self.risks:
+                for risk in risks:
                     zero_risk_sd_copy[cash_only_date][risk] = 0
         result = pd.DataFrame(zero_risk_sd_copy).T.sort_index()
         # pricebt DEV-E14: reindex columns to self.risks (an ordered list, DESIGN.md section 8.3)
         # instead of gs's arbitrary column order (whatever pd.DataFrame(dict_of_dicts) happens to
-        # produce from the per-date risk keys it was built from).
-        result = result.reindex(columns=self.risks)
+        # produce from the per-date risk keys it was built from). pricebt DEV-R11: tables left out.
+        result = result.reindex(columns=risks)
         return result
 
     @property
@@ -373,6 +468,7 @@ class BackTest(BaseBacktest):
         cp_table = cp_table.set_index(['Pricing Date', 'Instrument Name']).sort_index()
         cp_table.columns = pd.MultiIndex.from_product([['Cash Payments'], cp_table.columns])
 
+        # pricebt DEV-R11: the `value` pivot leaves table measures out
         risk_measure_dict = {
             date: risk_res.to_frame(values='value', index='instrument_name', columns='risk_measure').assign(
                 pricing_date=[date] * len(risk_res)
@@ -408,47 +504,108 @@ class BackTest(BaseBacktest):
         if self.pnl_explain_def is None:
             return None
 
+        attributes = list(self.pnl_explain_def.attributes)
+        results = [{} for _ in attributes]
+        cum_totals = [0.0 for _ in attributes]
+        for _, cur_date, held in self._explain_steps():
+            for i, attribute in enumerate(attributes):
+                if held is not None:
+                    cum_totals[i] += _attribute_step_pnl(attribute, held)
+                results[i][cur_date] = cum_totals[i]
+        pnl_explain_results = {}
+        for attribute, result in zip(attributes, results):
+            pnl_explain_results[attribute.attribute_name] = result
+        return pnl_explain_results
+
+    def _explain_steps(self):
+        """The step iterator pnl_explain() and pnl_explain_table() share (IR_RISK_DESIGN R2-17; gs's
+        loop, factored out). Yields (prev_date, cur_date, held) per step over the union of result
+        and exit-result dates; `held` is None when prev_date has no results (gs skips the step),
+        else one (instrument, its results on prev_date, cur) per instrument of results[prev_date],
+        where `cur()` gives its results on cur_date -- from results[cur_date] while still held,
+        else from trade_exit_risk_results[cur_date] -- looked up only when called (as gs, which
+        reads it only for a non-zero risk) and at most once per step.
+
+        pricebt DEV-E20: an exit on an off-grid date while other positions continue attributes
+        correctly, because DEV-R1 prices the continuing positions into results[that date]; gs has
+        no result there and raises KeyError (R15 S3) or drops the interval (S6)."""
         risk_results = self.results
         exit_risk_results = self.trade_exit_risk_results
         dates = sorted(set(risk_results.keys()).union(exit_risk_results.keys()))
 
-        pnl_explain_results = {}
+        # pricebt DEV-E20: after an off-grid exit a continuing position is found in results[cur_date]
+        # (DEV-R1 priced it there), the exiting one in the exit results; gs does not find the
+        # continuing one (KeyError, R15 S3)
+        def results_on(cur_date, inst):
+            if cur_date in risk_results and inst in risk_results[cur_date].portfolio:
+                return risk_results[cur_date][inst]
+            return exit_risk_results[cur_date][inst]
 
-        for attribute in self.pnl_explain_def.attributes:
-            result = {}
-            cum_total = 0.0
-            for idx in range(1, len(dates)):
-                metric_pnl = 0.0
-                cur_date = dates[idx]
-                prev_date = dates[idx - 1]
-                if prev_date not in risk_results:
-                    result[cur_date] = cum_total
-                    continue
-                for prev_date_inst in risk_results[prev_date].portfolio.all_instruments:
-                    prev_date_risk = risk_results[prev_date][prev_date_inst][attribute.attribute_metric]
-                    if prev_date_risk == 0:
-                        continue
-                    prev_date_mkt_data = risk_results[prev_date][prev_date_inst][attribute.market_data_metric]
-                    if cur_date in risk_results and prev_date_inst in risk_results[cur_date].portfolio:
-                        cur_date_mkt_data = risk_results[cur_date][prev_date_inst][attribute.market_data_metric]
-                    else:
-                        cur_date_mkt_data = exit_risk_results[cur_date][prev_date_inst][attribute.market_data_metric]
-                    if attribute.second_order:
-                        metric_pnl += (
-                            0.5
-                            * attribute.scaling_factor
-                            * prev_date_risk
-                            * (cur_date_mkt_data - prev_date_mkt_data)
-                            * (cur_date_mkt_data - prev_date_mkt_data)
-                        )
-                    else:
-                        metric_pnl += (
-                            attribute.scaling_factor * prev_date_risk * (cur_date_mkt_data - prev_date_mkt_data)
-                        )
-                cum_total += metric_pnl
-                result[cur_date] = cum_total
-            pnl_explain_results[attribute.attribute_name] = result
-        return pnl_explain_results
+        for idx in range(1, len(dates)):
+            cur_date = dates[idx]
+            prev_date = dates[idx - 1]
+            if prev_date not in risk_results:
+                yield prev_date, cur_date, None
+                continue
+            prev = risk_results[prev_date]
+            yield prev_date, cur_date, [
+                (inst, prev[inst], functools.cache(functools.partial(results_on, cur_date, inst)))
+                for inst in prev.portfolio.all_instruments
+            ]
+
+    def pnl_explain_table(self) -> Optional[pd.DataFrame]:
+        """pricebt addition (IR_RISK_DESIGN section 7.3, R2-17): pnl_explain() per step, next to the
+        P&L it explains. Indexed by pnl_explain()'s step dates, over the same held set (the
+        instruments of results[t-1], valued at t from results[t] or the exit results). None without
+        a PnlDefinition.
+
+        Columns: `actual_pnl` (the sum of price_measure(t) - price_measure(t-1) over the held
+        book), `cashflow_pnl` (the `payment_amount`s of the Cashflows held at t-1 paid in (t-1, t];
+        0.0 when Cashflows is not among the risks), `economic_pnl` (actual + cashflow), one column
+        per attribute (its P&L over the step, so the column's cumsum is exactly pnl_explain()'s
+        cumulative value), `explained_pnl` (the sum of the attributes) and `residual_pnl`
+        (economic - explained).
+
+        Raises ValueError when two attributes share a name or one is named like a fixed column, and
+        when a step would add amounts in different units (the held book's price_measure units and
+        its due Cashflows' `currency`), as result_summary does for different units on one date."""
+        if self.pnl_explain_def is None:
+            return None
+        attributes = list(self.pnl_explain_def.attributes)
+        names = [attribute.attribute_name for attribute in attributes]
+        fixed = ['actual_pnl', 'cashflow_pnl', 'economic_pnl', 'explained_pnl', 'residual_pnl']
+        clashes = sorted({name for name in names if names.count(name) > 1 or name in fixed})
+        if clashes:
+            raise ValueError(f"PnlAttribute names must be unique and not one of {fixed}; got {clashes}")
+        by_name = dict(zip(names, attributes))
+        cashflows = Cashflows if Cashflows in self.risks else None
+        rows, index = [], []
+        for prev_date, cur_date, held in self._explain_steps():
+            actual = cash = 0.0
+            steps = dict.fromkeys(by_name, 0.0)
+            if held is not None:
+                units, currencies = set(), set()
+                for _, prev_results, cur_results in held:
+                    prev, cur = prev_results[self.price_measure], cur_results()[self.price_measure]
+                    units.update(getattr(prev, 'unit', None) or (), getattr(cur, 'unit', None) or ())
+                    actual += float(cur) - float(prev)
+                    if cashflows is not None:
+                        due = _cash_due(prev_results[cashflows], prev_date, cur_date)
+                        if len(due):
+                            cash += float(due['payment_amount'].sum())
+                            currencies.update(due['currency'])
+                if len(units | currencies) > 1:
+                    raise ValueError(
+                        f"Cannot aggregate results with different units on {cur_date}: {self.price_measure}"
+                        f" in {sorted(units)}, Cashflows paid in {sorted(currencies)}"
+                    )
+                steps = {name: float(_attribute_step_pnl(a, held)) for name, a in by_name.items()}
+            rows.append([actual, cash, actual + cash, *steps.values()])
+            index.append(cur_date)
+        table = pd.DataFrame(rows, index=index, columns=['actual_pnl', 'cashflow_pnl', 'economic_pnl', *by_name])
+        table['explained_pnl'] = table[list(by_name)].sum(axis=1)
+        table['residual_pnl'] = table['economic_pnl'] - table['explained_pnl']
+        return table
 
     def pnl_bps(self, risk: RiskMeasure, min_abs_risk: float = 1e-9) -> pd.DataFrame:
         """P&L expressed in bp of rate move: each row's P&L divided by the PREVIOUS row's risk
@@ -478,6 +635,13 @@ class BackTest(BaseBacktest):
                 if retried in summary.columns:
                     risk = retried
         if risk not in summary.columns:
+            # pricebt DEV-R11: a table measure is never a result_summary column; say so
+            results = [r for r in self._results.values() if len(r) and risk in r.risk_measures]
+            if results and _is_table(results[0][risk].aggregate(True, True)):
+                raise ValueError(
+                    f"{risk} is a table measure (one table per position); pnl_bps needs a scalar measure"
+                    " such as IRDeltaParallel"
+                )
             raise ValueError(f"{risk} is not a column of result_summary; add it to run_backtest(risks=[...])")
 
         risk_col = summary[risk]
@@ -990,3 +1154,86 @@ def fx_pnl_definition() -> PnlDefinition:
             ),
         ]
     )
+
+
+# pricebt addition (IR_RISK_DESIGN section 7.2): IR definitions next to fx_pnl_definition. Every
+# sensitivity is per bp (bp^2) of its level (DEV-I12 contract), so a level quoted in `unit` needs
+# the factor below (squared for a second-order attribute, applied once, as gs's formula does).
+_UNIT_FACTORS = {"bp": 1.0, "pct": 100.0, "decimal": 1e4}
+
+
+def _unit_factor(name: str, unit: str) -> float:
+    if unit not in _UNIT_FACTORS:
+        raise ValueError(f"{name} must be one of {sorted(_UNIT_FACTORS)}, got {unit!r}")
+    return _UNIT_FACTORS[unit]
+
+
+def ir_pnl_definition(
+    rate_unit: str = 'bp',
+    vol_unit: str = 'bp',
+    *,
+    delta: bool = True,
+    gamma: bool = True,
+    vega: bool = True,
+    vanna: bool = True,
+    volga: bool = True,
+    theta: bool = True,
+) -> PnlDefinition:
+    """PnlDefinition for interest-rate instruments on the IR measure contract (IR_RISK_DESIGN
+    section 2.2), with gs measure names only. `rate_unit`/`vol_unit` ('bp', 'pct' or 'decimal')
+    are the units the assets' IRFwdRate and IRAnnualImpliedVol are declared in: they set each
+    scaling factor, and pnl_explain checks every level read against them (DEV-E21).
+
+    PNL_delta = IRDeltaParallel x dIRFwdRate; PNL_gamma = 1/2 IRGammaParallel x dIRFwdRate^2;
+    VegaPnL = IRVegaParallel x dIRAnnualImpliedVol; PNL_vanna = IRVanna x dIRFwdRate x
+    dIRAnnualImpliedVol (DEV-E19); PNL_volga = 1/2 IRVolga x dIRAnnualImpliedVol^2; PNL_theta =
+    Theta (per calendar day, DEV-I15) x dExpiryInYears x -365. The keyword flags leave attributes
+    out, e.g. ir_pnl_definition(vega=False, vanna=False, volga=False) for swaps.
+    """
+    f_r, f_v = _unit_factor('rate_unit', rate_unit), _unit_factor('vol_unit', vol_unit)
+    attributes = [
+        (delta, PnlAttribute('PNL_delta', IRDeltaParallel, IRFwdRate, f_r, market_data_unit=rate_unit)),
+        (
+            gamma,
+            PnlAttribute(
+                'PNL_gamma', IRGammaParallel, IRFwdRate, f_r * f_r, second_order=True, market_data_unit=rate_unit
+            ),
+        ),
+        (vega, PnlAttribute('VegaPnL', IRVegaParallel, IRAnnualImpliedVol, f_v, market_data_unit=vol_unit)),
+        (
+            vanna,
+            PnlAttribute(
+                'PNL_vanna',
+                IRVanna(aggregation_level=AggregationLevel.Type),
+                IRFwdRate,
+                f_r * f_v,
+                cross_market_data_metric=IRAnnualImpliedVol,
+                market_data_unit=rate_unit,
+                cross_market_data_unit=vol_unit,
+            ),
+        ),
+        (
+            volga,
+            PnlAttribute(
+                'PNL_volga',
+                IRVolga(aggregation_level=AggregationLevel.Type),
+                IRAnnualImpliedVol,
+                f_v * f_v,
+                second_order=True,
+                market_data_unit=vol_unit,
+            ),
+        ),
+        (theta, PnlAttribute('PNL_theta', Theta, ExpiryInYears, -365.0)),
+    ]
+    return PnlDefinition(attributes=[attribute for wanted, attribute in attributes if wanted])
+
+
+def swaption_pnl_definition(rate_unit: str = 'bp', vol_unit: str = 'bp') -> PnlDefinition:
+    """ir_pnl_definition with all six attributes (delta, gamma, vega, vanna, volga, theta)."""
+    return ir_pnl_definition(rate_unit, vol_unit)
+
+
+def bond_pnl_definition(rate_unit: str = 'bp') -> PnlDefinition:
+    """ir_pnl_definition with delta, gamma and theta against the bond's own yield (IRFwdRate,
+    DEV-I12). Coupons are not attributed: pnl_explain_table's cashflow_pnl shows them."""
+    return ir_pnl_definition(rate_unit, vega=False, vanna=False, volga=False)

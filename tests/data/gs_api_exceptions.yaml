@@ -157,11 +157,44 @@
 
 - symbol: gs_quant.backtests.backtest_objects.BackTest
   aspect: methods
-  extra: [pnl_bps, summary_stats]
+  extra: [pnl_bps, pnl_explain_table, summary_stats]
   reason: >
     decision 0.1 / DESIGN.md section 9.3: BackTest.summary_stats() is a 2.1.17 additive feature
     explicitly included; pnl_bps is a pricebt/DESIGN section 9.3 addition alongside
-    missing_market_dates.
+    missing_market_dates; pnl_explain_table is the pricebt P&L table next to pnl_explain
+    (IR_RISK_DESIGN.md section 7.3, R2-17, R2-25).
+
+- symbol: gs_quant.backtests.backtest_objects.PnlAttribute
+  aspect: signature
+  insert: [cross_market_data_metric]
+  dev_id: DEV-E19
+  reason: >
+    IR_RISK_DESIGN.md section 7.1 / R2-25: an optional cross_market_data_metric=None appended after
+    second_order (gs positional calls unchanged), so a vanna attribute risk x dm1 x dm2 is
+    expressible.
+
+- symbol: gs_quant.backtests.backtest_objects.PnlAttribute
+  aspect: signature
+  insert: [market_data_unit, cross_market_data_unit]
+  dev_id: DEV-E21
+  reason: >
+    IR_RISK_DESIGN.md R2-16 / R2-25: optional market_data_unit=None and cross_market_data_unit=None
+    appended after cross_market_data_metric; when set, pnl_explain checks every level it reads
+    against them.
+
+- symbol: gs_quant.backtests.backtest_objects.PnlAttribute
+  aspect: fields
+  insert: [cross_market_data_metric]
+  dev_id: DEV-E19
+  reason: >
+    Same as the DEV-E19 signature entry: the appended dataclass field, default None.
+
+- symbol: gs_quant.backtests.backtest_objects.PnlAttribute
+  aspect: fields
+  insert: [market_data_unit, cross_market_data_unit]
+  dev_id: DEV-E21
+  reason: >
+    Same as the DEV-E21 signature entry: the appended dataclass fields, default None.
 
 - symbol: gs_quant.backtests.backtest_objects.BackTest
   aspect: properties
