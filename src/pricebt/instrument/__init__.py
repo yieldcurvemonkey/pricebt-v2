@@ -13,6 +13,7 @@ Per the import DAG (DESIGN.md section 3.2 item 4), this module imports `pricebt.
 from __future__ import annotations
 
 import copy
+import functools
 import re
 from typing import Any, Dict, Optional
 
@@ -66,6 +67,7 @@ _ENUM_CLASSES: Dict[str, type] = {
 _CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 
 
+@functools.lru_cache(maxsize=None)
 def _to_snake(name: str) -> str:
     """gs `handle_camel_case_args`/`_get_underscore` (DESIGN.md section 5.2, R04 section 3.1): a
     kwarg that is not ALL-CAPS is converted to snake_case; an already-snake_case name is a no-op."""
@@ -163,6 +165,15 @@ class Instrument(Priceable):
             # Read nothing else: this is what makes deepcopy/pickle probes (`__deepcopy__`,
             # `__setstate__`, ...) safe before `_kwargs`/`resolved_terms` even exist.
             raise AttributeError(field)
+        try:
+            return self._lookup(field)
+        except AttributeError:
+            snake = _to_snake(field)
+            if snake == field:
+                raise
+            return self._lookup(snake)  # gs Base.__getattr__: `x.fixedRate` reads the snake_case field
+
+    def _lookup(self, field: str) -> Any:
         if self.resolved_terms is not None:
             session = _current_session()
             if session is not None:
@@ -180,6 +191,29 @@ class Instrument(Priceable):
         if field in self._kwargs:
             return self._kwargs[field]
         raise AttributeError(field)
+
+    # --- attribute assignment (IR_RISK_DESIGN R2-29) ---------------------------------------------
+    def __setattr__(self, key: str, value: Any) -> None:
+        if not key.startswith("_") and key not in _PLAIN_ATTRS:
+            field = _to_snake(key)
+            if field in ("asset_class", "type_", "type"):
+                raise ValueError(f"{key} cannot be set")  # gs: init=False fields
+            if field in _FIELD_NAMES.get(type(self), ()):
+                # pricebt DEV-I14: gs stores the coerced value on the dataclass field; pricebt
+                # stores it in _kwargs, the terms pricing reads (None deletes the key). gs lets a
+                # resolved instrument's field change; pricebt raises (the clone rule).
+                if self.__dict__.get("resolved_terms") is not None:
+                    raise ValueError(f"cannot set {key} on a resolved instrument; set it on the unresolved instrument or clone that")
+                value = _coerce(_ENUM_MAP[type(self)], field, value)
+                kwargs = self.__dict__["_kwargs"]
+                if value is None:
+                    kwargs.pop(field, None)
+                else:
+                    kwargs[field] = value
+                return
+        object.__setattr__(self, key, value)
+        if key in _IDENTITY_ATTRS:
+            self.__dict__.pop("_identity", None)
 
     # --- properties --------------------------------------------------------------------------------
     @property
@@ -203,8 +237,17 @@ class Instrument(Priceable):
 
     # --- eq/hash (DESIGN.md section 5.1 item 3) ------------------------------------------------
     def _identity_key(self):
+        # IR_RISK_DESIGN R2-19: memoised on a resolved instrument (every `in portfolio` check
+        # compares leaves); __setattr__ drops it when an identity attribute is reassigned.
+        # ponytail: an in-place edit of the resolved_terms dict is not seen; nothing in src does one.
+        key = self.__dict__.get("_identity")
+        if key is not None:
+            return key
         frozen_resolved = _freeze(self.resolved_terms) if self.resolved_terms is not None else None
-        return (type(self), self.pricebt_asset, _freeze(self._kwargs), self.quantity_, self.name, frozen_resolved)
+        key = (type(self), self.pricebt_asset, _freeze(self._kwargs), self.quantity_, self.name, frozen_resolved)
+        if frozen_resolved is not None:
+            self.__dict__["_identity"] = key
+        return key
 
     def __eq__(self, other: Any) -> bool:
         if not isinstance(other, Instrument):
@@ -330,6 +373,11 @@ def instrument_identity(inst: Instrument):
 # ------------------------------------------------------------------------------------ generated classes
 
 _ENUM_MAP: Dict[type, Dict[str, type]] = {}
+_FIELD_NAMES: Dict[type, frozenset] = {}  # the gs fields `__setattr__` routes to _kwargs (all but name)
+# the object contract's own attributes: always plain (skip the snake-case lookup), and the ones in
+# the identity key drop its memo when reassigned
+_PLAIN_ATTRS = frozenset({"name", "quantity_", "pricebt_asset", "position_meta", "resolved_terms", "resolution_key", "resolution_csa", "unresolved"})
+_IDENTITY_ATTRS = frozenset({"name", "quantity_", "pricebt_asset", "resolved_terms", "_kwargs"})
 
 
 def _build_class(cls_name: str, spec: Dict[str, Any]) -> type:
@@ -343,6 +391,7 @@ def _build_class(cls_name: str, spec: Dict[str, Any]) -> type:
     exec(src, exec_globals, exec_locals)  # noqa: S102 -- generated source, no user input
     new_cls = type(cls_name, (Instrument,), {"__init__": exec_locals["__init__"], "asset_class": AssetClass(spec["asset_class"]), "type_": AssetType(spec["type_"])})
     _ENUM_MAP[new_cls] = enum_map
+    _FIELD_NAMES[new_cls] = frozenset(f for f, _default, _tag in fields if f != "name")
     return new_cls
 
 

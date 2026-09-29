@@ -4,6 +4,14 @@ see toylib/__init__.py for why.
 
 The market is `SimpleNamespace(curve=ToyCurve, sigma=...)`; sigma(d) is another deterministic
 sinusoid, one flat normal vol per day (decimal, e.g. 0.008 = 80bp).
+
+The IR measure contract (docs/v2/IR_RISK_DESIGN.md section 00 R2-1..R2-8, section 6.2) is below
+`vega`: the own rate is the underlying's forward swap rate F (bp); delta/gamma are the total /
+chain-rule derivatives on +-1bp zero bumps with sigma fixed (toylib.irrisk); 'Straddle' prices as
+payer + receiver. At and after expiry the swaption is physically settled: a leg is exercised iff
+it was in the money at expiration_date in the deterministic toy world, and then it IS the
+underlying swap (value and sensitivities); an unexercised leg is worth 0 with 0 sensitivities.
+Levels continue after expiry: the live F, the vol at expiry (R2-7).
 """
 from __future__ import annotations
 
@@ -12,9 +20,11 @@ from datetime import date
 from types import SimpleNamespace
 from typing import Optional
 
+from toylib import irrisk as ir
 from toylib import rates as tr
 
 _SIGMA_PARAMS = {"USD": (0.0080, 0.0020, 252), "EUR": (0.0070, 0.0015, 180)}
+H_VOL = 1e-4  # +-1bp normal-vol bump behind vanna and volga
 
 
 def _sigma(d: date, ccy: str) -> float:
@@ -39,6 +49,13 @@ def _notional_sign(buy_sell, notional_amount) -> float:
     return (1.0 if bs == "buy" else -1.0) * (1.0 if float(notional_amount) >= 0 else -1.0)
 
 
+def _legs(pay_or_receive) -> tuple:
+    """is_call (payer) flag of each leg: a straddle is a payer plus a receiver (R11 section 4.2)."""
+    if str(getattr(pay_or_receive, "value", pay_or_receive)).strip().lower() == "straddle":
+        return (True, False)
+    return (tr._is_payer(pay_or_receive),)
+
+
 def resolve_swaption(market, kwargs: dict) -> dict:
     """Pin expiration_date, termination_date and the strike; fold buy_sell x sign(notional_amount)
     into one signed notional."""
@@ -57,7 +74,7 @@ def resolve_swaption(market, kwargs: dict) -> dict:
     else:
         k = float(strike)
     pay_or_receive = kwargs.get("pay_or_receive", "Pay")
-    tr._sign(pay_or_receive)  # DESIGN §13.3: reject un-priceable pay_or_receive at resolve time
+    _legs(pay_or_receive)  # DESIGN §13.3: reject un-priceable pay_or_receive at resolve time
     return {
         "pay_or_receive": pay_or_receive,
         "expiration_date": exp,
@@ -87,20 +104,43 @@ def _unit_price(F: float, K: float, sigma: float, T: float, is_call: bool) -> fl
     return (K - F) * _big_phi(-d) + sigma * math.sqrt(T) * _phi(-d)
 
 
+def _fwd(curve, trade) -> float:
+    return tr._par_rate(curve, trade["expiration_date"], trade["termination_date"])
+
+
+def _expiry_fwd(curve, trade) -> float:
+    """F at expiration_date in the deterministic toy world -- never the pricing market's, so the
+    exercise decision is fixed once made (physical settlement)."""
+    exp = trade["expiration_date"]
+    return _fwd(tr.ToyCurve(exp, curve.ccy, tr._zero_rate(exp, curve.ccy)), trade)
+
+
+def _exercised(curve, trade, is_call: bool) -> bool:
+    F, K = _expiry_fwd(curve, trade), trade["strike"]
+    return F > K if is_call else F < K
+
+
+def _value(curve, sigma: float, trade: dict) -> float:
+    exp, term, K = trade["expiration_date"], trade["termination_date"], trade["strike"]
+    ann, F = tr._annuity(curve, exp, term), _fwd(curve, trade)
+    T = (exp - curve.ref_date).days / 365.0
+    total = 0.0
+    for is_call in _legs(trade["pay_or_receive"]):
+        if T > 0.0:
+            total += _unit_price(F, K, sigma, T, is_call)
+        elif _exercised(curve, trade, is_call):  # physical: the leg is now the underlying swap
+            total += (F - K) if is_call else (K - F)
+    return trade["notional"] * ann * total
+
+
 def npv(market, trade: dict) -> float:
     tr.EVAL_COUNTS["npv"] += 1
-    c = market.curve
-    exp, term = trade["expiration_date"], trade["termination_date"]
-    ann = tr._annuity(c, exp, term)
-    F = tr._par_rate(c, exp, term)
-    T = (exp - c.ref_date).days / 365.0
-    unit = _unit_price(F, trade["strike"], market.sigma, T, tr._is_payer(trade["pay_or_receive"]))
-    return trade["notional"] * ann * unit
+    return _value(market.curve, market.sigma, trade)
 
 
 def vega(market, trade: dict) -> float:
-    """Per bp of normal vol (same for payer and receiver). Zero at/after expiry: an expired
-    swaption has no time value left to be sensitive to."""
+    """Per bp of normal vol (same for payer and receiver; a straddle is both). Zero at/after
+    expiry: an expired swaption has no time value left to be sensitive to."""
     tr.EVAL_COUNTS["vega"] += 1
     c = market.curve
     exp, term = trade["expiration_date"], trade["termination_date"]
@@ -110,4 +150,116 @@ def vega(market, trade: dict) -> float:
     ann = tr._annuity(c, exp, term)
     F = tr._par_rate(c, exp, term)
     d = (F - trade["strike"]) / (market.sigma * math.sqrt(T))
-    return trade["notional"] * ann * math.sqrt(T) * _phi(d) * 1e-4
+    return len(_legs(trade["pay_or_receive"])) * trade["notional"] * ann * math.sqrt(T) * _phi(d) * 1e-4
+
+
+# --------------------------------------------------------------------- IR measure contract
+
+
+def _greeks(curve, sigma: float, trade: dict):
+    return ir.greeks_on(curve, lambda c: _value(c, sigma, trade), lambda c: _fwd(c, trade) * 1e4)
+
+
+def delta(market, trade: dict) -> float:
+    """IRDelta scalar: total derivative w.r.t. F, sigma fixed, ccy per bp (pricebt DEV-I12)."""
+    return _greeks(market.curve, market.sigma, trade)[0]
+
+
+def gamma(market, trade: dict) -> float:
+    return _greeks(market.curve, market.sigma, trade)[1]
+
+
+def discount_delta(market, trade: dict) -> float:
+    return ir.discount_delta_on(market.curve, lambda c: _value(c, market.sigma, trade))
+
+
+def vanna(market, trade: dict) -> float:
+    """d(IRDelta scalar)/d sigma per bp x bp, on +-1bp sigma bumps (exactly 0 after expiry)."""
+    c, s = market.curve, market.sigma
+    return (_greeks(c, s + H_VOL, trade)[0] - _greeks(c, s - H_VOL, trade)[0]) / 2.0
+
+
+def volga(market, trade: dict) -> float:
+    """d2 PV / d sigma^2 per bp^2 of normal vol (exactly 0 after expiry)."""
+    c, s = market.curve, market.sigma
+    return _value(c, s + H_VOL, trade) + _value(c, s - H_VOL, trade) - 2.0 * _value(c, s, trade)
+
+
+def theta_1d(market, trade: dict) -> float:
+    """pricebt DEV-I15: one calendar day on the translated curve, F and sigma fixed (T - 1/365),
+    ccy per day; premium 0 and nothing dropped, so no cash term."""
+    c = market.curve
+    return _value(ir._TranslatedCurve(c, 1), market.sigma, trade) - _value(c, market.sigma, trade)
+
+
+def fwd_rate(market, trade: dict) -> float:
+    return _fwd(market.curve, trade) * 1e4
+
+
+def spot_rate(market, trade: dict) -> float:
+    return ir.spot_par_bp(market.curve, trade["termination_date"])
+
+
+def annual_vol(market, trade: dict) -> float:
+    """sigma in bp; after expiry the last live value, sigma(expiration_date) (R2-7)."""
+    if trade["expiration_date"] > market.curve.ref_date:
+        return market.sigma * 1e4
+    return _sigma(trade["expiration_date"], market.curve.ccy) * 1e4
+
+
+atm_vol = annual_vol  # one flat vol per day: the ATM vol is the strike vol
+
+
+def daily_vol(market, trade: dict) -> float:
+    return annual_vol(market, trade) / math.sqrt(252.0)
+
+
+def expiry_in_years(market, trade: dict) -> float:
+    return ir.years(market.curve.ref_date, trade["expiration_date"])
+
+
+def prob_exercise(market, trade: dict) -> float:
+    """Phi(d) payer, Phi(-d) receiver (summed over a straddle's legs); 1/0 once decided."""
+    c = market.curve
+    T = (trade["expiration_date"] - c.ref_date).days / 365.0
+    total = 0.0
+    for is_call in _legs(trade["pay_or_receive"]):
+        if T > 0.0:
+            d = (_fwd(c, trade) - trade["strike"]) / (market.sigma * math.sqrt(T))
+            total += _big_phi(d if is_call else -d)
+        else:
+            total += float(_exercised(c, trade, is_call))
+    return total
+
+
+def annuity(market, trade: dict) -> float:
+    """N * A of the underlying swap, holder-signed."""
+    return trade["notional"] * tr._annuity(market.curve, trade["expiration_date"], trade["termination_date"])
+
+
+def cashflows(market, trade: dict):
+    return ir.empty_cashflows()
+
+
+def _end(trade):
+    return trade["termination_date"]
+
+
+def delta_ladder(market, trades, weights, tenors) -> dict:
+    return ir.ladder(market.curve.ref_date, trades, weights, tenors, lambda t: delta(market, t), _end)
+
+
+def gamma_ladder(market, trades, weights, tenors) -> dict:
+    """pricebt DEV-I13: diagonal (the scalar at its nearest pillar)."""
+    return ir.ladder(market.curve.ref_date, trades, weights, tenors, lambda t: gamma(market, t), _end)
+
+
+def vega_cube(market, trades, weights, expiries, tails) -> dict:
+    """Each trade's weighted vega at mkt_point '<tail>;<expiry>' (gs order, e.g. '10Y;1Y'), the
+    pillars nearest its underlying tenor and its time to expiry."""
+    t0, out = market.curve.ref_date, {}
+    for trade, w in zip(trades, weights):
+        exp = trade["expiration_date"]
+        point = f"{ir.nearest_pillar(tails, ir.years(exp, trade['termination_date']))};{ir.nearest_pillar(expiries, ir.years(t0, exp))}"
+        out[point] = out.get(point, 0.0) + vega(market, trade) * w
+    return out

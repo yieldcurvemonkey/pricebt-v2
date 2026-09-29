@@ -28,6 +28,7 @@ SKELETON_PATHS: List[str] = [
     "risk/results.py",
     "risk/transform.py",
     "risk/contracts.py",
+    "risk/core.py",
     "markets/__init__.py",
     "markets/portfolio.py",
     "instrument/__init__.py",
@@ -90,7 +91,9 @@ DAG_TIERS: List[List[str]] = [
     ["common"],
     ["progress"],  # not in the DAG text either; self-contained (tqdm only), placed at its section 3.2 table position
     ["datetime", "datetime.relative_date"],
-    ["risk", "risk.results", "risk.contracts"],  # contracts: IR_RISK_DESIGN R2-22 (risk/__init__ must not import it)
+    # contracts: IR_RISK_DESIGN R2-22 (risk/__init__ must not import it); core: R2-22 (risk/__init__
+    # re-exports it as gs does; it imports risk.results, which imports it only inside functions)
+    ["risk", "risk.results", "risk.contracts", "risk.core"],
     ["risk.transform"],
     ["markets"],
     ["instrument", "instrument._gs_fields"],

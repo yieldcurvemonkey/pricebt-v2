@@ -7,7 +7,8 @@
   restore process-global state between tests, per section 0.6. P1.5 adds toylib.rates.reset_recorders().
   P3.1 adds backtest_utils.clear_final_date_cache() (DEV-T2: gs's final_date_cache is a
   module-global that otherwise leaks across tests). P3.3 adds actions.action_count (gs's own
-  module-global auto-naming counter, also never reset by gs -- research/02 section 2.1).
+  module-global auto-naming counter, also never reset by gs -- research/02 section 2.1). Phase B
+  adds the `PricingContext.current = ...` default (IR_RISK_DESIGN R2-30).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import pytest
 
 import toylib.rates as _toylib_rates
 import pricebt.backtests.actions as _actions
+import pricebt.markets as _markets
 from pricebt.backtests.backtest_utils import clear_final_date_cache
 from pricebt.session import GsSession, PricebtSession
 
@@ -42,9 +44,11 @@ def isolation():
     prev_pricebt_session = PricebtSession.current
     prev_gs_session = GsSession.current
     prev_action_count = _actions.action_count
+    prev_pricing_context = _markets._DEFAULT
     yield
     _toylib_rates.reset_recorders()
     clear_final_date_cache()
     PricebtSession.current = prev_pricebt_session
     GsSession.current = prev_gs_session
     _actions.action_count = prev_action_count
+    _markets._DEFAULT = prev_pricing_context

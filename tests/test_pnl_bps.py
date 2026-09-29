@@ -25,6 +25,7 @@ def _swap(name="s"):
 def _prr(inst, price, delta, price_measure=Price, delta_measure=IRDeltaParallel):
     portfolio = Portfolio([inst])
     mm = MultipleRiskMeasureResult(
+        inst,
         {price_measure: FloatWithInfo(price, unit={"USD": 1}), delta_measure: FloatWithInfo(delta, unit={"USD": 1})}
     )
     return PortfolioRiskResult(portfolio, (price_measure, delta_measure), [PricingFuture(mm)])
@@ -126,7 +127,7 @@ def test_pnl_bps_non_scalar_measure_raises_value_error():
     def prr_bucketed(price):
         portfolio = Portfolio([inst])
         frame = make_bucketed_frame({"2y": 5.0}, labels={"mkt_type": "IR"})
-        mm = MultipleRiskMeasureResult({Price: FloatWithInfo(price, unit={"USD": 1}), IRDelta: frame})
+        mm = MultipleRiskMeasureResult(inst, {Price: FloatWithInfo(price, unit={"USD": 1}), IRDelta: frame})
         return PortfolioRiskResult(portfolio, (Price, IRDelta), [PricingFuture(mm)])
 
     bt._results[D1] = prr_bucketed(0.0)

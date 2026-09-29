@@ -1,16 +1,13 @@
 """Tests for pricebt.risk.results / pricebt.risk.transform (IMPLEMENTATION_PLAN.md P1.3, DESIGN.md
-section 8.2). Real Instrument/Portfolio classes do not exist until P2.1, so these tests use the
-smallest duck-typed stand-in `PortfolioRiskResult` actually needs:
+section 8.2), on the smallest duck-typed stand-ins `PortfolioRiskResult` needs:
 
-- an "instrument" needs only a `.name` attribute (identity/equality is Python's default, by object);
-- a "portfolio" needs `.priceables` (its direct children, in order -- this is what the futures align
-  against) and `.all_instruments` (its leaves, used by `__add__`'s overlap check), plus `__eq__`
-  (default object identity is enough for every test here) and `__add__` (only reachable if two
-  *different* portfolio objects are summed, which no test here does, so it is provided but untested).
+- an "instrument" is a `pricebt.base.Priceable` with a `.name` (identity/equality is Python's default);
+- a "portfolio" needs `.priceables` (its direct children, in order -- what the futures align
+  against), `.all_instruments` (its leaves, used by `__add__`'s overlap check), `.name`, a
+  `(priceables, name=None)` constructor (`subset`) and `__add__` (two different portfolios).
 
-None of these tests build a nested Portfolio (a Portfolio-of-Portfolios): P1.3's contract is exercised
-with a flat, single-level portfolio throughout, matching the "3-instrument result" case the task
-names explicitly.
+Nested portfolios, gs parity of indexing/iteration/to_frame/aggregate and the risk.core helpers are
+in tests/test_results_parity.py.
 """
 from __future__ import annotations
 
@@ -20,6 +17,8 @@ import pandas as pd
 import pytest
 
 import pricebt.risk as risk
+from pricebt.base import Priceable
+from pricebt.risk.core import aggregate_risk
 from pricebt.risk.results import (
     DataFrameWithInfo,
     ErrorValue,
@@ -30,7 +29,6 @@ from pricebt.risk.results import (
     PricingFuture,
     RiskKey,
     SeriesWithInfo,
-    combine_bucketed_frames,
     make_bucketed_frame,
 )
 from pricebt.risk.transform import ResultWithInfoAggregator, Transformer
@@ -39,7 +37,7 @@ pytestmark = pytest.mark.core
 
 
 # ------------------------------------------------------------------------------- duck-typed stand-ins
-class FakeInstrument:
+class FakeInstrument(Priceable):
     def __init__(self, name):
         self.name = name
 
@@ -48,12 +46,16 @@ class FakeInstrument:
 
 
 class FakePortfolio:
-    def __init__(self, instruments):
+    def __init__(self, instruments, name=None):
         self.priceables = list(instruments)
+        self.name = name
 
     @property
     def all_instruments(self):
-        return list(self.priceables)
+        out = []
+        for c in self.priceables:
+            out.extend(c.all_instruments if isinstance(c, FakePortfolio) else [c])
+        return out
 
     def __add__(self, other):
         return FakePortfolio(self.priceables + other.priceables)
@@ -119,10 +121,10 @@ def test_bucketed_frame_empty_still_has_six_columns():
     assert len(frame) == 0
 
 
-def test_combine_bucketed_frames_sums_and_keeps_first_appearance_order():
+def test_aggregate_risk_sums_and_keeps_first_appearance_order():
     f1 = make_bucketed_frame({"5y": 1.0, "10y": 2.0}, labels={"mkt_type": "IR", "mkt_asset": "USD"})
     f2 = make_bucketed_frame({"10y": 0.5, "5y": 0.25}, labels={"mkt_type": "IR", "mkt_asset": "USD"})
-    combined = combine_bucketed_frames([f1, f2])
+    combined = aggregate_risk([f1, f2])
     assert combined["mkt_point"].tolist() == ["5y", "10y"]  # first-appearance order, from f1
     assert combined["value"].tolist() == [1.25, 2.5]
 
@@ -245,7 +247,7 @@ def test_aggregate_unit_mismatch_raises():
         (risk.Price,),
         [PricingFuture(_usd(1.0)), PricingFuture(FloatWithInfo(2.0, unit={"EUR": 1}))],
     )
-    with pytest.raises(ValueError, match="unit mismatch"):
+    with pytest.raises(ValueError, match="Cannot aggregate results with different units for"):
         r.aggregate()
 
 

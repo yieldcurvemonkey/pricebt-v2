@@ -1,5 +1,6 @@
-"""Risk-measure classes and instances (DESIGN.md section 8.1), plus re-exports of FloatWithInfo,
-SeriesWithInfo, DataFrameWithInfo, ErrorValue from risk.results.
+"""Risk-measure classes and instances (DESIGN.md section 8.1), plus re-exports of the value classes
+from risk.results and of the risk.core helpers (aggregate_risk, aggregate_results, subtract_risk,
+sort_risk, combine_risk_key), as gs's `gs_quant.risk` re-exports its `core`.
 
 Ported from gs_quant.common / gs_quant.target.measures / gs_quant.risk.measures (Apache-2.0; see
 NOTICE): the RiskMeasure identity, call and repr semantics, and the whole 2.1.17 measure catalogue
@@ -17,13 +18,30 @@ from typing import Any, Optional
 import pandas as pd
 
 from pricebt.common import AggregationLevel, AssetClass, FiniteDifferenceMethod, RiskMeasureUnit
-from pricebt.risk.results import DataFrameWithInfo, ErrorValue, FloatWithInfo, SeriesWithInfo  # noqa: F401
+from pricebt.risk.results import (  # noqa: F401
+    DataFrameWithInfo,
+    DictWithInfo,
+    ErrorValue,
+    FloatWithInfo,
+    SeriesWithInfo,
+    StringWithInfo,
+    UnsupportedValue,
+)
+from pricebt.risk.core import aggregate_results, aggregate_risk, combine_risk_key, sort_risk, subtract_risk  # noqa: F401,E402 -- after results (core imports it)
 
 __all__ = [
     "FloatWithInfo",
     "SeriesWithInfo",
     "DataFrameWithInfo",
     "ErrorValue",
+    "StringWithInfo",
+    "DictWithInfo",
+    "UnsupportedValue",
+    "aggregate_risk",
+    "aggregate_results",
+    "subtract_risk",
+    "sort_risk",
+    "combine_risk_key",
     "RiskMeasure",
     "ParameterisedRiskMeasure",
     "RiskMeasureWithCurrencyParameter",

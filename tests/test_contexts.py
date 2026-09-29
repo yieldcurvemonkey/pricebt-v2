@@ -239,3 +239,37 @@ def test_engine_seams_raise_without_a_session(monkeypatch):
         _engine_calc(object(), object())
     with pytest.raises(PricebtError):
         _engine_resolve(object(), True)
+
+
+# ------------------------------------------------------------------ market= and the current setter (R2-30)
+
+
+def test_any_market_raises_not_supported_dev_m1():
+    from pricebt.errors import NotSupportedError
+
+    with pytest.raises(NotSupportedError, match="market"):
+        PricingContext(market="any market object")
+    PricingContext(market=None)  # the default is fine
+
+
+def test_current_setter_is_the_default_while_no_context_is_entered():
+    """gs Pricing_Context tutorial: `PricingContext.current = PricingContext(...)`. The conftest
+    isolation fixture restores the previous default after every test."""
+    ctx = PricingContext(pricing_date=date(2024, 3, 4), csa_term="X")
+    PricingContext.current = ctx
+    assert PricingContext.current is ctx and not ctx.is_entered
+    with PricingContext() as inner:  # an entered context inherits from the default
+        assert inner.pricing_date == date(2024, 3, 4) and inner.csa_term == "X"
+    assert PricingContext.current is ctx
+
+
+def test_current_cannot_be_set_inside_an_entered_context():
+    with PricingContext(pricing_date=date(2024, 3, 4)):
+        with pytest.raises(ValueError, match="Cannot set current while in a nested context"):
+            PricingContext.current = PricingContext()
+
+
+def test_current_default_is_restored_by_the_isolation_fixture():
+    # runs after the setter test in file order; the default is the fresh one again
+    assert PricingContext.current.pricing_date == date.today()
+    assert markets_module._DEFAULT is None

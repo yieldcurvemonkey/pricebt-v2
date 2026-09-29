@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from pricebt.errors import ConfigError, NotSupportedError, UnsupportedMeasureError
-from pricebt.instrument import ConfigInstrument, IRSwap, IRSwaption
+from pricebt.instrument import ConfigInstrument, IRSwap
 from pricebt.risk import (
     Cashflows,
     IRDelta,
@@ -37,10 +37,6 @@ def _toy_session():
 
 def _swap():
     return IRSwap("Pay", "10y", "USD", 1_000_000, name="s")
-
-
-def _swaption():
-    return IRSwaption("Pay", "5y", "USD", notional_amount=1_000_000, expiration_date="1y", name="o")
 
 
 def _asset(risk_measures, unsupported, **extra):
@@ -91,15 +87,16 @@ def test_declaration_is_found_through_base_name():
     assert info.value.measure == "IRDiscountDeltaParallel"
 
 
-def test_swaption_bucketed_vega_is_declared_scalar_vega_is_mapped():
-    session = _toy_session()
-    with pytest.raises(UnsupportedMeasureError) as info:
-        session.pricing.value(_swaption(), D, IRVega, None)  # bare FD measure = bucketed form
-    assert info.value.form == "bucketed"
-    assert isinstance(session.pricing.value(_swaption(), D, IRVegaParallel, None), FloatWithInfo)
-
-
 # ------------------------------------------------------------------------------------ mapping wins; form rules
+
+
+def test_bucketed_vega_is_declared_scalar_vega_is_mapped():
+    """(Was on toy_usd_swaption, which maps the whole contract since IR_RISK_DESIGN Phase C.)"""
+    session = PricebtSession.use(assets=[_asset({"IRVega": {"scalar": "one"}}, {"IRVega": {"bucketed": "one flat vol per day, no cube"}})])
+    with pytest.raises(UnsupportedMeasureError) as info:
+        session.pricing.value(_inst(), D, IRVega, None)  # bare FD measure = bucketed form
+    assert info.value.form == "bucketed"
+    assert isinstance(session.pricing.value(_inst(), D, IRVegaParallel, None), FloatWithInfo)
 
 
 def test_mapping_wins_over_a_stale_whole_measure_declaration():

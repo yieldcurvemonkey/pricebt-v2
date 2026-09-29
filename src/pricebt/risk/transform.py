@@ -1,4 +1,4 @@
-"""Transformer (base), ResultWithInfoAggregator.
+"""Transformer (base), GenericResultWithInfoTransformer, ResultWithInfoAggregator.
 
 Ported from gs_quant.risk.transform (Apache-2.0; see NOTICE). `risk.results` never imports this
 module (Import DAG, DESIGN.md section 3.2): `PortfolioRiskResult.transform` duck-types
@@ -6,7 +6,7 @@ module (Import DAG, DESIGN.md section 3.2): `PortfolioRiskResult.transform` duck
 """
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from pricebt.risk.results import DataFrameWithInfo, FloatWithInfo, SeriesWithInfo
 
@@ -16,6 +16,16 @@ class Transformer:
 
     def apply(self, data: Iterable[Any], *args, **kwargs):
         raise NotImplementedError
+
+
+class GenericResultWithInfoTransformer(Transformer):
+    """`apply(data, *args, **kwargs)` is `fn(data, *args, **kwargs)` (gs)."""
+
+    def __init__(self, fn: Callable):
+        self._fn = fn
+
+    def apply(self, data, *args, **kwargs):
+        return self._fn(data, *args, **kwargs)
 
 
 class ResultWithInfoAggregator(Transformer):

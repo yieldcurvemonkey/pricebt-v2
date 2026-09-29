@@ -1,8 +1,9 @@
 """PricingContext, HistoricalPricingContext, and the seam functions _engine_calc / _engine_resolve.
 
 gs-shaped context managers (DESIGN.md section 6.5). Only `pricing_date` and `csa_term` actually do
-anything here; every other constructor parameter is accepted, for signature parity, and ignored.
-`PricingContext.current` is the innermost entered context on a shared stack, or else a fresh
+anything here; `market` must be None (DEV-M1); every other constructor parameter is accepted, for
+signature parity, and ignored. `PricingContext.current` is the innermost entered context on a
+shared stack, else the default set by assigning `PricingContext.current = ...` (gs), else a fresh
 default context (`pricing_date = date.today()`). An un-set `pricing_date`/`csa_term` is inherited
 from the context that was current when this one was entered.
 
@@ -15,16 +16,25 @@ from datetime import date
 from typing import List, Optional, Tuple
 
 from pricebt.datetime import date_range
+from pricebt.errors import NotSupportedError
 
 __all__ = ["PricingContext", "HistoricalPricingContext"]
 
 _STACK: List["PricingContext"] = []
+_DEFAULT: Optional["PricingContext"] = None  # `PricingContext.current = ...`, used while _STACK is empty
 
 
 class _ContextMeta(type):
     @property
     def current(cls) -> "PricingContext":
-        return _STACK[-1] if _STACK else PricingContext()
+        return _STACK[-1] if _STACK else _DEFAULT or PricingContext()
+
+    @current.setter
+    def current(cls, current: "PricingContext") -> None:
+        global _DEFAULT
+        if _STACK:
+            raise ValueError(f"Cannot set current while in a nested context {cls.__name__}")
+        _DEFAULT = current
 
 
 class PricingContext(metaclass=_ContextMeta):
@@ -47,6 +57,10 @@ class PricingContext(metaclass=_ContextMeta):
         use_historical_diddles_only=None,
         provider=None,
     ):
+        if market is not None:
+            # pricebt DEV-M1: gs prices on the given market; pricebt has no market objects yet, and
+            # pricing the context's own market instead would be a silent wrong number
+            raise NotSupportedError(f"PricingContext(market={market!r}) is not supported: pricebt prices on each asset config's own market for the pricing date")
         self._pricing_date = pricing_date
         self._csa_term = csa_term
         self._is_async = is_async
@@ -78,7 +92,7 @@ class PricingContext(metaclass=_ContextMeta):
         return bool(self._is_async)
 
     def __enter__(self) -> "PricingContext":
-        self._parent = _STACK[-1] if _STACK else None
+        self._parent = _STACK[-1] if _STACK else _DEFAULT
         _STACK.append(self)
         self._is_entered = True
         return self

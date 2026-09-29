@@ -277,24 +277,14 @@
 
 - symbol: gs_quant.markets.portfolio.Portfolio
   aspect: methods
-  missing: [as_dict, default_instance, from_asset_id, from_asset_name, from_book, from_csv,
-            from_dict, from_eti, from_frame, from_instance, from_json, from_portfolio_id,
-            from_portfolio_name, from_quote, get, market, properties, properties_init, save,
-            save_as_quote, save_to_shadowbook, schema, subset, to_csv, to_dict, to_json]
+  missing: [as_dict, default_instance, from_dict, from_instance, from_json, properties,
+            properties_init, schema, to_dict, to_json]
   reason: >
-    GS-server / persistence / JSON-serialization surface (save*, from_*, to_csv/to_json/to_dict,
-    schema, market, get, subset, properties*): out of scope (section 2.3 non-goals, MUST-1).
-    Portfolio.as_dict is not ported on Portfolio itself (unlike Instrument.as_dict, which the engine
-    uses directly); Portfolio.to_frame() builds its own rows from each leaf's own as_dict().
-
-- symbol: gs_quant.markets.portfolio.Portfolio
-  aspect: properties
-  missing: [all_paths, id, quote_id]
-  reason: >
-    id/quote_id are GS Marquee persistence ids, never needed for an in-memory Portfolio (research/04
-    section 5; see portfolio.py's Portfolio.__hash__ comment, which cites the same source). all_paths
-    (raw leaf index-tuples) is not exposed publicly; pricebt's paths(key)/_leaf_paths cover the
-    engine's own traversal needs.
+    gs's inherited dataclass/JSON plumbing: a gs Portfolio has no dataclass fields, so these are
+    empty or no-ops there (research/10 section 1.8); section 2.3 non-goal. Portfolio.to_frame()
+    builds its rows from each leaf's own as_dict(), and from_frame/from_csv/to_csv cover frame
+    and file I/O (IR_RISK_DESIGN R2-31). The GS server-side names (get, from_*, save*, market)
+    are present with gs's signatures and raise NotSupportedError.
 
 - symbol: gs_quant.markets.portfolio.Portfolio
   aspect: method_signature
@@ -326,41 +316,6 @@
     IRVolga(aggregation_level=Type) works as in gs's vanna/volga notebook.
 
 # ------------------------------------------------------------------ risk helpers and classes (R2-23)
-- symbol: gs_quant.risk.aggregate_risk
-  aspect: all
-  pending: Phase B
-  reason: >
-    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
-    lands in Phase B. Delete this row then.
-
-- symbol: gs_quant.risk.aggregate_results
-  aspect: all
-  pending: Phase B
-  reason: >
-    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
-    lands in Phase B. Delete this row then.
-
-- symbol: gs_quant.risk.subtract_risk
-  aspect: all
-  pending: Phase B
-  reason: >
-    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
-    lands in Phase B. Delete this row then.
-
-- symbol: gs_quant.risk.sort_risk
-  aspect: all
-  pending: Phase B
-  reason: >
-    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
-    lands in Phase B. Delete this row then.
-
-- symbol: gs_quant.risk.combine_risk_key
-  aspect: all
-  pending: Phase B
-  reason: >
-    IR_RISK_DESIGN.md section 1.8 and R2-23: pricebt.risk.core (re-exported from pricebt.risk)
-    lands in Phase B. Delete this row then.
-
 - symbol: gs_quant.risk.PnlExplain
   aspect: all
   pending: Phase E

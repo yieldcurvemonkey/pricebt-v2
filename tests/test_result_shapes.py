@@ -54,7 +54,7 @@ def _prr(inst, price, ladder):
     MultipleRiskMeasureResult keyed by risk measure."""
     portfolio = Portfolio([inst])
     frame = make_bucketed_frame(ladder, labels={"mkt_type": "IR", "mkt_asset": "USD", "mkt_class": "OIS"})
-    mm = MultipleRiskMeasureResult({Price: FloatWithInfo(price, unit={"USD": 1}), IRDelta: frame})
+    mm = MultipleRiskMeasureResult(inst, {Price: FloatWithInfo(price, unit={"USD": 1}), IRDelta: frame})
     return PortfolioRiskResult(portfolio, (Price, IRDelta), [PricingFuture(mm)])
 
 
@@ -313,7 +313,7 @@ def test_pnl_explain_hand_computation():
     def prr_scalars(risk_val, mkt_val):
         portfolio = Portfolio([inst])
         mm = MultipleRiskMeasureResult(
-            {Price: FloatWithInfo(risk_val, unit={"USD": 1}), IRDelta: FloatWithInfo(mkt_val, unit={"USD": 1})}
+            inst, {Price: FloatWithInfo(risk_val, unit={"USD": 1}), IRDelta: FloatWithInfo(mkt_val, unit={"USD": 1})}
         )
         return PortfolioRiskResult(portfolio, (Price, IRDelta), [PricingFuture(mm)])
 

@@ -1,0 +1,85 @@
+schema_version: 1
+asset: toy_usd_irs_full
+description: >
+  Toy USD swap mapping the full IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2, section
+  00 R2-20) on tests/toylib/rates.py + tests/toylib/irrisk.py. Test-only fixture, never shipped.
+  toy_usd_irs stays declaration-only for the in-flight merge; this asset matches the same
+  instruments, so register one or the other. Units: npv USD (total return: paid coupons never
+  drop, Cashflows is empty); sensitivities USD per bp (bp^2) of the swap's own par rate; rates in
+  bp; Theta USD per calendar day.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Receive
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.rates as tr
+  import toylib.irrisk as tri
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois_full
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+  build_on: each_market
+functions:
+  npv:             {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:            {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}   # annuity pv01: the own-rate delta only at the money (R2-1)
+  par_rate:        {expr: 'tr.par_rate(market, trade)', unit: bp}
+  delta:           {expr: 'tri.delta(market, trade)', unit: ccy_per_bp}
+  discount_delta:  {expr: 'tri.discount_delta(market, trade)', unit: ccy_per_bp}
+  ir_gamma:        {expr: 'tri.ir_gamma(market, trade)', unit: ccy_per_bp2}
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # no vol / basis / xccy exposure (R2-8)
+  zero_per_bp2:    {expr: '0.0', unit: ccy_per_bp2}
+  zero_vol:        {expr: '0.0', unit: bp}            # vol levels 0.0 by convention (R2-8)
+  spot_rate:       {expr: 'tri.spot_rate(market, trade)', unit: bp}
+  theta_1d:        {expr: 'tri.theta_1d(market, trade)', unit: ccy}
+  expiry_in_years: {expr: 'tri.expiry_in_years(market, trade)', unit: decimal}
+  annuity:         {expr: 'tri.annuity(market, trade)', unit: ccy}
+  cashflows:       {expr: 'tri.empty_cashflows()', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tri.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'tri.gamma_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: delta, bucketed: delta_ladder}
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: ir_gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: par_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows

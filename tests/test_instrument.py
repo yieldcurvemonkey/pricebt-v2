@@ -320,3 +320,95 @@ def test_extension_names_do_not_collide():
         field_names = {f for f, _default, _tag in spec["fields"]}
         collision = field_names & banned
         assert not collision, f"{cls_name} has a field colliding with a pricebt extension: {collision}"
+
+
+# --------------------------------------------------------------------------------- __setattr__ (IR_RISK_DESIGN R2-29, DEV-I14)
+
+
+def test_setting_a_gs_field_writes_kwargs_coerced_and_none_deletes():
+    """gs Base.__setattr__ (gs notebook 03_set-a-property): the new value is what gets priced, so it
+    lands in _kwargs (and therefore as_dict and the identity), not in a shadowing attribute."""
+    swap = IRSwap("Pay", "7y", "USD", 1e4, name="a")
+    before = hash(swap)
+    swap.termination_date = "10y"
+    swap.payOrReceive = "Receive"  # camelCase names the snake_case field (gs)
+    assert swap.kwargs["termination_date"] == "10y" and swap.as_dict()["termination_date"] == "10y"
+    assert swap.pay_or_receive is PayReceive("Receive")  # enum-coerced like the constructor
+    assert "termination_date" not in vars(swap)  # no shadowing instance attribute
+    assert hash(swap) != before
+    swap.fixed_rate = 0.02
+    swap.fixed_rate = None
+    assert "fixed_rate" not in swap.kwargs
+    with pytest.raises(ValueError):
+        swap.notional_currency = "not a currency"
+
+
+def test_setting_a_gs_field_on_a_resolved_instrument_raises():
+    swap = IRSwap("Pay", "7y", "USD", 1e4, name="a")
+    swap._set_resolution({"termination_date": "2031-01-01"}, None, None, None)
+    with pytest.raises(ValueError, match="resolved"):
+        swap.termination_date = "10y"
+    swap.name = "b"  # name and quantity_ stay plain attributes, resolved or not
+    swap.quantity_ = 2.0
+    assert (swap.name, swap.quantity_) == ("b", 2.0)
+
+
+@pytest.mark.parametrize("key", ["asset_class", "assetClass", "type_", "type"])
+def test_asset_class_and_type_cannot_be_set(key):
+    with pytest.raises(ValueError, match=f"^{key} cannot be set$"):
+        setattr(IRSwap("Pay", "7y", "USD", 1e4), key, "x")
+
+
+def test_non_field_names_are_plain_attributes():
+    swap = IRSwap("Pay", "7y", "USD", 1e4)
+    swap.anything_else = 1
+    swap.camelExtra = 2  # not a gs field: stored under the name given (gs)
+    assert vars(swap)["anything_else"] == 1 and vars(swap)["camelExtra"] == 2
+    assert "anything_else" not in swap.kwargs
+    ci = ConfigInstrument("toy", foo=1)
+    ci.foo = 2  # ConfigInstrument has no gs fields
+    assert ci.kwargs == {"foo": 1} and vars(ci)["foo"] == 2
+
+
+def test_camel_case_reads_resolve_to_the_snake_case_field():
+    swap = IRSwap("Pay", "7y", "USD", 1e4, fixed_rate=0.03)
+    assert swap.fixedRate == 0.03 and swap.terminationDate == "7y"
+    with pytest.raises(AttributeError):
+        swap.notAField
+
+
+def test_identity_key_is_memoised_when_resolved_and_dropped_on_reassignment():
+    swap = IRSwap("Pay", "7y", "USD", 1e4, name="a")
+    swap._identity_key()
+    assert "_identity" not in vars(swap)  # unresolved: never memoised
+    swap._set_resolution({"termination_date": "2031-01-01"}, None, None, None)
+    key = swap._identity_key()
+    assert vars(swap)["_identity"] is key
+    other = swap.clone()
+    for attr, value in (("name", "b"), ("quantity_", 3.0), ("pricebt_asset", "x")):
+        setattr(swap, attr, value)
+        assert "_identity" not in vars(swap)
+        assert swap != other and swap._identity_key() == (IRSwap, swap.pricebt_asset, other._identity_key()[2], swap.quantity_, swap.name, other._identity_key()[5])
+        setattr(swap, attr, getattr(other, attr))
+        assert swap == other
+    swap._set_resolution({"termination_date": "2032-01-01"}, None, None, None)
+    assert swap != other
+    scaled = other.scale(2.0, in_place=False)  # a deepcopy carries the memo; reassigning quantity_ drops it
+    assert scaled.quantity_ == 2.0 and scaled._identity_key()[3] == 2.0 and scaled != other
+
+
+def test_setting_a_field_changes_the_toy_price():
+    from datetime import date
+
+    from pricebt.markets import PricingContext
+    from pricebt.session import PricebtSession
+
+    PricebtSession.use(assets=[Path(__file__).parent / "assets" / "toy_usd_irs.yaml"])
+    swap = IRSwap("Pay", "7y", "USD", 1e6, fixed_rate=0.03)
+    with PricingContext(date(2024, 3, 4)):
+        seven = swap.price().result()
+        swap.termination_date = "10y"
+        ten = swap.price().result()
+    assert seven != ten
+    with PricingContext(date(2024, 3, 4)):
+        assert ten == IRSwap("Pay", "10y", "USD", 1e6, fixed_rate=0.03).price().result()

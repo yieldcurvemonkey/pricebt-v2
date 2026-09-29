@@ -110,9 +110,10 @@ def test_holes_return_none(monkeypatch):
 def test_swaption_rejects_an_unpriceable_pay_or_receive_at_resolve_time():
     # DESIGN §13.3: resolve MUST reject a pay_or_receive it does not price -- before pricing, not
     # inside npv()/vega() (a late fail via tr._sign would still raise, but only at price time).
+    # (Straddle prices since IR_RISK_DESIGN Phase C: payer + receiver.)
     m = ts.market(_D, "USD")
     with pytest.raises(ValueError):
-        ts.resolve_swaption(m, _swaption_kwargs(pay_or_receive="Straddle"))
+        ts.resolve_swaption(m, _swaption_kwargs(pay_or_receive="Sideways"))
 
 
 def test_swaption_put_call_parity_at_atm():

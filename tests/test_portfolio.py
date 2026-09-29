@@ -1,10 +1,12 @@
 """P2.1: pricebt.markets.portfolio.Portfolio (DESIGN.md section 5, research/04 section 5)."""
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from pricebt.instrument import IRSwap
 from pricebt.markets.portfolio import Portfolio
+from pricebt.risk.results import PortfolioPath
 
 
 def _resolved_swap(name, tenor, quantity_=1.0):
@@ -113,9 +115,9 @@ def test_paths_matches_by_name_and_by_object_recursively():
     a = IRSwap("Pay", "10y", "USD", 1e4, name="a")
     inner = Portfolio([a], name="inner")
     p = Portfolio([inner])
-    assert p.paths("a") == (a,)
-    assert p.paths(a) == (a,)
-    with pytest.raises(ValueError):
+    assert p.paths("a") == (PortfolioPath((0, 0)),)
+    assert p.paths(a) == (PortfolioPath((0, 0)),)
+    with pytest.raises(ValueError, match="^key must be a name or Instrument or Portfolio$"):
         p.paths(42)
 
 
@@ -276,3 +278,168 @@ def test_to_frame_uses_parent_portfolio_name():
     outer = Portfolio([inner], name="outer")
     df = outer.to_frame()
     assert df.index.get_level_values("portfolio")[0] == "inner"
+
+
+# --------------------------------------------------------------------------------- paths (IR_RISK_DESIGN section 5 item 1)
+
+
+def _nested():
+    """gs R10's probe book: Portfolio([EUR(5y, 10y), USD(5y, 10y), 7y])."""
+    eur = Portfolio([IRSwap("Pay", "5y", "EUR", 1e4, name="5y"), IRSwap("Pay", "10y", "EUR", 1e4, name="10y")], name="EUR")
+    usd = Portfolio([IRSwap("Pay", "5y", "USD", 1e4, name="5y"), IRSwap("Pay", "10y", "USD", 1e4, name="10y")], name="USD")
+    return Portfolio([eur, usd, IRSwap("Pay", "7y", "USD", 1e4, name="7y")]), eur, usd
+
+
+def test_all_paths_is_level_by_level_with_direct_leaves_first():
+    top, _eur, _usd = _nested()
+    assert top.all_paths == tuple(PortfolioPath(p) for p in ((2,), (0, 0), (0, 1), (1, 0), (1, 1)))
+    deep = Portfolio([Portfolio([Portfolio([_resolved_swap("x", "1y")]), _resolved_swap("y", "2y")]), _resolved_swap("z", "3y")])
+    assert deep.all_paths == tuple(PortfolioPath(p) for p in ((1,), (0, 1), (0, 0, 0)))
+
+
+def test_paths_are_own_matches_first_then_sub_portfolios():
+    a = IRSwap("Pay", "10y", "USD", 1e4, name="a")
+    top = Portfolio([Portfolio([a], name="inner"), a])
+    assert top.paths("a") == (PortfolioPath(1), PortfolioPath((0, 0)))
+    assert top.paths(a) == (PortfolioPath(1), PortfolioPath((0, 0)))
+    resolved = a.clone()
+    resolved._set_resolution({"termination_date": "2034-01-01"}, None, None, a)
+    assert Portfolio([resolved]).paths(a) == (PortfolioPath(0),)  # matched through .unresolved
+
+
+def test_getitem_by_path_and_nested_name_returns_every_match():
+    top, eur, usd = _nested()
+    assert top[PortfolioPath((1, 0))] is usd.priceables[0]
+    assert top[PortfolioPath(0)] is eur
+    assert top["5y"] == (eur.priceables[0], usd.priceables[0])  # gs: every match, at any depth
+    assert top[["7y", "nope"]] is top.priceables[2]
+    assert "5y" in top and "nope" not in top and 42 not in top
+
+
+def test_contains_and_all_portfolios_reach_every_depth_dev_p1():
+    deep = _resolved_swap("deep", "1y")
+    l2 = Portfolio([deep], name="L2")
+    l1 = Portfolio([l2], name="L1")
+    top = Portfolio([l1, l1])
+    assert "deep" in top and deep in top  # gs: False (its all_portfolios stops at depth 1)
+    assert top.all_portfolios == (l1, l2)  # recursive, de-duplicated
+
+
+def test_subset_single_sub_portfolio_is_itself_else_a_flat_named_portfolio():
+    top, eur, _usd = _nested()
+    assert top.subset([PortfolioPath(0)], name="ignored") is eur
+    flat = top.subset([PortfolioPath((0, 1)), PortfolioPath(2)], name="picked")
+    assert flat.name == "picked" and flat.priceables == (eur.priceables[1], top.priceables[2])
+
+
+def test_repr_counts_all_instruments():
+    top, _eur, _usd = _nested()
+    assert repr(top) == "Portfolio(5 instrument(s))"
+    assert repr(Portfolio(name="empty")) == "Portfolio(empty, 0 instrument(s))"
+    assert repr(Portfolio([_resolved_swap("a", "1y")], name="book")) == "Portfolio(book, 1 instrument(s))"
+
+
+# --------------------------------------------------------------------------------- frames and files (R2-31)
+
+
+def _mixed_book():
+    from datetime import date
+
+    from pricebt.instrument import ConfigInstrument, IRSwaption
+
+    return Portfolio(
+        [
+            IRSwap("Pay", "10y", "USD", 1e4, name="a", quantity_=2.5, effective_date=date(2024, 1, 2)),
+            IRSwaption("Receive", "5y", "USD", notional_amount=1e6, expiration_date="1y", name="b", pricebt_asset="toy_usd_swaption"),
+            ConfigInstrument("some_asset", name="c", quantity_=-1.0, level=1.5, label="x"),
+        ],
+        name="book",
+    )
+
+
+def test_from_frame_rebuilds_every_row_of_to_frame():
+    book = _mixed_book()
+    rebuilt = Portfolio.from_frame(book.to_frame())
+    assert rebuilt.name is None and rebuilt.priceables == book.priceables
+
+
+def test_csv_round_trip_keeps_quantity_asset_and_dates(tmp_path):
+    book = _mixed_book()
+    path = tmp_path / "book.csv"
+    book.to_csv(path)
+    rebuilt = Portfolio.from_csv(path)
+    assert rebuilt.priceables == book.priceables
+    assert rebuilt[0].effective_date == book[0].effective_date  # an ISO string decodes to a date
+    assert [i.quantity_ for i in rebuilt] == [2.5, 1.0, -1.0]
+    assert [i.pricebt_asset for i in rebuilt] == [None, "toy_usd_swaption", "some_asset"]
+
+
+def test_to_csv_drops_ignored_columns_and_sorts(tmp_path):
+    path = tmp_path / "book.csv"
+    _mixed_book().to_csv(path, ignored_cols=["label", "quantity_"])
+    columns = list(pd.read_csv(path).columns)
+    assert columns[0] == "Unnamed: 0" and "label" not in columns and "quantity_" not in columns
+    assert columns[1:] == sorted(columns[1:])  # gs: np.setdiff1d sorts
+
+
+def test_from_frame_mappings_rows_and_errors():
+    frame = pd.DataFrame(
+        [
+            {"asset_class": "Rates", "type": "Swap", "Direction": "Pay", "Maturity": "10y", "Ccy": "USD", "Notional": 1e4},
+            {"asset_class": None, "type": None, "Direction": None, "Maturity": None, "Ccy": None, "Notional": None},  # all null: dropped
+        ]
+    )
+    mappings = {"pay_or_receive": "Direction", "termination_date": "Maturity", "notional_currency": "Ccy", "notional_amount": lambda row: row["Notional"] * 2}
+    (swap,) = Portfolio.from_frame(frame, mappings).priceables
+    assert swap == IRSwap("Pay", "10y", "USD", 2e4)
+    # 2.1.17 keeps a row with any non-null value (1.5.4 dropped rows of only falsy values)
+    falsy = pd.DataFrame([{"asset_class": None, "type": None, "quantity_": 0}])
+    with pytest.raises(ValueError, match="^Neither asset_class/type nor pricebt_asset specified$"):
+        Portfolio.from_frame(falsy)
+    with pytest.raises(ValueError, match="no pricebt instrument class"):
+        Portfolio.from_frame(pd.DataFrame([{"asset_class": "Rates", "type": "Cap"}]))
+
+
+def test_from_csv_rejects_duplicate_columns(tmp_path):
+    path = tmp_path / "dup.csv"
+    path.write_text("asset_class,type,name,name\nRates,Swap,a,b\n")
+    with pytest.raises(ValueError, match=r"^Duplicate column values \['name'\]$"):
+        Portfolio.from_csv(path)
+
+
+# --------------------------------------------------------------------------------- server-only surface (section 5 item 16)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: Portfolio.get(portfolio_id="x"),
+        lambda: Portfolio.from_portfolio_id("x"),
+        lambda: Portfolio.from_portfolio_name("x"),
+        lambda: Portfolio.from_quote("x"),
+        lambda: Portfolio.from_asset_id("x"),
+        lambda: Portfolio.from_asset_name("x"),
+        lambda: Portfolio.from_book("x"),
+        lambda: Portfolio.from_eti("x"),
+        lambda: Portfolio().save(),
+        lambda: Portfolio().save_as_quote(),
+        lambda: Portfolio().save_to_shadowbook("x"),
+        lambda: Portfolio().market(),
+    ],
+)
+def test_server_side_names_raise_not_supported(call):
+    from pricebt.errors import NotSupportedError
+
+    with pytest.raises(NotSupportedError, match="GS server-side"):
+        call()
+    assert Portfolio().id is None and Portfolio().quote_id is None
+
+
+def test_grid_is_one_named_sub_portfolio_per_y_value():
+    from pricebt.markets.portfolio import Grid
+
+    grid = Grid(IRSwap("Pay", None, "USD", 1e4), "termination_date", ["5y", "10y"], "fixed_rate", [0.01, 0.02], name="g")
+    assert grid.name == "g" and [p.name for p in grid.priceables] == [0.01, 0.02]
+    leaf = grid[PortfolioPath((1, 0))]
+    assert (leaf.name, leaf.termination_date, leaf.fixed_rate) == ("5y", "5y", 0.02)
+    assert len(grid.all_instruments) == 4

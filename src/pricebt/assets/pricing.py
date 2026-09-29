@@ -31,6 +31,7 @@ from pricebt.markets import HistoricalPricingContext, PricingContext
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import Price, RiskMeasureWithCurrencyParameter, RiskMeasureWithFiniteDifferenceParameter, contracts
 from pricebt.risk.results import (
+    DataFrameWithInfo,
     FloatWithInfo,
     LazyFuture,
     MultipleRiskMeasureResult,
@@ -38,6 +39,7 @@ from pricebt.risk.results import (
     PricingFuture,
     RiskKey,
     SeriesWithInfo,
+    _DeferredFuture,
     _MultiMeasureFuture,  # noqa: F401 -- purpose-built for exactly this: a per-measure-lazy multi-measure future
     make_bucketed_frame,
     make_table_frame,
@@ -615,7 +617,7 @@ def _instrument_calc_value(service: PricingService, inst: Instrument, measures: 
     applies context-based future-wrapping."""
     if len(measures) == 1:
         return service.value(inst, d, measures[0], csa)
-    return MultipleRiskMeasureResult((m, service.value(inst, d, m, csa)) for m in measures)
+    return MultipleRiskMeasureResult(inst, ((m, service.value(inst, d, m, csa)) for m in measures))
 
 
 def _single_measure_future(service: PricingService, inst: Instrument, measure, d: _date, csa: Optional[str]) -> PricingFuture:
@@ -626,16 +628,22 @@ def _single_measure_future(service: PricingService, inst: Instrument, measure, d
 def _instrument_future(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str]) -> PricingFuture:
     if len(measures) == 1:
         return _single_measure_future(service, inst, measures[0], d, csa)
-    return _MultiMeasureFuture({m: _single_measure_future(service, inst, m, d, csa) for m in measures})
+    return _MultiMeasureFuture({m: _single_measure_future(service, inst, m, d, csa) for m in measures}, inst)
 
 
-def _calc_portfolio_one_date(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], d: _date, csa: Optional[str]) -> PortfolioRiskResult:
+def _with_fn(future: PricingFuture, fn) -> PricingFuture:
+    """gs `Instrument.calc(fn=)` inside `Portfolio.calc`: `fn` applied to one leaf's value, an
+    exception it raises stored in that leaf's future (gs instrument/core.py, `ret.set_exception`)."""
+    return future if fn is None else _DeferredFuture(lambda: fn(future.result()))
+
+
+def _calc_portfolio_one_date(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], d: _date, csa: Optional[str], fn=None) -> PortfolioRiskResult:
     futures = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            futures.append(PricingFuture(_calc_portfolio_one_date(service, child, measures, d, csa)))
+            futures.append(PricingFuture(_calc_portfolio_one_date(service, child, measures, d, csa, fn)))
         else:
-            futures.append(_instrument_future(service, child, measures, d, csa))
+            futures.append(_with_fn(_instrument_future(service, child, measures, d, csa), fn))
     return PortfolioRiskResult(portfolio.clone(), measures, futures)
 
 
@@ -645,9 +653,14 @@ def _unwrap(v):
 
 def _date_indexed(by_date: dict, rep):
     """One measure's per-date values as one historical result: a `SeriesWithInfo` indexed by date
-    carrying `rep`'s (the first date's raw value's) unit/risk_key, or -- when `rep` is a table
-    (`pricebt_table`, IR_RISK_DESIGN R2-15) -- one table with a `date` column prepended to each
+    carrying `rep`'s (the first date's raw value's) unit/risk_key; a bucketed result is one
+    `DataFrameWithInfo` indexed by `date` (gs `compose`, IR_RISK_DESIGN section 5 item 3); a table
+    (`pricebt_table`, IR_RISK_DESIGN R2-15) is one table with a `date` column prepended to each
     date's rows, concatenated in date order."""
+    first = next(iter(by_date.values()), None)
+    if isinstance(first, pd.DataFrame) and not getattr(first, "pricebt_table", False):
+        # checked on the values: `rep` is still the unevaluated LazyFuture of a bucketed measure
+        return DataFrameWithInfo.compose(by_date.values())
     if getattr(rep, "pricebt_table", False):
         frames = []
         for d, table in by_date.items():
@@ -679,7 +692,7 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     if len(measures) == 1:
         rep = next(iter(per_date.values()), None)
         return _date_indexed({d: _unwrap(per_date[d]) for d in dates}, rep)
-    result = MultipleRiskMeasureResult()
+    result = MultipleRiskMeasureResult(inst, ())
     rep_multi = next(iter(per_date.values()), None)
     for m in measures:
         rep = rep_multi[m] if rep_multi is not None else None
@@ -687,13 +700,13 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     return result
 
 
-def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str]) -> PortfolioRiskResult:
+def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str], fn=None) -> PortfolioRiskResult:
     futures = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa)))
+            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa, fn)))
         else:
-            futures.append(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa)))
+            futures.append(_with_fn(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa)), fn))
     return PortfolioRiskResult(portfolio.clone(), measures, futures)
 
 
@@ -714,8 +727,7 @@ def engine_calc(priceable, measures, fn=None):
     if isinstance(ctx, HistoricalPricingContext):
         dates, csa = ctx.date_range, ctx.csa_term
         if isinstance(priceable, Portfolio):
-            result = _historical_portfolio_result(service, priceable, measures_t, dates, csa)
-            return fn(result) if fn is not None else result
+            return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn)
         result = _historical_instrument_value(service, priceable, measures_t, dates, csa)
         if fn is not None:
             result = fn(result)
@@ -725,8 +737,7 @@ def engine_calc(priceable, measures, fn=None):
 
     d, csa = ctx.pricing_date, ctx.csa_term
     if isinstance(priceable, Portfolio):
-        result = _calc_portfolio_one_date(service, priceable, measures_t, d, csa)
-        return fn(result) if fn is not None else result
+        return _calc_portfolio_one_date(service, priceable, measures_t, d, csa, fn)
     result = _instrument_calc_value(service, priceable, measures_t, d, csa)
     if fn is not None:
         result = fn(result)
