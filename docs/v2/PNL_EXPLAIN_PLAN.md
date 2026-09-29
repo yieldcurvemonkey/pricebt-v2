@@ -281,7 +281,10 @@ Leave `toy_eur_irs.yaml` without the new functions. It is the "explain not suppo
     - receiver ≈ −payer (1%);
     - `0.2 ≤ |Γ| / (|dv01|·T·1e-4) ≤ 2`.
   - **Half-gamma probe:**
-    - Find two consecutive business days within 20 of d1 where the ATM trade's |Δpar| ≥ 3bp.
+    - Find two business days, up to 10 apart and within 30 of d1, where the ATM trade's |Δpar| ≥ 3bp.
+      They need not be consecutive: over 10 days, aging moves an annuity dv01 by only about z·k/365 (≈0.08%).
+      A 15bp move changes it by several percent, so the estimate stays clean. The toy's daily move is capped
+      at about 2.5bp, so a consecutive-day probe would always SKIP there.
     - Compute `Γ_est = 2·Δdv01/Δpar` on the same resolved trade.
     - Ratio Γ/Γ_est in [0.7, 1.4] → PASS. In [0.4, 0.6] → FAIL, with "looks like gamma from dv01 differences
       (half-gamma trap)". Otherwise → WARN. No qualifying pair → SKIP.
@@ -376,7 +379,7 @@ Use real `GenericEngine` runs. The expected values come from the test worlds' cl
 
 | ID | Scenario | Assertions | Mutation |
 |---|---|---|---|
-| T-FROZEN | frozen world, off-market payer held 1y, daily | `PNL_delta ≡ PNL_gamma ≡ 0` exactly (Δpar = 0); carry ≈ economic, per step `|residual| ≤ 2·|npv|·(z·k/365)²` (k = calendar days in the step) | per-day θ; carry attribute on the wrong measure |
+| T-FROZEN | frozen world, off-market payer held 1y, daily | `|PNL_delta| ≤ |dv01|·1e-9` and `|PNL_gamma|` ≈ 0 (Δpar = 0 algebraically, but only to floating-point in practice); carry ≈ economic, per step `|residual| ≤ 2·|npv|·(z·k/365)²` (k = calendar days in the step) | per-day θ; carry attribute on the wrong measure |
 | T-SHOCK | shock world: +100bp jump on one date, ATM 10y payer | on the jump step, `|residual| ≤ 1%` of `|PNL_delta|`, and delta+gamma beats delta-only by more than 10× | half gamma |
 | T-SLOPE-1 | sloped world, static shape (z and slope constant, so real roll-down), ATM payer 1y daily | residual per step ≤ the target ceiling; carry ≠ 0; delta picks up roll-down (Δpar ≠ 0, sign per slope) | n/a |
 | T-SLOPE-2 | **double-count non-vacuity**: the same, with θ computed on the static-shape roll instead of the translation | residual drifts systematically: `Σresidual ≈ −Σ pv01·Δpar_roll` within 5%; assert the correct θ does *not* show this | this *is* the mutation test for §2.2 |
@@ -394,8 +397,8 @@ Use real `GenericEngine` runs. The expected values come from the test worlds' cl
 - `toy_usd_irs.yaml`:
   - no FAIL;
   - rows `swap_pv_identity`, `swap_gamma`, `swap_theta`, `year_fraction` and `cash_paid_to_date` present and PASS;
-  - the half-gamma probe is not SKIP. If the toy's daily move is under 3bp, search a longer window or pass
-    `--date`s that qualify.
+  - the half-gamma probe is not SKIP. It uses pairs up to 10 business days apart (§3.4); if it still SKIPs, pass
+    `--date`s that qualify. Do not lower the 3bp threshold.
 - New broken fixtures, each expected to FAIL its named row:
   - `bad_half_gamma.yaml` (gamma from dv01 differences) → `swap_gamma`;
   - `bad_theta_per_day.yaml` → `swap_theta` if it is caught. If per-day θ slips through the magnitude band
@@ -420,7 +423,7 @@ number (not just pass/fail) in `docs/v2/LIVE_ARBS_REPORT.md`, in a new section "
 | A-GAMMA-FD | same trade, 5 sampled dates | Γ(config) vs the test's own second difference via `Curve.shift` ±1bp, within 1%; and vs `rl.Portfolio([...]).gamma(solver=sv)` (the par-space cross-gamma summed), from `_risk_model`, within 5%; payer < 0, receiver = −payer |
 | A-THETA | same trade, 5 dates | θ receiver = −payer; par under the 1-day translation changes by < 0.05bp (no roll-down leaks into carry); cross-check against ARBS `carry_bps_running(·,"1m")`: `θ·(days to 1m)/365` has the same sign as `−carry_1m·pv01` and agrees within 30% (a static-curve vs constant-forward convention gap is expected; record the ratio) |
 | A-CASH | 10y payer 2024-01-03 → 2025-03-31 (spans its first annual coupon plus a 2b lag) | on the payment step, the residual **without** cash ≈ `−Δcash` within 2% of the coupon; **with** cash, the payment-step residual ≤ the 99th percentile of normal-day residuals; fixed-leg coupon = `N·K·τ` by hand (ACT/360) |
-| A-DAILY | single 10y ATM payer, daily 2024 | `r2 ≥ 0.999` on non-coupon days; the residual reconciles to `exact_split` (T-RECON analogue, 1e-6 relative); record residual/economic by moneyness bucket |
+| A-DAILY | single 10y ATM payer, daily 2024 (**diagnostic**: the trade drifts about 80bp off-market, so §2.7's first-order moneyness residual is several % of delta) | hard: the residual reconciles to `exact_split` (T-RECON analogue, 1e-6 relative). **Record, do not assert:** R² on non-coupon days, and residual/economic by moneyness bucket. The hard R² target applies only to A-ROLL (near-ATM by construction) |
 | A-GAMMA-USE | 30y and 10y ATM payers, daily 2024 | on the 20 largest-|Δpar| days, RMS residual with gamma < RMS without gamma, for both tenors; record both RMS values |
 | A-ROLL | periodic roll (monthly new ATM 10y, `trade_duration` 1m), daily 2024 | `r2 ≥ R2_TARGET_ARBS`; `residual_share ≤ RS_TARGET_ARBS`; ledger tie-out (T-LEDGER analogue) |
 | A-MATURE | 1y payer from 2024-01-03, marked to 2025-03-31 | no NaN anywhere across maturity and settlement; the maturity step's delta ≈ `−PV(t−1)` (§2.5); cumulative series finite to the end |
