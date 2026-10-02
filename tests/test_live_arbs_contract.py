@@ -319,9 +319,10 @@ def test_discount_delta_sign_off_market_payer():
 
 def test_theta_on_a_coupon_day_holds_the_own_par_fixed():
     """2025-01-08 (the 10y payer's first Payment): the paid period leaves the remaining swap, so its par
-    jumps; Theta (own par fixed) takes that jump out at the translated pv01. Recorded with the T2
-    formula (translated npv + coupon - npv, par NOT held) computed independently from public methods;
-    on a normal day the two agree."""
+    jumps; Theta (own par fixed) takes that jump out at the translated pv01, spread over the n calendar
+    days to the next business day (DEV-I15; n = 1 on both dates here). Recorded with the T2 formula
+    (translated npv + coupon - npv, par NOT held) computed independently from public methods; on a
+    normal day the two agree."""
     session = _session()
     asset = session.registry[ASSET_NAME]
     pay = session.pricing.resolve(_swap(), D_TRADE, None)
@@ -338,11 +339,54 @@ def test_theta_on_a_coupon_day_holds_the_own_par_fixed():
         coupon = float(cf.loc[cf["Payment"].apply(lambda p: p.date()) == d, "Cashflow"].sum())
         old = float(rh.npv(tt)) + coupon - float(m.npv(t0))
         dpar = (float(rh.fair_rate(tt)) - float(m.fair_rate(t0))) * 1e4
-        expected = old - float(rh.pv01(tt)) * dpar
+        n = (pd.Timestamp(m.calendar_advance(m.reference_date(), "1b")).date() - d).days
+        expected = old - float(rh.pv01(tt)) * dpar / n
         theta = _v(session, pay, d, Theta)
         print(f"R3 Theta {d}: config={theta:.4f}/day; T2 formula (par not held)={old:.4f}; translated par move={dpar:.6f}bp; coupon today={coupon:.4f}")
         assert theta == pytest.approx(expected, rel=1e-9, abs=1e-6)
     assert abs(dpar) > 1.0 and abs(theta - old) > 1000.0, "test setup: 2025-01-08 should be the coupon day with a par jump"
+
+
+def _coupon_step(swap, start, end):
+    """(t0, t1, table row, Theta(t0)) of the single coupon step of a short ir_pnl_definition run with Cashflows."""
+    bt = GenericEngine().run_backtest(Strategy(None, DateTrigger(DateTriggerRequirements([start]), AddTradeAction(swap))),
+                                      start=start, end=end, frequency="1b", risks=[Cashflows],
+                                      pnl_explain=ir_pnl_definition(vega=False, vanna=False, volga=False), show_progress=False)
+    table = bt.pnl_explain_table()
+    steps = list(table.index[table["cashflow_pnl"].abs() > 0])
+    assert len(steps) == 1, f"test setup: expected one coupon step, got {steps}"
+    t1 = steps[0]
+    t0 = max(d for d in bt.results if d < t1)
+    inst = next(iter(bt.results[min(bt.results)].portfolio.all_instruments))
+    return t0, t1, table.loc[t1], _v(_session(), inst, t0, Theta)
+
+
+def test_coupon_step_over_a_weekend_counts_the_own_par_jump_once():
+    """Theta x step calendar days is PNL_theta (backtest_objects ir_pnl_definition). The own-par jump Theta takes out
+    on a payment date is one-off, so it is spread over the calendar days to the next business day (DEV-I15): a
+    Friday coupon step (3 days) must explain as well as a midweek one. Unspread, PNL_theta counted it 3x: residual
+    -23,359.06 on 2024-03-15 -> 03-18, 170% of the 13,714.56 coupon (measured; LIVE_ARBS_REPORT.md).
+    1-day: the D_TRADE 10y payer (first Payment Wed 2025-01-08). Weekend: a 10y payer effective 2023-03-13 (first
+    Payment Fri 2024-03-15), struck ATM on 2024-03-12. The 1-day ratio (the -a x dpar limit of an own-par factor,
+    decision 2) sets the bound."""
+    session = _session()
+    terms = session.pricing.resolve(_swap(), D_TRADE, None).resolved_terms
+    wed = IRSwap(pay_or_receive="Pay", effective_date=terms["effective_date"], termination_date=terms["termination_date"],
+                 fixed_rate=terms["fixed_rate"], notional_currency="USD", notional_amount=N, name="coupon_wed")
+    fri = IRSwap(pay_or_receive="Pay", effective_date=date(2023, 3, 13), termination_date="10y", notional_currency="USD",
+                 notional_amount=N, fixed_rate="ATM", name="coupon_fri")
+    ratio = {}
+    for label, swap, start, end, days in (("1-day", wed, date(2025, 1, 3), date(2025, 1, 14), 1),
+                                          ("weekend", fri, date(2024, 3, 12), date(2024, 3, 21), 3)):
+        t0, t1, row, theta0 = _coupon_step(swap, start, end)
+        assert (t1 - t0).days == days, f"test setup: {label} coupon step {t0} -> {t1}"
+        coupon, resid = float(row["cashflow_pnl"]), float(row["residual_pnl"])
+        ratio[label] = abs(resid) / abs(coupon)
+        print(f"R3 coupon step {label} {t0}->{t1}: coupon={coupon:.4f} Theta(t0)={theta0:.4f}/day PNL_theta={row['PNL_theta']:.4f} "
+              f"PNL_delta={row['PNL_delta']:.4f} residual={resid:.4f} ({ratio[label]:.2%} of the coupon)")
+        assert row["PNL_theta"] == pytest.approx(days * theta0, rel=1e-9)
+    assert ratio["1-day"] < 0.15, ratio            # measured 8.68%
+    assert ratio["weekend"] < 2.0 * ratio["1-day"], ratio   # measured 9.95%; jump counted 3x: 170%
 
 
 # ======================================================================================= dead-trade par (R2-7)

@@ -250,8 +250,13 @@ code: |
       # is ~0. On a coupon day the paid period leaves the remaining swap and its par jumps (live: -14.2bp on
       # 2025-01-08 for a 10y payer); that jump is time, not market, so take it out at the translated pv01
       # (npv_T - pv01_T * (par_T - par_0) = pv01_T * (par_0 - K), the identity A-IDENT checks).
+      # That jump is ONE-OFF, but the engine books PNL_theta = Theta x step calendar days, so spread it over the
+      # calendar days to the next business day (DEV-I15): a Friday coupon step (3 days) then counts it once, not
+      # 3x (live: residual -23,359 -> +1,365 on 2024-03-15 -> 03-18, coupon 13,714.56). A coarser grid than
+      # business days (or a grid holiday the curve calendar keeps open) leaves the excess in the residual.
       par_shift = rh.fair_rate(tt) * 1e4 - m.fair_rate(remark(m, t)) * 1e4
-      return rh.npv(tt) - rh.pv01(tt) * par_shift + coupon_today - m.npv(t)
+      n = (pd.Timestamp(m.calendar_advance(m.reference_date(), "1b")).date() - ref_d).days
+      return rh.npv(tt) - rh.pv01(tt) * par_shift / n + coupon_today - m.npv(t)
 
   def theta(m, t):                     # PNL_EXPLAIN_PLAN 2.2 IRTheta: ccy per YEAR = 365 x Theta (one definition)
       return 365.0 * theta_1d(m, t)
