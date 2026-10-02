@@ -404,3 +404,5 @@ written. Its `git status` shows changes that predate this work and are outside `
 `MDP/CitiVelocityExcel/catalog/*.json`, and deletions under `MDP/FixedRateBonds/reference_data_cache`. The earliest dates were the 2023
 fixings of the seasoned weekend-case swap, which came from the served market's own fixings series; no 2023
 market was loaded.
+
+**Final rerun at `e757865`** (after the skills review fixes changed `ir_cashflow_drop`'s stage-2 roll term and moved the SIMM lists into `pricebt.risk.contracts`), 2026-10-02: `tests/test_live_arbs_contract.py` + `tests/test_live_arbs_pnl.py` + `tests/test_live_arbs.py` **41 passed in 400.9s**, including `test_check_asset_no_fail_and_every_contract_row_passes` and A-CHECK (no FAIL on this config).
