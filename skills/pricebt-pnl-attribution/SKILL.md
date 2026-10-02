@@ -93,7 +93,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
    |---|---|
    | any swaption (with swaps or bonds) | all six: `swaption_pnl_definition(rate_unit, vol_unit)` |
    | bonds, swaps, or both | delta, gamma, theta: `bond_pnl_definition(rate_unit)` = `ir_pnl_definition(vega=False, vanna=False, volga=False)` |
-   | swaps on configs written to the in-flight swap branch | its `swap_pnl_definition` (skills/pricebt-strategy-recipes/scripts/swap_pnl.py once merged; per-year `IRTheta × YearFraction`) |
+   | swaps on configs written to the in-flight swap branch | its `swap_pnl_definition` ([`swap_pnl.py`](../pricebt-strategy-recipes/scripts/swap_pnl.py); per-year `IRTheta × YearFraction`) |
    | anything else | `ir_pnl_definition(..., delta=, gamma=, vega=, vanna=, volga=, theta=)`, or your own `PnlDefinition` |
 
    Keyword flags override the kind: `definition_for(session, volga=False)`. Pass `assets=[names]` when the session holds configs the book never trades.

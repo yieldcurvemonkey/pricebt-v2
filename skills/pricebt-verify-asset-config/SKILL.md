@@ -39,7 +39,7 @@ An asset config is trusted code that turns your pricing library into pricebt num
    python skills/pricebt-verify-asset-config/scripts/check_asset.py configs/assets/<your_asset>.yaml --sys-path <dir with your library or helper modules> --date 2024-01-03 --date 2024-02-05
    ```
 
-   On POSIX use `PYTHONPATH=src:tests`. Try it first on the toys, which pass: `tests/assets/toy_usd_irs.yaml` (a declaration-only swap), and `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml` (the full contract on the closed-form libraries in `tests/toylib/`).
+   On POSIX use `PYTHONPATH=src:tests`. Try it first on the toys, which pass: `tests/assets/toy_usd_irs.yaml` (a swap mapping Price, IRDelta, IRFwdRate and IRGammaParallel, declaring the rest), and `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml` (the full contract on the closed-form libraries in `tests/toylib/`).
 
    | option | effect |
    |---|---|
@@ -94,12 +94,33 @@ Generic rows (every asset):
 | `quantity_scaling[M]` | FAIL | `scale_with_quantity:` contradicts the unit | remove the override, or fix the unit |
 | `quantity_scaling[M bucketed]` | FAIL | a ladder in ccy per bp that ignores `weights` | return per-unit buckets times `weights` |
 | `quantity_scaling[Cashflows frame]` | FAIL | a level (`rate`, `spread`, `discount_factor`, a date) in `scale_columns`, or `notional` missing | `scale_columns` = the amount columns: `payment_amount` (and `notional`) |
-| `notional_linearity[f]` | FAIL "it is a rate" / "an amount" | wrong `unit:` | `bp`/`pct`/`decimal` for rates, `ccy`/`ccy_per_bp` for amounts |
-| `risk_measures[M]` | FAIL / WARN "not a pricebt.risk measure" | mapped function fails in one form / typo | fix the function or `{scalar, bucketed}` mapping / use the gs name |
+| `notional_linearity[f]` | FAIL "it is a rate" / "it is an amount" | wrong `unit:` (a par rate declared `ccy`, a PV declared `bp`) | declare `bp`/`pct`/`decimal` for rates, `ccy`/`ccy_per_bp` for amounts |
+| `notional_linearity[f]` | WARN "neither linear nor constant" | library applies notional-dependent logic, or the size kwarg is not reaching the trade | check the trade builder uses `resolved` notional |
+| `risk_measures[M]` | FAIL | mapped function fails in scalar or bucketed form | fix the function, or the `{scalar, bucketed}` mapping |
+| `risk_measures[M]` | WARN "not a pricebt.risk measure" | typo in the measure name | use the gs name (`IRDelta`, `IRFwdRate`, ...) |
 | `measure_series` | WARN "constant" | the tracked function (the one mapped to `IRFwdRate`, else the first non-literal rate) ignores `pricebt_date` | pass `pricebt_date` to the market loader; literal expressions such as a `'0.0'` vol are never tracked |
-| `smoke_backtest` | FAIL non-finite / identity | NaN on a grid date / engine could not run | price that date by hand / rerun with `--no-backtest` to isolate |
-| `fx_round_trip` | FAIL | reverse pair returns the same quote | return the reciprocal |
-| `performance` | WARN SLOW | curve rebuilt per call | build it once in `market:`, reuse it |
+| `smoke_backtest` | FAIL non-finite Price | NaN or inf on some grid date | find the date in the detail and price it by hand |
+| `smoke_backtest` | FAIL identity / exception | engine could not run the asset (message says why) | fix per message; rerun with `--no-backtest` to isolate |
+| `fx_round_trip` | FAIL | FX config returns the same quote both ways | return the reciprocal for the reverse pair |
+| `performance` | WARN SLOW | one evaluation over 1s: curve rebuilt per call, no caching in the library session | build the curve once in `market:`, reuse it in every function |
+| `swap_atm_npv` | FAIL/WARN | ATM strike computed on a different curve, date or convention than valuation | strike and value off the same `market` object |
+| `swap_dv01_sign` | FAIL payer <= 0 | library reports risk as PV change per -1bp, or receiver-positive | negate in the function; pricebt wants payer dv01 > 0 per +1bp |
+| `swap_dv01_sign` | FAIL receiver != -payer | `pay_or_receive` not reaching the trade builder | map it in `resolve:`/`trade:` |
+| `swap_dv01_band` | FAIL | dv01 per 1% (x100), per unit rate (x1e4), or per unit notional | rescale to currency per 1bp on the full notional |
+| `swap_par_rate_unit` | FAIL "looks like decimal" | library returns 0.0425 and the function is declared `bp` | multiply by 1e4, or declare `decimal` |
+| `swap_par_rate_unit` | WARN "could be percent" | 4.25 declared `bp` | multiply by 100, or declare `pct` |
+| `swap_par_rate_atm` | FAIL | an ATM trade's par rate on its trade date != `resolved["fixed_rate"] * 1e4` (unit wrong, or resolve and par_rate use different curves) | fix the unit of `par_rate`, or price par and strike off the same market |
+| `swap_bucket_sum` | FAIL / WARN 2-10% same sign | ladder in a different unit/sign than the scalar, or missing pillars; a WARN: an own-rate scalar and a curve ladder differ by dr/ds (R2-2) | same convention as the scalar; include every pillar |
+| `swap_pnl_explain` | FAIL negative ratio | npv and dv01 use opposite sign conventions | make npv payer-positive when rates rise |
+| `swap_pnl_explain` | WARN ratio outside [0.5, 1.5] | large carry/roll between the dates, or a scale error | try closer dates; if it persists, check units |
+| `swap_pv_identity` | FAIL | `npv`/`dv01`/`par`/`fixed_rate` disagree on sign or unit (`PV != dv01*(par-K)`), at the ATM date or the off-market one | fix whichever of the four is wrong; the two FAIL details show exactly which date broke |
+| `swap_pv_identity` | WARN "dv01 depends on the strike" | `dv01` is a realistic full-curve PV sensitivity, not the fixed-leg annuity pv01 (PNL_EXPLAIN_PLAN.md 2.1) — a legitimate convention difference, not a bug | nothing to fix; explain the WARN in the config's `description:` if it is expected |
+| `swap_gamma` | FAIL sign/band | payer gamma >= 0, receiver != -payer, or `abs(gamma)/(abs(dv01)*T*1e-4)` outside [0.2, 2] | fix the second-npv-difference formula or its sign |
+| `swap_gamma` | FAIL half-gamma probe | gamma computed from `dv01` differences instead of the true second difference of `npv` (PNL_EXPLAIN_PLAN.md 2.1's "half-gamma trap") | use `npv(up)+npv(down)-2*npv(mid)`, never `dv01(up)-dv01(down)` |
+| `swap_gamma` | SKIP half-gamma probe | no pair of business days within 30 (up to 10 apart) moved the trade's par by >= 3bp | pass `--date`s further apart, or on a more volatile market; never lower the 3bp threshold |
+| `swap_theta` | FAIL | receiver `theta` != `-payer`, or `abs(theta) > 1000*abs(dv01)` (a unit-magnitude check — commonly theta computed per day instead of per year) | fix the sign convention or the time unit (PNL_EXPLAIN_PLAN.md 2.2) |
+| `year_fraction` | FAIL | declared `unit: number` (extensive) instead of `decimal`, so pricebt multiplies it by trade size, or the d1->d2 delta != `(d2-d1).days/365` | declare `decimal`; `year_fraction` must be an intensive time coordinate (PNL_EXPLAIN_PLAN.md 2.3) |
+| `cash_paid_to_date` | FAIL | a fresh ATM trade already shows nonzero cash at d1, or receiver != `-payer` at d2 | fix the sign convention, or the cumulative-cash calculation itself |
 
 Contract and IR semantics rows (IRSwap, IRSwaption, Bond, or `--pack`):
 
@@ -146,7 +167,7 @@ Swaption pack (`IRSwaption`) and bond pack (`Bond`):
 | `bond_cashflows_bound` | FAIL | principal or coupons missing from `Cashflows` | list every future flow, holder-signed |
 | `bond_expiry` | WARN | `ExpiryInYears` not to maturity | years to the final date (DEV-I17) |
 
-The swap pack rows (`swap_atm_npv`, `swap_dv01_sign`, `swap_dv01_band`, `swap_par_rate_unit`, `swap_par_rate_atm`, `swap_bucket_sum`, `swap_pnl_explain`) are catalogued in the docstring of `skills/pricebt-verify-asset-config/scripts/check_asset.py`; `swap_annuity_sign` (above) runs with the IR rows. `swap_par_rate_atm` FAILs a par rate left in percent; `swap_par_rate_unit` only WARNs "could be percent". `swap_bucket_sum` WARNs a ladder 2-10% from the scalar with the same sign: an own-rate `IRDelta` and a zero- or par-pillar ladder differ by dr/ds (R2-2); explain it. It FAILs beyond 10% or on opposite signs.
+`swap_annuity_sign` (above) runs with the IR rows.
 
 ## What the checker cannot prove
 

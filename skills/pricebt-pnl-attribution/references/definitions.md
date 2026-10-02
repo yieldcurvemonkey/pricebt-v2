@@ -108,10 +108,10 @@ Full recipes for every contract measure, with the capability worksheet, are in [
 
 ## 6. Swaps
 
-- **The in-flight swap definition.** The swap P&L-explain branch adds `swap_pnl_definition` in skills/pricebt-strategy-recipes/scripts/swap_pnl.py (not in this tree until it merges; see `docs/v2/MERGE_NOTES_pnl_explain.md`). Its carry attribute is `IRTheta × YearFraction`, with a per-**year** `IRTheta`. Use it for configs written to it.
+- **The in-flight swap definition.** The swap P&L-explain branch adds `swap_pnl_definition` in [`swap_pnl.py`](../../pricebt-strategy-recipes/scripts/swap_pnl.py) (merged; see `docs/v2/MERGE_NOTES_pnl_explain.md`). Its carry attribute is `IRTheta × YearFraction`, with a per-**year** `IRTheta`. Use it for configs written to it.
 - **The swap definition available today** is `ir_pnl_definition(vega=False, vanna=False, volga=False)`. It has the same three attributes as `bond_pnl_definition()`, and is what `definition_for` picks for a book with no swaption.
   - It needs `IRGammaParallel`, `Theta` and `ExpiryInYears` mapped. `tests/assets/toy_usd_irs_full.yaml` maps them.
-  - `tests/assets/toy_usd_irs.yaml` and the shipped ARBS config declare them unsupported, so they are refused.
+  - `tests/assets/toy_usd_irs.yaml` and the shipped ARBS config map `IRGammaParallel` (the in-flight gamma, without the chain-rule term) but declare `Theta` and `ExpiryInYears`, so they are still refused.
 - **Never map `Theta` to the in-flight per-year `IRTheta` function.** `IRTheta` = 365 × `Theta`.
 - **The shipped swap configs map the `IRDelta` scalar to an annuity pv01.** That is exact only at the money; off-market it leaves the residual `N·(F−K)·ΔA` ([diagnosing-residuals.md](diagnosing-residuals.md) §1).
 

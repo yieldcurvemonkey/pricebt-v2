@@ -89,6 +89,7 @@ initial_value: 0                         # starting cash (P&L view when 0)
 
 # --- judging it ---------------------------------------------------------------------------------
 risks_to_report: [Price, IRDeltaParallel]   # risk measures recorded every day (names from pricebt.risk)
+pnl_explain: {enabled: false, gamma: true, carry: true, cash: auto}   # swap P&L attribution (delta/gamma/carry); cash: auto adds CashPaidToDate if the config maps it
 benchmark: none                          # none | buy_and_hold | <a named instrument> ; used for IR in the report
 success_criteria:
   min_sharpe: 0.5                        # of daily P&L, annualised
