@@ -19,6 +19,9 @@ an independent second-difference/exact-identity computation written directly in 
 never copied from a prior run's printed output. Two thresholds could not be met as the plan's
 literal numbers (T-GAMMA-3's "6-10x doubling factor", T-ROLL's R2_TARGET >= 0.9999): both are
 diagnosed and documented in docs/v2/DECISIONS_LOG.md (2026-09-29 entries), never silently loosened.
+Since tr.gamma became the chain-rule second derivative (IR_STRICT_CONTRACT R3-3 B; the same formula as
+toylib.irrisk.ir_gamma), T-GAMMA-3's doubling factor is the plan's own 6-10x again (DECISIONS_LOG
+2026-10-01).
 """
 from __future__ import annotations
 
@@ -47,6 +50,7 @@ from pricebt.backtests.triggers import (  # noqa: E402
     PeriodicTrigger,
     PeriodicTriggerRequirements,
 )
+from pricebt.assets import load_asset  # noqa: E402
 from pricebt.errors import ConfigError  # noqa: E402
 from pricebt.instrument import IRSwap  # noqa: E402
 from pricebt.risk import IRDelta, IRDeltaParallel, IRFwdRate, IRGammaParallel  # noqa: E402
@@ -120,23 +124,6 @@ description: >
 instrument: IRSwap
 match: {{notional_currency: USD}}
 currency: USD
-unsupported_measures:
-  IRDelta: {{bucketed: "the sloped variant maps only the scalar dv01"}}
-  IRDiscountDeltaParallel: "not wired in the sloped-world test variant"
-  IRGamma: "not wired in the sloped-world test variant"
-  IRVega: "not wired in the sloped-world test variant"
-  IRVanna: "not wired in the sloped-world test variant"
-  IRVolga: "not wired in the sloped-world test variant"
-  IRBasis: "not wired in the sloped-world test variant"
-  IRXccyDelta: "not wired in the sloped-world test variant"
-  IRSpotRate: "not wired in the sloped-world test variant"
-  IRAnnualImpliedVol: "not wired in the sloped-world test variant"
-  IRAnnualATMImpliedVol: "not wired in the sloped-world test variant"
-  IRDailyImpliedVol: "not wired in the sloped-world test variant"
-  Theta: "not wired in the sloped-world test variant"
-  ExpiryInYears: "not wired in the sloped-world test variant"
-  Annuity: "not wired in the sloped-world test variant"
-  Cashflows: "not wired in the sloped-world test variant"
 defaults:
   pay_or_receive: Receive
   termination_date: 10y
@@ -147,6 +134,7 @@ imports: |
   import dataclasses
   from datetime import timedelta
   import toylib.rates as tr
+  import toylib.irrisk as tri
 code: |
   _SLOPE = {slope}
   def _sloped_market(d, ccy, csa):
@@ -174,6 +162,40 @@ functions:
   theta_rolled:      {{expr: '_theta_rolled(market, trade)', unit: ccy}}
   year_fraction:     {{expr: 'tr.year_fraction(market)', unit: decimal}}
   cash_paid_to_date: {{expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}}
+  # the rest of the strict IRSwap contract (IR_STRICT_CONTRACT R3-0: no declarations), from toylib.irrisk
+  discount_delta:    {{expr: 'tri.discount_delta(market, trade)', unit: ccy_per_bp}}
+  zero_per_bp:       {{expr: '0.0', unit: ccy_per_bp}}
+  zero_per_bp2:      {{expr: '0.0', unit: ccy_per_bp2}}
+  zero_vol:          {{expr: '0.0', unit: bp}}
+  spot_rate:         {{expr: 'tri.spot_rate(market, trade)', unit: bp}}
+  theta_1d:          {{expr: 'tri.theta_1d(market, trade)', unit: ccy}}
+  expiry_in_years:   {{expr: 'tri.expiry_in_years(market, trade)', unit: decimal}}
+  annuity:           {{expr: 'tri.annuity(market, trade)', unit: ccy}}
+  cashflows:         {{expr: 'tri.empty_cashflows()', unit: ccy, returns: frame, scale_columns: [payment_amount]}}
+  par_spread:        {{expr: 'tri.par_spread(market, trade)', unit: bp}}
+  fair_premium:      {{expr: 'tri.fair_premium(market, trade)', unit: ccy}}
+  forward_price:     {{expr: 'tri.forward_price(market, trade)', unit: ccy}}
+  premium_cents:     {{expr: 'tri.premium_cents(market, trade)', unit: bp}}
+  local_annuity:     {{expr: 'tri.local_annuity_in_cents(market, trade)', unit: decimal}}
+  compounded_rate:   {{expr: 'tri.compounded_fixed_rate(market, trade)', unit: bp}}
+  crif:              {{expr: 'tri.crif_ir_curve_pv01(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+  gamma_ladder:
+    expr: 'tri.gamma_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp2
+    returns: buckets
+  vega_cube:
+    expr: '{{}}'
+    unit: ccy_per_bp
+    returns: buckets
+  pnl_explain:
+    expr: 'tri.pnl_explain(market, market_to, trades, weights)'
+    unit: ccy
+    returns: buckets
 attributes:
   effective_date:   'resolved["effective_date"]'
   termination_date: 'resolved["termination_date"]'
@@ -181,12 +203,35 @@ attributes:
 size_attribute: notional_amount
 risk_measures:
   Price: npv
-  IRDelta: {{scalar: dv01}}
+  IRDelta: {{scalar: dv01, bucketed: delta_ladder}}
   IRFwdRate: par_rate
   IRGammaParallel: gamma
   IRTheta: {theta_fn}
   YearFraction: year_fraction
   CashPaidToDate: cash_paid_to_date
+  IRDiscountDeltaParallel: discount_delta
+  IRGamma: {{bucketed: gamma_ladder}}
+  IRVega: {{scalar: zero_per_bp, bucketed: vega_cube}}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif
+  PnlExplain: pnl_explain
 """
 
 SLOPE = 0.001
@@ -201,33 +246,58 @@ def _sloped_session(tmp_path, suffix, theta_fn="theta"):
 # ============================================================================================ 5.1: toy definitions and plumbing
 
 
+# T-GAMMA-1 known answers (ATM payer, 2024-01-03, chain-rule gamma): owner B's values when tr.gamma
+# gained the chain term; the no-chain-term formula gave -0.03613 / -0.73785 / -4.13576
+T_GAMMA_1_ATM_PAYER = {"2y": -0.05437, "10y": -0.81656, "30y": -4.30509}
+
+
 @pytest.mark.parametrize("tenor", ["2y", "10y", "30y"])
 def test_t_gamma_1_matches_independent_second_difference_atm_payer_and_receiver(tenor):
-    """T-GAMMA-1: an independently-written second difference (h=1bp) agrees with tr.gamma to 1e-9
-    relative, for both directions; payer < 0; receiver = -payer."""
+    """T-GAMMA-1: an independently-written chain-rule second derivative (h=1bp zero-rate bumps, n =
+    npv, p = par in bp): G = [n+ + n- - 2n0 - ((n+ - n-)/(p+ - p-))(p+ + p- - 2p0)] / ((p+ - p-)/2)^2,
+    agrees with tr.gamma to 1e-9 relative, for both directions; payer < 0; receiver = -payer.
+    Non-vacuity: the formula without the chain term and the half gamma d(pv01)/dpar each miss tr.gamma
+    by a clear margin, so neither could pass this test.
+    Mutation: drop the chain term in tr.gamma -> the 1e-9 match and the known answer fail."""
     market = tr.market(date(2024, 1, 3), "USD")
     payer = _build_trade(market, "Pay", tenor=tenor)
     receiver = _build_trade(market, "Receive", tenor=tenor)
+    h = 1e-4
+    up = dataclasses.replace(market, zero_rate=market.zero_rate + h)
+    down = dataclasses.replace(market, zero_rate=market.zero_rate - h)
 
-    def independent_gamma(trade, h=1e-4):
-        up = dataclasses.replace(market, zero_rate=market.zero_rate + h)
-        down = dataclasses.replace(market, zero_rate=market.zero_rate - h)
-        npv_up, npv_down, npv_mid = tr.npv(up, trade), tr.npv(down, trade), tr.npv(market, trade)
-        par_up, par_down = tr.par_rate(up, trade), tr.par_rate(down, trade)
-        return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+    def points(trade):
+        n = (tr.npv(up, trade), tr.npv(down, trade), tr.npv(market, trade))
+        p = (tr.par_rate(up, trade), tr.par_rate(down, trade), tr.par_rate(market, trade))
+        return n, p
+
+    def independent_gamma(trade):
+        (n_up, n_down, n_mid), (p_up, p_down, p_mid) = points(trade)
+        slope = (n_up - n_down) / (p_up - p_down)
+        return (n_up + n_down - 2.0 * n_mid - slope * (p_up + p_down - 2.0 * p_mid)) / ((p_up - p_down) / 2.0) ** 2
+
+    def no_chain_term(trade):
+        (n_up, n_down, n_mid), (p_up, p_down, _p_mid) = points(trade)
+        return (n_up + n_down - 2.0 * n_mid) / ((p_up - p_down) / 2.0) ** 2
+
+    def half_gamma(trade):
+        return (tr.pv01(up, trade) - tr.pv01(down, trade)) / (tr.par_rate(up, trade) - tr.par_rate(down, trade))
 
     g_payer, g_receiver = tr.gamma(market, payer), tr.gamma(market, receiver)
     assert g_payer == pytest.approx(independent_gamma(payer), rel=1e-9)
     assert g_receiver == pytest.approx(independent_gamma(receiver), rel=1e-9)
+    assert g_payer == pytest.approx(T_GAMMA_1_ATM_PAYER[tenor], rel=2e-4)
     assert g_payer < 0
     assert g_receiver == pytest.approx(-g_payer, rel=1e-9)
+    assert abs(no_chain_term(payer) / g_payer - 1.0) > 0.02   # 4% at 30y, 10% at 10y, 34% at 2y
+    assert abs(half_gamma(payer) / g_payer - 1.0) > 0.4      # ~0.5
 
 
 def test_t_gamma_2_half_gamma_trap_documented_at_30y():
-    """T-GAMMA-2 (documents the trap; no mutation -- it IS the trap): docs/v2/DECISIONS_LOG.md
-    2026-09-28 (T1-A) found the ratio is tenor-dependent and misses the [0.45, 0.55] band at 10y
-    (the plan's implicit choice via every other example); 30y sits comfortably inside it. Re-verified
-    here independently of that entry's own numbers."""
+    """T-GAMMA-2 (documents the trap; no mutation -- it IS the trap): d(pv01)/dpar is half the gamma.
+    docs/v2/DECISIONS_LOG.md 2026-09-28 (T1-A) found the ratio tenor-dependent against the old
+    no-chain-term tr.gamma; against the chain-rule tr.gamma it is 0.5 at the money at every tenor
+    (DECISIONS_LOG 2026-10-01). Re-verified here independently of those entries' numbers."""
     market = tr.market(date(2024, 1, 3), "USD")
     trade = _build_trade(market, "Pay", tenor="30y")
     h = 1e-4
@@ -243,13 +313,13 @@ def test_t_gamma_2_half_gamma_trap_documented_at_30y():
 
 def test_t_gamma_3_taylor_order_on_an_instant_shock():
     """T-GAMMA-3: ATM 10y, same-date synthetic shocks of 25/50/100bp. With-gamma residual <= 10% of
-    delta-only residual at every size (the plan's own bound, holds). The plan's further claim
-    ("doubling Delta multiplies the with-gamma residual by 6-10x, third order") does NOT hold on
-    this closed form -- docs/v2/DECISIONS_LOG.md 2026-09-29 diagnoses why (Gamma has a genuine,
-    non-negligible second-order chain-rule leftover, so the residual scales roughly with Delta^2,
-    not Delta^3) and calibrates the doubling window to [2.5, 5.0], which still catches the named
-    mutation (half gamma) -- see that entry for the mutation-check numbers.
-    Mutation: use half gamma -> the 10% bound fails.
+    delta-only residual at every size (the plan's own bound), and doubling the shock multiplies the
+    with-gamma residual by 6-10x (third order: the plan's own window). docs/v2/DECISIONS_LOG.md
+    2026-09-29 had lowered the window to [2.5, 5.0] because the no-chain-term tr.gamma left a
+    second-order error; with the chain-rule tr.gamma the doubling is ~7.97 / ~7.93 (DECISIONS_LOG
+    2026-10-01 records the window restored).
+    Mutation: use half gamma -> the 10% bound fails; drop the chain term in tr.gamma -> the 6-10x
+    window fails (~3.5x).
     """
     market = tr.market(date(2024, 1, 3), "USD")
     trade = _build_trade(market, "Pay", tenor="10y")
@@ -272,8 +342,8 @@ def test_t_gamma_3_taylor_order_on_an_instant_shock():
 
     doubling_25_to_50 = abs(with_gamma_residuals[1] / with_gamma_residuals[0])
     doubling_50_to_100 = abs(with_gamma_residuals[2] / with_gamma_residuals[1])
-    assert 2.5 <= doubling_25_to_50 <= 5.0
-    assert 2.5 <= doubling_50_to_100 <= 5.0
+    assert 6.0 <= doubling_25_to_50 <= 10.0
+    assert 6.0 <= doubling_50_to_100 <= 10.0
 
 
 def test_t_theta_1_frozen_off_market_theta_matches_uniform_df_scaling(monkeypatch):
@@ -417,16 +487,55 @@ def test_rate_unit_for_reads_the_configs_declared_unit_and_falls_back_to_bp():
     assert swap_pnl.rate_unit_for(load_asset(TOY_USD)) == "bp"
 
 
-def test_t_missing_toy_eur_has_no_gamma_or_theta_mapping():
-    """T-MISSING: toy_eur_irs.yaml maps only npv/dv01/par_rate. The full definition (gamma=True,
-    carry=True by default) raises a clean ConfigError naming the MISSING measure -- `cash=False`
-    here so the error is actually about the definition's own gamma/carry measures
-    (IRGammaParallel/IRTheta/YearFraction), not a red herring from CashPaidToDate (also unmapped on
-    toy_eur, and evaluated first if requested -- dict.fromkeys order, not the definition's fault);
-    gamma=False, carry=False (delta only, using the measures toy_eur DOES map) works."""
+_MINIMAL_IRSWAP = """schema_version: 1
+asset: toy_usd_irs_minimal
+description: Test-only minimal IRSwap (T-MISSING), never shipped.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+imports: |
+  import toylib.rates as tr
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois_minimal
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+functions:
+  npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+risk_measures:
+  Price: npv
+  IRDelta: dv01
+  IRFwdRate: par_rate
+"""
+
+
+def test_t_missing_a_minimal_irswap_config_without_gamma_or_theta_fails_to_load():
+    """T-MISSING: an IRSwap config mapping only npv/dv01/par_rate cannot exist any more
+    (IR_STRICT_CONTRACT R3-0): load_asset raises one ConfigError naming every gap -- gamma and theta
+    among them -- and declaring them under unsupported_measures does not rescue it. On toy_eur_irs
+    (the whole strict contract, but none of the swap recipe's custom IRTheta/YearFraction) the full
+    definition raises a clean ConfigError naming the missing custom measure -- `cash=False` so it is
+    about the definition's own measures, not CashPaidToDate; gamma=False, carry=False (delta only)
+    works."""
+    import yaml
+
+    raw = yaml.safe_load(_MINIMAL_IRSWAP)
+    with pytest.raises(ConfigError) as err:
+        load_asset(raw)
+    for name in ("IRGammaParallel", "Theta", "IRGamma (bucketed)"):
+        assert f"{name}" in str(err.value), name
+    assert "require a mapping for every contract measure" in str(err.value)
+    raw["unsupported_measures"] = {"IRGammaParallel": "no gamma call", "Theta": "no carry call"}
+    with pytest.raises(ConfigError, match="unsupported_measures declares IRGammaParallel"):
+        load_asset(raw)
+
     PricebtSession.use(assets=[TOY_EUR])
     swap = IRSwap(pay_or_receive="Pay", termination_date="10y", notional_currency="EUR", notional_amount=1_000_000, name="eur")
-    with pytest.raises(ConfigError, match=r"no mapping for risk measure (IRGammaParallel|IRTheta|YearFraction)"):
+    with pytest.raises(ConfigError, match=r"no mapping for risk measure (IRTheta|YearFraction)"):
         _run(swap, date(2024, 1, 2), date(2024, 2, 2), cash=False)
 
     swap_delta_only = swap.clone(name="eur_delta_only")

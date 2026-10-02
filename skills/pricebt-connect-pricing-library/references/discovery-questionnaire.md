@@ -84,10 +84,11 @@ for that, and use this table for the mechanics of each code:
 
 ## 9. Contract-driven capability discovery
 
-An `IRSwap`, `IRSwaption` or `Bond` config must, for **every** row of its class's measure contract,
-either map the measure to a function with an allowed unit or declare it under
-`unsupported_measures:` with a reason (DEV-I11). The contract is code, not prose. Print it for
-your instrument before you start:
+An `IRSwap` or `IRSwaption` config must **map every row** of its class's measure contract to a
+function with an allowed unit: declaring a contract measure is a load error (DEV-I11 amended,
+[`docs/v2/IR_STRICT_CONTRACT.md`](../../../docs/v2/IR_STRICT_CONTRACT.md)). A `Bond` config may
+instead declare a row under `unsupported_measures:` with a reason. The contract is code, not prose.
+Print it for your instrument before you start:
 
 ```powershell
 python -c "from pricebt.risk import contracts; [print(f'{r.measure:24} {r.kind:7} {r.forms}  {r.doc}') for r in contracts.contract_for('IRSwaption')]"
@@ -106,10 +107,12 @@ For each row, answer four questions **about your library**, with evidence:
 4. **How will you verify it?** Use a known answer, or an independent bump in your own library (the
    last column below).
 
-Declare a measure unsupported only when the library has no primitive to derive it from. That is
-honest: a request for a declared measure raises `UnsupportedMeasureError` with your reason. A fake
-`0.0` or a NaN is never acceptable in its place. The exceptions are the rows that are zero *by
-convention* (R2-8, marked "swaps and bonds 0.0" below), because a swap's or a bond's vega really is 0.
+For a swap or swaption there is no fourth answer: every row is derived from primitives you can name.
+Only a **Bond** may declare a measure unsupported, and only when the library has no primitive to
+derive it from; a request for it then raises `UnsupportedMeasureError` with your reason. A fake
+`0.0` or a NaN is never acceptable. The exceptions are the rows that are zero *by convention*
+(`contracts.ZERO_BY_CONVENTION`, R2-8, marked "swaps and bonds 0.0" below): a swap's vega really is
+0. The checker's `ir_fake_constant` FAILs a literal constant on any other swap or swaption row.
 
 | Measure (forms) | pricebt expects (unit, sign, convention) | Derive it from (template recipe) | Verify with |
 |---|---|---|---|
@@ -133,6 +136,14 @@ convention* (R2-8, marked "swaps and bonds 0.0" below), because a swap's or a bo
 | `ExpiryInYears` (s) | `max(final_or_expiry - t, 0).days / 365`, `decimal` (DEV-I17) | `years_to` over the resolved dates | needs no library call |
 | `Annuity` (s) | `ccy`, PV of 1.0 per annum on the fixed schedule (1e4 x the fixed-leg pv01) times the **signed notional**: pay-fixed > 0, receive-fixed < 0, bought swaption > 0, long bond > 0. A QuantLib-style `fixedLegBPS` has the opposite sign for a payer | `lib_annuity` (`-1e4 x fixedLegBPS`); else `-[PV(K+1bp) - PV(K-1bp)] / 2e-4` | an ATM swap's `IRDelta` equals `Annuity x 1e-4`, same sign |
 | `Cashflows` (frame) | the flows Price still includes and will drop, one row each; columns `payment_date, payment_amount, currency, payment_type`; `scale_columns: [payment_amount]`; empty for a total-return Price | `lib_cashflows` | the coupons equal what Price drops on each payment date |
+| `ParSpread` (s, swap, swaption) | the floating-leg spread making Price 0, rate unit, intensive, the same for both directions; one curve and matching schedules: `K - IRFwdRate` | `par_spread_bp` | equal for payer and receiver; 0 at the money |
+| `FairPremium` (s, swap, swaption) | `ccy`: `Price / DF(premium settlement)` (spot, or the swaption's premium payment date; no spot lag: Price) | `fair_premium`, from `lib_discount_factor` (+ `lib_premium_date`) | `FairPremium x DF(settlement) == Price` |
+| `ForwardPrice` (s, swap, swaption) | `ccy`: `Price / DF(expiry)` to the date `ExpiryInYears` counts to; Price on or after it | `forward_value`, from `lib_discount_factor` | `ForwardPrice x DF(expiry) == Price` |
+| `PremiumCents` (s, swap, swaption) | `Price / abs(notional_amount)` in the declared unit (`bp`: 1e4 x the ratio), intensive | the expression itself | the identity, exactly |
+| `LocalAnnuityInCents` (s, swap, swaption) | `Annuity / abs(notional_amount)`, `decimal`, holder-signed like Annuity (10y payer about +8.5) | the expression itself | the identity, exactly |
+| `CompoundedFixedRate` (s, swap, swaption) | the fixed rate (strike) as `(1 + K/f)^f - 1`, rate unit, intensive; an annual leg: K | `compounded_rate_bp`, from `lib_fixed_frequency` | within `[K, e^K - 1]`; constant over time |
+| `CRIFIRCurve` (frame, swap, swaption) | SIMM CRIF rows `RiskType, Qualifier, Bucket, Label1, Label2, Amount, AmountCurrency`, `Label1` a lower-case SIMM tenor, `scale_columns: [Amount]`; empty when dead | `crif_frame`, from the trade's key-rate ladder | `sum(Amount)` == the `IRDelta` ladder's sum |
+| `PnlExplain` (b, swap, swaption) | a buckets portfolio function reading `market_to`: rows by `mkt_type` (`IR`, `IR VOL`, `CROSSES`), both markets seen from the pricing date (no time passes) | `pnl_explain`, from `lib_at` (+ `lib_with_vols` for the vol row) | the rows sum to `Price` under `CloseMarket(date=...)` minus `Price` |
 | `ProbabilityOfExercise` (s, swaption) | 0..1 under the annuity measure, `decimal` | `lib_prob_exercise`, or the strike bump of PV / annuity | payer + receiver = 1 |
 | `LightningDV01` (s, bond) | the yield DV01, which is the bond's IRDelta scalar | map the same function as `IRDelta` | minus modified duration x dirty PV x 1e-4 |
 | `LightningOAS`, `ParSpread` (s, bond) | spreads in the declared rate unit | `lib_oas`, `lib_par_spread` | a bullet bond: OAS equals the Z-spread |
@@ -142,7 +153,8 @@ Record the answers in a worksheet before writing YAML, one line per row above:
 | Measure (form) | Native call or recipe | Library unit and sign | Conversion on the config line | Verified by | Status |
 |---|---|---|---|---|---|
 | e.g. `IRVega` (s) | `yourlib.risk(t, "VEGA_LN_1PCT")` | per 1% lognormal, holder view | pattern 18 | `vol_bump_vega` on a normal re-quote | mapped |
-| e.g. `IRGamma` (b) | none | none | none | none | declared: "yourlib bumps its curve only in parallel" |
+| e.g. `IRGamma` (b) | recipe: `diagonal_gamma_ladder` | n/a | none | finite per pillar, sum near the parallel gamma | mapped |
+| e.g. `IRGamma` (b), a Bond only | none | none | none | none | declared: "yourlib bumps the bond's curve only in parallel" |
 
 ## 10. Finite-difference controls (measure parameters)
 

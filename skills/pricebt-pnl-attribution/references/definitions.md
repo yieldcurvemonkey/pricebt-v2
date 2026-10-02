@@ -65,12 +65,13 @@ These are the contract semantics (IR_RISK_DESIGN R2-1 to R2-8, DEV-I12/I15/I17),
 
 Full recipes for every contract measure, with the capability worksheet, are in [`pricebt-risk-measures`](../../pricebt-risk-measures/SKILL.md) ([implementing-measures.md](../../pricebt-risk-measures/references/implementing-measures.md)) and `docs/v2/ASSET_CONFIG_GUIDE.md`. Reference implementations on a closed-form toy library: `tests/toylib/irrisk.py` (swap), `tests/toylib/swaption.py`, `tests/toylib/bond.py`, wired in `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`.
 
-### Declaring a measure unsupported, and what it costs attribution
+### Declaring a measure unsupported (Bond only), and what it costs attribution
 
-- **Honest use.** Your library genuinely cannot compute the measure: no vol model, so no vanna or volga; no cashflow table. Declare it under `unsupported_measures:` with the real reason.
+- **IRSwap and IRSwaption cannot declare.** Their configs map every contract measure or fail to load (`docs/v2/IR_STRICT_CONTRACT.md`), so a swap or swaption never makes a definition refuse by a declaration. What follows is about a Bond.
+- **Honest use.** Your bond library genuinely cannot compute the measure: no vol model, so no vanna or volga; no cashflow table. Declare it under `unsupported_measures:` with the real reason.
 - **Build the definition without that attribute**, for example `definition_for(session, vanna=False, volga=False)`. The missing term then lands in the residual; say so in the report.
 - **What happens if you do not.** A definition that still reads the measure fails at the first calc with `UnsupportedMeasureError`, naming the measure and your reason. `definition_for` refuses it earlier and lists every gap.
-- **Swaps and bonds in a book with vol attribution** must *map* the 0.0 convention (a `'0.0'` function with unit `ccy_per_bp`, `ccy_per_bp2` or the vol unit), not declare it. A risk of exactly 0 is skipped before its level is read, but every measure is still *priced* for every held instrument, and a declared-unsupported measure raises.
+- **Bonds in a book with vol attribution** must *map* the 0.0 convention (a swap always does) (a `'0.0'` function with unit `ccy_per_bp`, `ccy_per_bp2` or the vol unit), not declare it. A risk of exactly 0 is skipped before its level is read, but every measure is still *priced* for every held instrument, and a declared-unsupported measure raises.
 
 ## 4. The step semantics of `pnl_explain` (gs, ported verbatim)
 
@@ -108,11 +109,10 @@ Full recipes for every contract measure, with the capability worksheet, are in [
 
 ## 6. Swaps
 
-- **The in-flight swap definition.** The swap P&L-explain branch adds `swap_pnl_definition` in [`swap_pnl.py`](../../pricebt-strategy-recipes/scripts/swap_pnl.py) (merged; see `docs/v2/MERGE_NOTES_pnl_explain.md`). Its carry attribute is `IRTheta × YearFraction`, with a per-**year** `IRTheta`. Use it for configs written to it.
-- **The swap definition available today** is `ir_pnl_definition(vega=False, vanna=False, volga=False)`. It has the same three attributes as `bond_pnl_definition()`, and is what `definition_for` picks for a book with no swaption.
-  - It needs `IRGammaParallel`, `Theta` and `ExpiryInYears` mapped. `tests/assets/toy_usd_irs_full.yaml` maps them.
-  - `tests/assets/toy_usd_irs.yaml` and the shipped ARBS config map `IRGammaParallel` (the in-flight gamma, without the chain-rule term) but declare `Theta` and `ExpiryInYears`, so they are still refused.
-- **Never map `Theta` to the in-flight per-year `IRTheta` function.** `IRTheta` = 365 × `Theta`.
+- **The swap recipe's definition.** `swap_pnl_definition` in [`swap_pnl.py`](../../pricebt-strategy-recipes/scripts/swap_pnl.py) (merged from the swap P&L-explain branch; see `docs/v2/MERGE_NOTES_pnl_explain.md`). Its carry attribute is `IRTheta × YearFraction`, with a per-**year** `IRTheta`. Use it for configs that map those custom names (`tests/assets/toy_usd_irs.yaml` does; `tests/assets/toy_eur_irs.yaml` does not, so this definition refuses it).
+- **The contract's swap definition** is `ir_pnl_definition(vega=False, vanna=False, volga=False)`. It has the same three attributes as `bond_pnl_definition()`, and is what `definition_for` picks for a book with no swaption.
+  - It needs `IRGammaParallel`, `Theta` and `ExpiryInYears`. Every IRSwap config that loads maps them (the strict contract, `docs/v2/IR_STRICT_CONTRACT.md`), so it never refuses a swap for a gap: `tests/assets/toy_usd_irs.yaml`, `tests/assets/toy_usd_irs_full.yaml` and the ARBS config all qualify.
+- **Never map `Theta` to the per-year `IRTheta` function.** `IRTheta` = 365 × `Theta`.
 - **The shipped swap configs map the `IRDelta` scalar to an annuity pv01.** That is exact only at the money; off-market it leaves the residual `N·(F−K)·ΔA` ([diagnosing-residuals.md](diagnosing-residuals.md) §1).
 
 ## 7. Custom attributes

@@ -25,6 +25,11 @@ whatever the [discovery questionnaire](discovery-questionnaire.md) found. Write 
 | `strike` kwarg and resolved strike (swaption) | **decimal**; `'A-50'` / `'ATM+25'` offsets in bp |
 | `buy_sell` (swaption, bond) | folded by `resolve` into the signed notional or face (bought > 0) |
 | bond PV | holder-signed **dirty** PV in ccy for the resolved face (dirty price / 100 x face) |
+| `ParSpread` (swap, swaption) | the floating-leg spread making PV 0, rate unit (`bp`), **the same** for payer and receiver: `K - IRFwdRate` on one curve with matching schedules |
+| `FairPremium` / `ForwardPrice` | `ccy`: PV / DF(premium settlement) and PV / DF(the date `ExpiryInYears` counts to); never PV x DF |
+| `PremiumCents` / `LocalAnnuityInCents` | PV / abs(notional) x 1e4 in `bp` (1 cent per 100 = 1bp of notional) / Annuity / abs(notional) in `decimal`; intensive |
+| `CompoundedFixedRate` | `(1 + K/f)^f - 1` for f fixed payments a year, rate unit; annual: K |
+| `CRIFIRCurve` `Label1` | SIMM tenor in **lower case** (`"10y"`, not `"10Y"`), `RiskType` `"Risk_IRCurve"`, `Qualifier` the currency, `Bucket` a string (`"1"`) |
 
 ## Vendor convention to pricebt convention
 
@@ -55,6 +60,9 @@ whatever the [discovery questionnaire](discovery-questionnaire.md) found. Write 
 | tenor `end` relative to the pricing date | absolute date | `resolve` calls the library's maturity helper at the trade date | |
 | strike `None` = at par | decimal strike | `resolve` prices the par rate once | |
 | PV in a reporting currency | asset currency | set `currency:` to what the function returns, or convert | |
+| cashflow amount > 0 plus a direction | holder-signed `payment_amount` | `a if direction == "RECEIVE" else -a` (whose direction: the holder's or the fixed leg's?) | |
+| a what-if "horizon" that keeps zero rates | one day with forwards fixed (`Theta`) | ask for the forward-held mode (Meridian: `hold="FORWARDS"`), or divide every DF by DF(t+1d) | |
+| premium in percent of notional | `PremiumCents` in bp | `x * 100` | 1.5% → 150 |
 
 ## Vols, higher-order greeks, theta and bonds
 

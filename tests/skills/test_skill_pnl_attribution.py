@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT / "skills" / "pricebt-pnl-attribution" / "scripts"))
 import attribution  # noqa: E402
 
 SWAPTION, BOND = ASSETS / "toy_usd_swaption.yaml", ASSETS / "toy_usd_bond.yaml"
-SWAP_FULL, SWAP_DECLARED = ASSETS / "toy_usd_irs_full.yaml", ASSETS / "toy_usd_irs.yaml"
+SWAP_FULL = ASSETS / "toy_usd_irs_full.yaml"
 SIX = ["PNL_delta", "PNL_gamma", "VegaPnL", "PNL_vanna", "PNL_volga", "PNL_theta"]
 THREE = ["PNL_delta", "PNL_gamma", "PNL_theta"]
 SHORT = date(2024, 2, 29)
@@ -36,6 +36,18 @@ PCT_LEVELS = {
 
 def _names(definition):
     return [a.attribute_name for a in definition.attributes]
+
+
+def _bond_declaring_theta() -> dict:
+    """toy_usd_bond with Theta declared instead of mapped: only a Bond may declare (an IRSwap or
+    IRSwaption config with a gap does not load, IR_STRICT_CONTRACT R3-0)."""
+    from pricebt.assets import yamlio
+
+    raw = yamlio.load_file(BOND)
+    raw["asset"] = "toy_usd_bond_declared"
+    del raw["risk_measures"]["Theta"]
+    raw["unsupported_measures"] = {"Theta": "this bond library has no carry call"}
+    return raw
 
 
 def test_definition_for_picks_the_kind_and_reads_units_from_the_configs():
@@ -58,10 +70,10 @@ def test_definition_for_picks_the_kind_and_reads_units_from_the_configs():
 
 
 def test_definition_for_refuses_a_book_it_cannot_attribute():
-    # toy_usd_irs declares theta and vol unsupported: every held asset must serve every measure
-    with pytest.raises(ValueError, match=r"toy_usd_irs: Theta declared unsupported") as err:
-        attribution.definition_for([SWAP_DECLARED, BOND])
-    assert "toy_usd_irs: Theta declared unsupported" in str(err.value) and "toy_usd_bond" not in str(err.value)
+    # a bond declaring Theta unsupported: every held asset must serve every measure
+    with pytest.raises(ValueError, match=r"toy_usd_bond_declared: Theta declared unsupported") as err:
+        attribution.definition_for([_bond_declaring_theta(), SWAP_FULL])
+    assert "this bond library has no carry call" in str(err.value) and "toy_usd_irs_full" not in str(err.value)
     # one book, two level units: one PnlDefinition cannot scale both
     pct = yaml.safe_load(SWAPTION.read_text(encoding="utf-8"))
     pct["asset"] = "toy_usd_swaption_pct"
@@ -190,12 +202,14 @@ def test_a_nan_anywhere_fails_and_voids_the_ratios():
     assert attribution.grade(stats) == "FAIL"
 
 
-def test_cli_definition_and_demo(capsys):
+def test_cli_definition_and_demo(capsys, tmp_path):
     frame = attribution.main(["--definition", str(SWAP_FULL), str(BOND)])
     assert list(frame["attribute"]) == THREE and frame.set_index("attribute").at["PNL_theta", "k (scaling_factor)"] == -365.0
     capsys.readouterr()
     with pytest.raises(SystemExit) as stop:  # a book it cannot attribute: the gap list, no traceback
-        attribution.main(["--definition", str(SWAP_DECLARED)])
+        declared = tmp_path / "bond_declared.yaml"
+        declared.write_text(yaml.safe_dump(_bond_declaring_theta(), sort_keys=False), encoding="utf-8")
+        attribution.main(["--definition", str(declared)])
     assert stop.value.code == 1
     err = capsys.readouterr().err
     assert err.startswith("cannot attribute this book: every held asset must map") and "Theta declared unsupported" in err

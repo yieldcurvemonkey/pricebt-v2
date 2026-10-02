@@ -25,19 +25,26 @@ D, T = date(2024, 3, 4), date(2024, 3, 11)
 REASON = "test: not computed"
 
 
-# ------------------------------------------------------------------ load time: an IRSwap config (it has a contract)
-def _swap_cfg(functions=None, risk_measures=None, drop=(), extra_unsupported=None, **top):
-    """Price mapped, every other contract measure declared except those in `drop` (mapped by the caller)."""
-    unsupported = {r.measure: REASON for r in contracts.contract_for("IRSwap") if r.measure != "Price" and r.measure not in drop}
+# ------------------------------------------------------------------ load time: a Bond config (map-or-declare) and an IRSwap (strict)
+def _bond_cfg(functions=None, risk_measures=None, drop=(), extra_unsupported=None, **top):
+    """A Bond (the class that may still declare, IR_STRICT_CONTRACT R3-0): Price mapped, every other
+    contract measure declared except those in `drop` (mapped by the caller)."""
+    unsupported = {r.measure: REASON for r in contracts.contract_for("Bond") if r.measure != "Price" and r.measure not in drop}
     unsupported.update(extra_unsupported or {})
     cfg = {
-        "schema_version": 1, "asset": "swap_asset", "instrument": "IRSwap", "currency": "USD", "market": {"expr": "1"},
+        "schema_version": 1, "asset": "bond_asset", "instrument": "Bond", "currency": "USD", "market": {"expr": "1"},
         "functions": {"npv": {"expr": "0.0", "unit": "ccy"}, **(functions or {})},
         "risk_measures": {"Price": "npv", **(risk_measures or {})},
         "unsupported_measures": unsupported,
     }
     cfg.update(top)
     return cfg
+
+
+def _swap_cfg(unsupported=None):
+    """An IRSwap (strict) mapping only Price: every other contract measure is a gap."""
+    return {"schema_version": 1, "asset": "swap_asset", "instrument": "IRSwap", "currency": "USD", "market": {"expr": "1"},
+            "functions": {"npv": {"expr": "0.0", "unit": "ccy"}}, "risk_measures": {"Price": "npv"}, "unsupported_measures": unsupported or {}}
 
 
 def _load_error(cfg) -> str:
@@ -56,32 +63,41 @@ def _load_warnings(cfg) -> str:
 _FRAME = {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_columns": ["payment_amount"]}
 
 LOAD = {
-    "measure-contract problem(s) for instrument": lambda: _load_error(_swap_cfg(unsupported_measures={})),
-    "neither mapped nor declared under unsupported_measures": lambda: _load_error(_swap_cfg(unsupported_measures={})),
-    "Map each missing measure, or declare what the library cannot compute": lambda: _load_error(_swap_cfg(unsupported_measures={})),
-    "level must be intensive (set scale_with_quantity: false)": lambda: _load_error(_swap_cfg(
+    "measure-contract problem(s) for instrument": lambda: _load_error(_bond_cfg(unsupported_measures={})),
+    "neither mapped nor declared under unsupported_measures": lambda: _load_error(_bond_cfg(unsupported_measures={})),
+    "Map each missing measure, or declare what the library cannot compute": lambda: _load_error(_bond_cfg(unsupported_measures={})),
+    "level must be intensive (set scale_with_quantity: false)": lambda: _load_error(_bond_cfg(
         {"t": {"expr": "1.0", "unit": "number"}}, {"ExpiryInYears": "t"}, drop=("ExpiryInYears",))),
-    "this measure is a table: map a functions: entry with": lambda: _load_error(_swap_cfg(
+    "this measure is a table: map a functions: entry with": lambda: _load_error(_bond_cfg(
         {"cf": {"expr": "0.0", "unit": "ccy"}}, {"Cashflows": "cf"}, drop=("Cashflows",))),
-    "returns a frame; this measure needs a number": lambda: _load_error(_swap_cfg(
+    "returns a frame; this measure needs a number": lambda: _load_error(_bond_cfg(
         {"f": _FRAME}, {"IRDelta": {"scalar": "f"}}, drop=("IRDelta",), extra_unsupported={"IRDelta": {"bucketed": REASON}})),
-    "must include ['payment_amount']": lambda: _load_error(_swap_cfg(
+    "must include ['payment_amount']": lambda: _load_error(_bond_cfg(
         {"cf": dict(_FRAME, scale_columns=["notional"])}, {"Cashflows": "cf"}, drop=("Cashflows",))),
-    "its amounts must scale with the position": lambda: _load_error(_swap_cfg(
+    "its amounts must scale with the position": lambda: _load_error(_bond_cfg(
         {"cf": dict(_FRAME, scale_with_quantity=False)}, {"Cashflows": "cf"}, drop=("Cashflows",))),
-    "must be a non-empty reason string (why the library cannot compute it)": lambda: _load_error(_swap_cfg(extra_unsupported={"IRVega": " "})),
-    "must give a reason, or at least one of": lambda: _load_error(_swap_cfg(extra_unsupported={"IRVega": {}})),
-    "is not a class exported by pricebt.instrument": lambda: _load_error(_swap_cfg(instrument="IRSwapp")),
-    "is allowed only with returns: frame": lambda: _load_error(_swap_cfg({"x": {"expr": "0.0", "unit": "ccy", "scale_columns": ["a"]}})),
-    "must list the columns that scale with quantity": lambda: _load_error(_swap_cfg({"x": {"expr": "[]", "unit": "ccy", "returns": "frame"}})),
-    "returns 'frame' is not one of ['buckets', 'scalar']": lambda: _load_error(_swap_cfg(
+    "must be a non-empty reason string (why the library cannot compute it)": lambda: _load_error(_bond_cfg(extra_unsupported={"IRVega": " "})),
+    "must give a reason, or at least one of": lambda: _load_error(_bond_cfg(extra_unsupported={"IRVega": {}})),
+    "is not a class exported by pricebt.instrument": lambda: _load_error(_bond_cfg(instrument="IRSwapp")),
+    "is allowed only with returns: frame": lambda: _load_error(_bond_cfg({"x": {"expr": "0.0", "unit": "ccy", "scale_columns": ["a"]}})),
+    "must list the columns that scale with quantity": lambda: _load_error(_bond_cfg({"x": {"expr": "[]", "unit": "ccy", "returns": "frame"}})),
+    "returns 'frame' is not one of ['buckets', 'scalar']": lambda: _load_error(_bond_cfg(
         portfolio_functions={"pf": {"expr": "[]", "unit": "ccy", "returns": "frame"}})),
+    # IRSwap/IRSwaption (strict): only a mapping satisfies a row, a declaration is itself an error
+    "not mapped (IRSwap/IRSwaption require a mapping for every contract measure)": lambda: _load_error(_swap_cfg()),
+    "Map each missing measure (merge into functions:, portfolio_functions: and risk_measures:": lambda: _load_error(_swap_cfg()),
+    "IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them": lambda: _load_error(
+        _swap_cfg({"Theta": REASON})),
+    "(a preset or fallback of IRDelta)": lambda: _load_error(_swap_cfg({"IRDeltaParallel": REASON})),
+    "syntax error at line 1: invalid syntax (in '... TODO')": lambda: _load_error({  # a mapping-skeleton stub pasted unchanged
+        "schema_version": 1, "asset": "stub", "instrument": "ConfigInstrument", "currency": "USD", "market": {"expr": "1"},
+        "functions": {"npv": {"expr": contracts.SKELETON_EXPR, "unit": "ccy"}}, "risk_measures": {"Price": "npv"}}),
     # warnings: the config loads
-    "the mapping is used -- remove or narrow the stale declaration": lambda: _load_warnings(_swap_cfg(
+    "the mapping is used -- remove or narrow the stale declaration": lambda: _load_warnings(_bond_cfg(
         {"zero": {"expr": "0.0", "unit": "ccy_per_bp"}}, {"IRVega": {"scalar": "zero"}})),
-    "is a preset or fallback of IRDelta; declare IRDelta instead": lambda: _load_warnings(_swap_cfg(extra_unsupported={"IRDeltaParallel": REASON})),
-    "contract row has only": lambda: _load_warnings(_swap_cfg(extra_unsupported={"IRVanna": {"scalar": REASON, "bucketed": REASON}})),
-    "nor a pricebt.risk measure": lambda: _load_warnings(_swap_cfg(extra_unsupported={"IRVegaa": REASON})),
+    "is a preset or fallback of IRDelta; declare IRDelta instead": lambda: _load_warnings(_bond_cfg(extra_unsupported={"IRDeltaParallel": REASON})),
+    "contract row has only": lambda: _load_warnings(_bond_cfg(extra_unsupported={"IRVanna": {"scalar": REASON, "bucketed": REASON}})),
+    "nor a pricebt.risk measure": lambda: _load_warnings(_bond_cfg(extra_unsupported={"IRVegaa": REASON})),
 }
 
 
@@ -164,17 +180,24 @@ def _delta_attribute(name="d"):
     return PnlAttribute(name, IRDeltaParallel, IRFwdRate, 1.0)
 
 
-def _definition_for_a_pv_only_swap():
+def _definition_for_a_bond_declaring_theta():
+    """Only a Bond can still declare a measure the definition reads (a swap config with a gap does not load)."""
     import sys
+
+    from pricebt.assets import yamlio
 
     sys.path.insert(0, str(ROOT / "skills" / "pricebt-pnl-attribution" / "scripts"))
     import attribution
 
-    return attribution.definition_for([ROOT / "tests" / "assets" / "toy_usd_irs.yaml"])
+    raw = yamlio.load_file(ROOT / "tests" / "assets" / "toy_usd_bond.yaml")
+    del raw["risk_measures"]["Theta"]
+    raw["unsupported_measures"] = {"Theta": REASON}
+    return attribution.definition_for([raw])
 
 
 P_AND_L = {
-    "every held asset must map every measure the definition reads": lambda: _value_error(_definition_for_a_pv_only_swap),
+    "every held asset must map every measure the definition reads": lambda: _value_error(_definition_for_a_bond_declaring_theta),
+    "a Bond's declaration does not count": lambda: _value_error(_definition_for_a_bond_declaring_theta),
     "Cannot aggregate results with different units on": lambda: _value_error(lambda: _explain_table(["USD", "EUR"], [_delta_attribute()])),
     "PnlAttribute names must be unique": lambda: _value_error(lambda: _explain_table(["USD"], [_delta_attribute(), _delta_attribute()])),
     "rate_unit must be one of": lambda: _value_error(lambda: ir_pnl_definition(rate_unit="bps")),

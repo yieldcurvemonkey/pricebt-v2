@@ -48,7 +48,8 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    business-day schedule, so `GenericDataSource` never has to fill gaps.
 4. **Instruments need asset configs.** Each instrument class and currency must match exactly one
    registered asset (`match:` in the config). `IRSwap`, `IRSwaption` and `Bond` configs also carry
-   the **measure contract**: every gs IR measure is mapped or declared unsupported with a reason. No
+   the **measure contract**: every gs IR measure is mapped (IRSwap, IRSwaption: always; a Bond may
+   declare one unsupported with a reason). No
    config yet? Go to [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md);
    its three templates cover these classes. 040303 trades an EUR swaption, so it needs an EUR
    swaption config.
@@ -58,8 +59,9 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    cross-leg references such as `"=[foo].strike + 5bp"` (030010), a non-zero `premium`, and
    `notional_amount='100k'` all raise: replace them with numbers, or implement them in `resolve`.
 6. **Risk measures map 1:1.** `pricebt.risk` has every gs measure and preset under the same name.
-   A request for a measure the config declares unsupported raises `UnsupportedMeasureError` with the
-   config's reason, where gs would return an `UnsupportedValue`. `aggregation_level` Type, Asset or
+   A request for a measure a Bond config declares unsupported raises `UnsupportedMeasureError` with
+   the config's reason, where gs would return an `UnsupportedValue` (a swap or swaption config maps
+   every contract measure). `aggregation_level` Type, Asset or
    Class returns a float. A bare finite-difference measure (`IRDelta`, `IRVega`) returns the
    bucketed frame. `IRVanna` and `IRVolga` are finite-difference measures too, so request
    `IRVanna(aggregation_level='Type')` (DEV-I9). `bump_size`, `finite_difference_method`,
@@ -117,8 +119,9 @@ ones users notice:
 - **The `IRDelta` scalar is the own-rate delta** (swap par rate, swaption forward, bond yield;
   DEV-I12), and `Theta` is per calendar day (DEV-I15). `ExpiryInYears` is defined for swaps and
   bonds too (DEV-I17).
-- **A swap's vega is `0.0`**, where gs returns an empty frame (R2-8). An inapplicable measure the
-  config declares raises `UnsupportedMeasureError`, where gs returns an `UnsupportedValue` (DEV-I11).
+- **A swap's vega is `0.0`**, where gs returns an empty frame (R2-8). An inapplicable measure a Bond
+  config declares raises `UnsupportedMeasureError`, where gs returns an `UnsupportedValue` (DEV-I11;
+  IRSwap and IRSwaption configs cannot declare).
 - **`to_frame` labels each leaf from its own path** (DEV-R6). Where gs mislabels a level that mixes
   leaves and sub-portfolios (030009), pricebt differs from gs's printed output and is right.
 - **Table measures** (`Cashflows`) are left out of `result_summary`, `risk_summary` and

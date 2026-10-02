@@ -96,7 +96,10 @@ def _names(measure) -> List[str]:
 
 
 def _why_not(cfg, measure) -> Optional[str]:
-    """None if `cfg` serves `measure`'s scalar form, else why not (its declared reason if any)."""
+    """None if `cfg` serves `measure`'s scalar form, else why not (its declared reason if any). An
+    IRSwap/IRSwaption config maps every contract measure or does not load (IR_STRICT_CONTRACT R3-0),
+    so a "declared unsupported" answer comes from a Bond, and a "not mapped" one from a measure
+    outside the contracts (e.g. a custom name) or a class without one."""
     names = _names(measure)
     if any(_mapped_function(cfg, n) is not None for n in names):
         return None
@@ -131,8 +134,9 @@ def definition_for(source=None, kind: str = "auto", assets: Optional[Iterable[st
     Keyword flags (delta=, gamma=, vega=, vanna=, volga=, theta=) override the kind's.
 
     Raises ValueError when an asset does not serve a measure the definition reads (every held
-    asset must answer every measure: pnl_explain calcs them all for every instrument), or when a
-    level is declared in different units on different assets."""
+    asset must answer every measure: pnl_explain calcs them all for every instrument; only a Bond
+    can still declare one unsupported, a swap or swaption config with a gap does not load), or
+    when a level is declared in different units on different assets."""
     from pricebt.backtests.backtest_objects import ir_pnl_definition
 
     if kind not in (*_KIND_FLAGS, "auto"):
@@ -146,7 +150,7 @@ def definition_for(source=None, kind: str = "auto", assets: Optional[Iterable[st
     if problems:
         raise ValueError(
             "every held asset must map every measure the definition reads (swaps and bonds map the vol"
-            " greeks and vol levels to 0.0, IR_RISK_DESIGN R2-8):\n  " + "\n  ".join(problems)
+            " greeks and vol levels to 0.0, IR_RISK_DESIGN R2-8; a Bond's declaration does not count):\n  " + "\n  ".join(problems)
         )
     uses = lambda *names: any(wanted.get(n, True) for n in names)  # noqa: E731
     rate_unit = _level_unit(configs, "IRFwdRate") if uses("delta", "gamma", "vanna") else "bp"
@@ -340,7 +344,7 @@ def main(argv=None):
     if args.definition:
         try:
             definition = definition_for(args.definition, kind=args.kind)
-        except ValueError as exc:  # the gap list: every unmapped / declared measure, or mixed units
+        except ValueError as exc:  # the gap list: every unmapped / declared (Bond) measure, or mixed units
             print(f"cannot attribute this book: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         table = describe(definition)

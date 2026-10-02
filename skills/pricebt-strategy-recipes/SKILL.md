@@ -17,7 +17,7 @@ A spec (`skills/pricebt-strategy-intake/templates/strategy_spec.yaml`) says *wha
 ## Inputs
 
 - A spec: a YAML path or a dict. `build`/`run` apply the template defaults and validate it first (via `skills/pricebt-strategy-intake/scripts/spec.py`), and never mutate the dict you pass, so a robustness script can `copy.deepcopy(spec)`, change `costs.level`, `signal.params`, `signal.lookback`, `signal.lag` or `dates.end`, and rerun.
-- The asset configs the spec lists (paths from the repository root; e.g. `tests/assets/toy_usd_irs.yaml`). For swaptions and bonds each config must answer the measures its recipe needs (the catalogue lists them per recipe); the load-time measure contract guarantees every one is mapped or declared unsupported, not that it is right: verify with [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md) first.
+- The asset configs the spec lists (paths from the repository root; e.g. `tests/assets/toy_usd_irs.yaml`). For swaptions and bonds each config must answer the measures its recipe needs (the catalogue lists them per recipe); the load-time measure contract guarantees every one is mapped (a Bond may declare one unsupported), not that it is right: verify with [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md) first.
 - Ready specs for swaptions and bonds, run by the tests on the toy assets: `skills/pricebt-strategy-recipes/example/` (`toy_swaption_expiry_roll.yaml`, `toy_short_straddle_delta_hedged.yaml`, `toy_bond_carry_roll.yaml`, `toy_bond_asset_swap.yaml`). Copy one and point `assets:` at your configs.
 
 ## Outputs
@@ -192,5 +192,5 @@ missing measure, or pass `gamma=False, carry=False` for delta-only attribution o
 - [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md): report it, including `describe(built)` and the notes.
 - [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md): prove the swaption / bond configs a recipe relies on (signs, units, expiry behaviour) before trusting a run.
 - [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): decompose a swaption or bond book's P&L (`pnl_explain_table`) into delta, gamma, vega, vanna, volga, theta and coupons.
-- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): how your library produces each measure a recipe relies on (own-rate delta, chain-rule gamma, vega, per-day theta, Cashflows) and when to declare one unsupported.
+- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): how your library produces each measure a recipe relies on (own-rate delta, chain-rule gamma, vega, per-day theta, Cashflows) and why a swap or swaption must map every one (only a Bond may declare).
 - [`pricebt-port-gs-notebook`](../pricebt-port-gs-notebook/SKILL.md): when you start from an existing gs notebook instead of a spec.

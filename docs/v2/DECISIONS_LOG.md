@@ -1291,3 +1291,38 @@ named mutations), `tests/test_unsupported_measures.py` (declaration cases now on
 **Alternatives considered:** keeping declarations with a stricter reason check (rejected: the user
 asked for the measures to be required, and a declared swap breaks a mixed book's P&L definition);
 a placeholder `'...'` stub (rejected: it compiles as `Ellipsis`, so a pasted skeleton would load).
+
+## 2026-10-01 — T-GAMMA-3's [2.5, 5.0] window is obsolete: back to the plan's 6–10× (owner D, skills)
+
+The 2026-09-29 T1-B entry lowered T-GAMMA-3's doubling window to `[2.5, 5.0]` because the with-gamma
+residual scaled like `Δpar²`. That was the old `tr.gamma`'s missing chain-rule term
+`−Δ·(p₊ + p₋ − 2p₀)` showing through, not a property of the closed form. With `tr.gamma` now the
+chain-rule second derivative (IR_STRICT_CONTRACT R3-3 B, the formula of `toylib.irrisk.ir_gamma`)
+the doubling factors are 7.967 and 7.934: third order, inside the plan's own `[6, 10]`, which
+`tests/skills/test_skill_swap_pnl.py::test_t_gamma_3_taylor_order_on_an_instant_shock` asserts
+again. T-GAMMA-1 checks the chain-rule formula (with the no-chain-term and half-gamma variants
+asserted distinguishable), and T-GAMMA-2's half-gamma ratio is now 0.5 at the money at every tenor.
+
+## 2026-10-01 — ARBS dead-trade par is continuous; T2-A superseded (orchestrator, R3)
+
+T2-A (2026-09-28) set the ARBS config's post-maturity `par_rate` to `fixed_rate × 1e4`. That made the
+maturity step's `PNL_delta` equal `−PV(t−1)`, but it is a jump, which R2-7 forbids, and with `Cashflows` now mapped
+the final coupon is explained by `cashflow_pnl` instead. Owner C's R3 config therefore keeps the level
+continuous: after maturity `par_rate` is the final period's own par (equal to `fair_rate` while the coupon is
+unpaid, finite after). The maturity-step residual of `pnl_explain_table` is 0.003, against 4,519 under T2-A
+(LIVE_ARBS_REPORT "Strict contract (R3)"). The `unsettled` guard is `>=`, so `npv` drops the final coupon on
+the step where it is paid, not a day early. T2-A is superseded.
+
+## 2026-10-01 — `ir_cashflow_drop` measures the move with `IRFwdRate`, plus a market-only correction for swaps (orchestrator, R3)
+
+The checker row must use the same level as `Theta` (R2-4) and `ir_pnl_definition`, which is `IRFwdRate`. On a
+payment date the remaining schedule loses the paid period. A near-par swap's own par rate therefore jumps by
+construction, and `delta × jump` is comparable to the net flow, whatever the library: Meridian FAILed at 94% ATM.
+
+For an `IRSwap` single-trade probe that is not a PASS, the row re-takes the delta term on the market part of the
+move: `IRFwdRate(t)` minus `IRFwdRate` priced on t−1's market through a `CloseMarket` override. A config whose
+override values from the market's own date (ARBS) gets no correction, so the row can never turn a FAIL into a
+PASS there. ARBS reads WARN 8.7%.
+
+The P&L attribution (`ir_pnl_definition`) is unchanged and still shows the jump in its residual on payment
+dates. That is a documented limitation of the own-rate convention, not a checker bug.

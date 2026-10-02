@@ -1,6 +1,10 @@
 # Deliberate mistakes
 
-Each file is [`../meridian_usd_irs.yaml`](../meridian_usd_irs.yaml) with ONE classic conversion error. The changed lines are
+Each file is [`../meridian_usd_irs.yaml`](../meridian_usd_irs.yaml) (the whole strict `IRSwap` contract, so
+each one loads) with ONE classic conversion error. The checker FAILs the row named below; the
+same error can also break rows that read the broken value (a percent par rate also breaks `ir_taylor`
+and `swap_pv_identity`; an unpinned maturity also breaks `ExpiryInYears`, `ForwardPrice` and
+`FairPremium`), and nothing unrelated FAILs. The changed lines are
 marked `# MISTAKE`. Each file has its own `asset:` name and `market.key`, so load each one in its own
 `PricebtSession`, because all four match `IRSwap` in USD. The tests
 (`tests/skills/test_skill_connect_example.py`) assert the wrong behaviour, so these stay wrong.

@@ -1,5 +1,6 @@
 # Asset-config TEMPLATE: an IRSwaption (European, physically settled) on ANY pricing library, mapping the WHOLE
-# IR measure contract (src/pricebt/risk/contracts.py; docs/v2/IR_RISK_DESIGN.md section 2 and section 00).
+# IR measure contract (src/pricebt/risk/contracts.py; docs/v2/IR_RISK_DESIGN.md section 2 and section 00;
+# docs/v2/IR_STRICT_CONTRACT.md: an IRSwaption config must MAP every contract measure, it cannot declare one).
 # Same layout as config-template.yaml (the swap): PRIMITIVES (your library) -> RECIPES (pricebt's contract).
 #
 # Copy it to configs/assets/<asset>.yaml. It LOADS as-is; pricing it raises NotImplementedError("TODO ...") at
@@ -8,7 +9,9 @@
 #   2. RECIPES (code: section 2) derive every contract measure. Keep them, or map a native call converted to
 #      the pricebt unit/sign (vega per bp of NORMAL vol; a lognormal vega is not a rescale: see
 #      skills/pricebt-asset-config-cookbook/references/patterns.md, pattern 18) and check it once against the recipe.
-#   3. A measure your library cannot produce: delete its risk_measures line and declare it (end of this file).
+#   3. No "unsupported" escape hatch: every contract measure must be mapped. Only IRBasis (one curve) and
+#      IRXccyDelta (one currency) may be a literal 0.0 (contracts.ZERO_BY_CONVENTION); a swaption's vega and vol
+#      levels are real. Leave a measure out and the load error lists every gap with a paste-ready mapping skeleton.
 # pricebt never reads buy_sell or pay_or_receive itself: resolve folds buy_sell into the signed notional, and the
 # trade is a tuple of legs (a Straddle = payer + receiver), so every recipe below prices a straddle correctly.
 # Runnable reference: tests/assets/toy_usd_swaption.yaml (tests/toylib/swaption.py, Bachelier on a flat vol).
@@ -37,6 +40,7 @@ imports: |
   import math
   import re
   from types import SimpleNamespace
+  import pandas as pd
   # TODO: set import-time env vars first, then import your library:
   # import yourlib
 
@@ -125,8 +129,31 @@ code: |
       will drop on their payment date (e.g. a deferred premium). A plain European swaption: []."""
       _todo("lib_cashflows(m, leg)")
 
+  def lib_discount_factor(m, d):
+      """DF from m's valuation date to date d (ForwardPrice, FairPremium)."""
+      _todo("lib_discount_factor(m, d)")
+
+  def lib_premium_date(m, r):
+      """The premium settlement date (FairPremium): the swaption's premium_payment_date if your library
+      supports it and the trade sets it, else the currency's spot date on m (no spot lag: m's own date)."""
+      _todo("lib_premium_date(m, r)")
+
+  def lib_fixed_frequency(r):
+      """Fixed-leg payments per year of the underlying swap (1 annual, 2 semi-annual): CompoundedFixedRate."""
+      _todo("lib_fixed_frequency(r)")
+
+  def lib_at(m, d):
+      """Market m (curves AND vols) valued from date d with NO time passing (same zero rates and vols,
+      valuation date d): PnlExplain compares two markets on one pricing date. d = m's own date: m."""
+      _todo("lib_at(m, d)")
+
+  def lib_with_vols(m, m_vols):
+      """Market m's curves with m_vols' vol surface (PnlExplain splits the curve move from the vol move)."""
+      _todo("lib_with_vols(m, m_vols)")
+
   def lib_pillars(m):
-      """Curve pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y")."""
+      """Curve pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y"). For CRIFIRCurve each must be a
+      SIMM tenor (2W 1M 3M 6M 1Y 2Y 3Y 5Y 10Y 15Y 20Y 30Y); bump at those if yours differ."""
       _todo("lib_pillars(m)")
 
   def lib_shift_pillar(m, pillar, h):
@@ -288,6 +315,55 @@ code: |
           out[p] = sum(w * (pv(up, t) + pv(dn, t) - 2.0 * b) for t, w, b in zip(trades, weights, base))
       return out
 
+  # --- the rest of the strict contract (docs/v2/IR_STRICT_CONTRACT.md R3-1) ---
+  SIMM_TENORS = ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")
+  CRIF_COLUMNS = ["RiskType", "Qualifier", "Bucket", "Label1", "Label2", "Amount", "AmountCurrency"]
+  CRIF_BUCKET = "1"                          # TODO: the SIMM volatility group of your currency ("1": regular, e.g. USD, EUR)
+  CRIF_SUBCURVE = "OIS"                      # TODO: Label2, your projection sub-curve
+
+  def par_spread_bp(m, t, r):
+      """ParSpread: the underlying swap's (strike - forward), in bp; the same for every leg and side."""
+      return r["strike"] * 1e4 - own_rate_bp(m, t)
+
+  def fair_premium(m, t, r):
+      """FairPremium: PV / DF(premium settlement date)."""
+      return pv(m, t) / lib_discount_factor(m, lib_premium_date(m, r))
+
+  def forward_value(m, t, r, d):
+      """ForwardPrice: PV / DF(expiration_date), the date ExpiryInYears counts to; PV on or after expiry."""
+      return pv(m, t) / lib_discount_factor(m, r["expiration_date"]) if d < r["expiration_date"] else pv(m, t)
+
+  def compounded_rate_bp(k, f):
+      """CompoundedFixedRate: the strike as (1 + K/f)^f - 1, in bp (an annual underlying: K itself)."""
+      return ((1.0 + k / f) ** f - 1.0) * 1e4
+
+  def crif_frame(m, t, ccy):
+      """CRIFIRCurve: the trade's key-rate ladder as SIMM CRIF rows, so sum(Amount) = the IRDelta ladder's sum;
+      an empty frame once nothing is left (expired unexercised, or past the underlying's end)."""
+      rows = []
+      for p, a in key_rate_ladder(m, [t], [1.0]).items():
+          label = p.strip().lower()
+          if label not in SIMM_TENORS:
+              raise ValueError(f"pillar {p!r} is not a SIMM tenor {SIMM_TENORS}: bump at the SIMM tenors for CRIF")
+          if a:
+              rows.append(("Risk_IRCurve", ccy, CRIF_BUCKET, label, CRIF_SUBCURVE, a, ccy))
+      return pd.DataFrame(rows, columns=CRIF_COLUMNS)
+
+  def pnl_explain(m, m_to, trades, weights, d, ccy):
+      """PnlExplain: full revaluation from m to m_to, both seen from the pricing date d (no time passes),
+      weighted: IR = the curve moved with the vols held, IR VOL = the vols moved with the curve held,
+      CROSSES = the rest of the whole move."""
+      a, b = lib_at(m, d), lib_at(m_to, d)
+      curve_moved, vol_moved = lib_with_vols(b, a), lib_with_vols(a, b)
+      ir = vol = total = 0.0
+      for t, w in zip(trades, weights):
+          base = pv(a, t)
+          ir += w * (pv(curve_moved, t) - base)
+          vol += w * (pv(vol_moved, t) - base)
+          total += w * (pv(b, t) - base)
+      return [{"mkt_type": "IR", "mkt_asset": ccy, "value": ir}, {"mkt_type": "IR VOL", "mkt_asset": ccy, "value": vol},
+              {"mkt_type": "CROSSES", "value": total - ir - vol}]
+
   def vega_by_expiry_tail(m, trades, weights, d):
       """IRVega bucketed: each trade's weighted vega at mkt_point '<tail>;<expiry>' (gs order, e.g. '10Y;1Y'), the
       pillars nearest its underlying tenor and its time to expiry. A native bucketed vega: map its keys to
@@ -325,6 +401,13 @@ functions:
   prob_exercise:   {expr: 'prob_exercise_sum(market, trade)', unit: decimal}
   annuity:         {expr: 'lib_annuity(market, trade.legs[0])', unit: ccy}
   cashflows:       {expr: 'leg_cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+  par_spread:      {expr: 'par_spread_bp(market, trade, resolved)', unit: bp}
+  fair_premium:    {expr: 'fair_premium(market, trade, resolved)', unit: ccy}
+  forward_price:   {expr: 'forward_value(market, trade, resolved, pricebt_date)', unit: ccy}
+  premium_cents:   {expr: 'pv(market, trade) / abs(resolved["notional"]) * 1e4', unit: bp}                  # bp of |notional|
+  local_annuity:   {expr: 'lib_annuity(market, trade.legs[0]) / abs(resolved["notional"])', unit: decimal}   # Annuity / |notional|
+  compounded_rate: {expr: 'compounded_rate_bp(resolved["strike"], lib_fixed_frequency(resolved))', unit: bp}
+  crif:            {expr: 'crif_frame(market, trade, pricebt_currency)', unit: ccy_per_bp, returns: frame, scale_columns: [Amount]}
 portfolio_functions:
   delta_ladder:
     expr: 'key_rate_ladder(market, trades, weights)'
@@ -341,6 +424,10 @@ portfolio_functions:
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: TODO, mkt_class: SWAPTION}
+  pnl_explain:
+    expr: 'pnl_explain(market, market_to, trades, weights, pricebt_date, pricebt_currency)'
+    unit: ccy
+    returns: buckets
 attributes:
   expiration_date: 'resolved["expiration_date"]'      # AddTradeAction(swaption, 'expiration_date') exits on it
   termination_date: 'resolved["termination_date"]'
@@ -366,8 +453,15 @@ risk_measures:                         # every row of the IRSwaption contract (s
   ExpiryInYears: expiry_in_years
   Annuity: annuity
   Cashflows: cashflows
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif
+  PnlExplain: pnl_explain
   ProbabilityOfExercise: prob_exercise
-# Declaring instead of mapping (delete the mapped line first), e.g.:
-# unsupported_measures:
-#   IRAnnualATMImpliedVol: "yourlib's surface is quoted by strike only; no ATM-forward lookup"
-#   IRVega: {bucketed: "yourlib has no bucketed vega; the scalar is a parallel normal-vol bump"}
+# No unsupported_measures: block -- an IRSwaption config must map every contract measure (IR_STRICT_CONTRACT
+# R3-0; declaring one is a load error). An ATM vol your surface cannot look up directly is still computable:
+# interpolate the strike smile at the forward. Only a Bond may still declare (config-template-bond.yaml).

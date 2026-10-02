@@ -19,14 +19,21 @@ SHAPES (every config; the generic check_asset rows skip frame and relative funct
   quantity_scaling[M bucketed|frame]  a ladder or a frame's scale_columns that ignore quantity_, or
                       a frame scaling a column it must not (FAIL). Scalar forms keep the generic row.
 
-CONTRACT (docs/v2/IR_RISK_DESIGN.md section 2, the pack class's contract)
-  contract[M]         PASS mapped; WARN declared under unsupported_measures (the reason is the
-                      explanation; P&L-critical measures say what stops working); WARN "declaration
-                      reason is a TODO" (the pasted block was never edited); FAIL neither mapped nor
-                      declared, or a mapped slot with the wrong unit/shape (the loader already
-                      refuses both for IRSwap/IRSwaption/Bond, so these FAILs show on --pack only).
-  contract_declarations  WARN per stale declaration (mapped AND declared: the mapping wins), a
+CONTRACT (docs/v2/IR_RISK_DESIGN.md section 2, docs/v2/IR_STRICT_CONTRACT.md R3-0)
+  contract[M]         IRSwap / IRSwaption (strict): PASS mapped; FAIL not mapped, or declared under
+                      unsupported_measures (the measure, a form, or a preset of it), mapped or not:
+                      only a mapping satisfies a strict row. Bond: PASS mapped; WARN declared (the
+                      reason is the explanation; P&L-critical measures say what stops working); WARN
+                      "declaration reason is a TODO" (the pasted block was never edited); FAIL
+                      neither mapped nor declared. Any class: FAIL a mapped slot with the wrong
+                      unit/shape. The loader already refuses every FAIL here, so they show on --pack
+                      only (a ConfigInstrument).
+  contract_declarations  strict: FAIL per declared contract measure or preset of one. Any class:
+                      WARN per stale declaration (Bond: mapped AND declared, the mapping wins), a
                       declared preset name, a declared form outside the row, an unknown name.
+  ir_fake_constant    (strict) a contract measure mapped to a literal constant ('0.0', '{}') outside
+                      contracts.ZERO_BY_CONVENTION (vol measures on a swap, IRBasis, IRXccyDelta):
+                      a placeholder standing in for a measure the library was never asked for (FAIL).
 
 IR SEMANTICS (every IR pack; library-agnostic, from evaluated values only)
   ir_expiry_in_years  ExpiryInYears not falling by exactly (d2-d1).days/365 (business-day or
@@ -62,7 +69,32 @@ IR SEMANTICS (every IR pack; library-agnostic, from evaluated values only)
                       (the opposite direction must negate every amount) (FAIL).
   ir_cashflow_drop    Price not dropping the flow Cashflows lists on its payment date (or
                       dropping a different amount): the Taylor residual across the first payment
-                      date against that flow (FAIL > 20%).
+                      date against that flow (FAIL > 20%). IRSwap, when that is not a PASS: a
+                      seasoned swap's own par rate jumps when the paid period rolls off the remaining
+                      schedule, so the delta term is re-taken on the MARKET part of the IRFwdRate
+                      move (IRFwdRate on the payment step's end date, minus the same priced on the
+                      start date's market via a CloseMarket override) and the bands apply to that.
+STRICT IDENTITIES (IRSwap, IRSwaption; IR_STRICT_CONTRACT R3-1; FAIL on a sign or identity break,
+WARN on a tolerance miss; each SKIPs when its measures are not mapped)
+  ir_premium_cents    PremiumCents != Price / |notional_amount| x the unit factor (bp 1e4, pct 100,
+                      decimal/number 1): a percent-of-notional declared bp, a signed notional (FAIL).
+  ir_local_annuity    LocalAnnuityInCents != Annuity / |notional_amount| (same factors): an annuity
+                      per bp (x 1e-4), a signed notional (FAIL).
+  ir_forward_price    ForwardPrice / Price = 1 / DF(expiry): opposite sign (FAIL); the implied rate
+                      ln(ratio) / ExpiryInYears far from IRFwdRate (WARN beyond max(r/2, 1%), FAIL
+                      beyond max(r, 2%): Price x DF, the wrong date); == Price from expiry on.
+  ir_fair_premium     FairPremium / Price = 1 / DF(settlement): opposite sign (FAIL); more than ~10
+                      days of discounting (WARN to 1%: a far premium date; FAIL beyond: the expiry
+                      or final date used, which is ForwardPrice).
+  ir_par_spread       ParSpread vs K - IRFwdRate in bp: changes with direction, reversed sign
+                      (F - K), or off by a scale factor x2 (FAIL); more than max(0.5bp, 1%) apart
+                      (WARN: legs on different schedules or curves).
+  ir_compounded_fixed_rate  outside [K, e^K - 1] (a de-compounded or continuous restatement),
+                      moving with the pricing date, or != K for an annual fixed_rate_frequency (FAIL).
+  ir_crif             CRIFIRCurve RiskType not 'Risk_IRCurve', Qualifier not the config currency,
+                      Label1 not a SIMM tenor ('10Y' upper case) (FAIL); sum(Amount) != sum of the
+                      IRDelta ladder (FAIL; WARN within 1%).
+
   fd_params / fd_params[M]  DEV-I10: a function not naming pricebt_bump_size must make
                       IRDelta(aggregation_level='Type', bump_size=1) raise NotSupportedError (PASS),
                       else FAIL "silently ignored"; a function naming a parameter is evaluated with
@@ -119,8 +151,8 @@ from check_asset import FAIL, INFO, PASS, SKIP, WARN, CheckResult, _bday, _fmt
 PACKS = ("IRSwap", "IRSwaption", "Bond")
 # the direction kwarg of each class and its two values (first = the long / holder-positive side)
 DIRECTION = {"IRSwap": ("pay_or_receive", "Pay", "Receive"), "IRSwaption": ("buy_sell", "Buy", "Sell"), "Bond": ("buy_sell", "Buy", "Sell")}
-# a declared measure here stops ir_pnl_definition / swaption_pnl_definition / bond_pnl_definition /
-# pnl_explain_table (UnsupportedMeasureError) -- still a WARN, see pnl_note()
+# a declared measure here (a Bond: the strict classes cannot declare) stops ir_pnl_definition /
+# bond_pnl_definition / pnl_explain_table (UnsupportedMeasureError) -- still a WARN, see pnl_note()
 PNL_CRITICAL = ("IRDelta", "IRGammaParallel", "IRFwdRate", "Theta", "ExpiryInYears", "Cashflows")
 PNL_CRITICAL_VOL = ("IRVega", "IRAnnualImpliedVol", "IRVanna", "IRVolga")
 TO_BP = {"bp": 1.0, "pct": 100.0, "decimal": 1e4}
@@ -227,6 +259,7 @@ def with_ir_checks(checks: Sequence[tuple], ctx, pack: Optional[str], swap_pack:
         return out
     out += [
         ("contract", lambda c: check_contract(c, inst)),
+        ("ir_fake_constant", lambda c: check_fake_constants(c, inst)),
         ("ir_semantics", lambda c: check_ir_semantics(c, inst)),
         ("fd_params", check_fd_params),
         {"IRSwap": ("swap_pack", swap_pack), "IRSwaption": ("swaption_pack", swaption_pack), "Bond": ("bond_pack", bond_pack)}[inst],
@@ -279,10 +312,8 @@ class _Env:
     def bucketed(self, inst, d: date, m: str) -> pd.DataFrame:
         return _result(self.svc.value(inst, d, ca._risk(m), None))
 
-    def frame(self, inst, d: date) -> pd.DataFrame:
-        from pricebt.risk import Cashflows
-
-        return self.svc.value(inst, d, Cashflows, None)
+    def frame(self, inst, d: date, m: str = "Cashflows") -> pd.DataFrame:
+        return self.svc.value(inst, d, ca._risk(m), None)
 
     def resolve(self, d: Optional[date] = None, **kw):
         return self.svc.resolve(self.ctx.inst.clone(**kw), d or self.d1, None)
@@ -423,8 +454,10 @@ def pnl_note(measure: str, inst: str) -> str:
 
 def check_contract(ctx, inst: str) -> List[CheckResult]:
     """One row per contract measure of `inst` (map / declare / missing), plus declaration warnings.
-    Declared is a WARN, never a FAIL: an honest declaration is the contract working (decision 0.2),
-    and the P&L code already raises loudly on a declared measure."""
+    Bond: declared is a WARN, never a FAIL -- an honest declaration is the contract working
+    (decision 0.2), and the P&L code already raises loudly on a declared measure. A strict class
+    (IRSwap, IRSwaption; IR_STRICT_CONTRACT R3-0): only a mapping satisfies a row, so a missing or
+    a declared contract measure (or a declared preset of one) is a FAIL, mapped or not."""
     from pricebt.risk import contracts
 
     reqs = contracts.contract_for(inst)
@@ -441,10 +474,17 @@ def check_contract(ctx, inst: str) -> List[CheckResult]:
     mapped = {k: {"scalar": summary(m.scalar), "bucketed": summary(m.bucketed)} for k, m in cfg.risk_measures.items()}
     res = contracts.check(inst, mapped, cfg.unsupported_measures)
     provided = contracts.provided_forms(inst, mapped)
+    strict = contracts.is_strict(inst)
+    strict_names = "/".join(sorted(contracts.STRICT_CLASSES))
     out = []
     for req in reqs:
         status, parts = PASS, []
         declared = cfg.unsupported_measures.get(req.measure, {})
+        if strict:
+            names = sorted(m for m in cfg.unsupported_measures if contracts.base_measure(m)[0] == req.measure)
+            if names:
+                status = FAIL
+                parts.append(f"declared under unsupported_measures ({', '.join(names)}): {strict_names} configs must map every contract measure; a declaration cannot satisfy it -- map it and delete the declaration")
         for form in req.forms:
             key = provided.get((req.measure, form))
             reason = declared.get(form, declared.get("*"))
@@ -452,6 +492,9 @@ def check_contract(ctx, inst: str) -> List[CheckResult]:
                 mp = cfg.risk_measures[key]
                 fname = mp.bucketed if form == "bucketed" else mp.scalar
                 parts.append(f"{form}: {fname} ({_spec(cfg, fname).unit}{'' if key == req.measure else f', via {key}'})")
+            elif strict:
+                status = FAIL
+                parts.append(f"{form}: not mapped -- {strict_names} require a mapping for every contract measure (`measures.py block <config>` prints the paste-ready mapping skeleton) ({req.doc})")
             elif reason is not None:
                 status = WARN
                 if reason.strip().upper().startswith("TODO"):
@@ -461,14 +504,16 @@ def check_contract(ctx, inst: str) -> List[CheckResult]:
             else:
                 status = FAIL
                 parts.append(f"{form}: neither mapped nor declared -- map it, or declare `{req.measure}: \"<why your library cannot compute it>\"` under unsupported_measures ({req.doc})")
-        slot = [p for p in res.problems if p.startswith(f"{req.measure} (") and "neither mapped nor declared" not in p]
+        slot = [p for p in res.problems if p.startswith(f"{req.measure} (") and "neither mapped nor declared" not in p and "require a mapping for every contract measure" not in p]
         if slot:
             status = FAIL
             parts += slot
         detail = "; ".join(parts) + (pnl_note(req.measure, inst) if status == WARN else "")
         out.append(CheckResult(f"contract[{req.measure}]", status, detail))
+    forbidden = [p for p in res.problems if p.startswith("unsupported_measures declares")]  # strict classes only
+    out += [CheckResult("contract_declarations", FAIL, p) for p in forbidden]
     out += [CheckResult("contract_declarations", WARN, w) for w in res.warnings]
-    if not res.warnings:
+    if not res.warnings and not forbidden:
         out.append(CheckResult("contract_declarations", PASS, "no stale or misplaced declarations"))
     return out
 
@@ -743,21 +788,48 @@ def row_cashflow_drop(env: _Env) -> List[CheckResult]:
     tb = p if env.market_on(p) else env.next_market(p)
     if not env.market_on(ta) or tb is None:
         return [CheckResult(name, SKIP, f"no market around the first payment date {p}")]
-    s = _step(env, env.r1, ta, tb)
-    flow = s["cash"] if s else 0.0
-    if s is None or not flow:
+    got = _drop_residual(env, env.r1, ta, tb)
+    if got is None:
         return [CheckResult(name, SKIP, "needs IRDelta, IRFwdRate and a flow in the step")]
-    terms = dict(s["terms"])
-    if s["theta"] is not None:
-        terms["theta"] = s["theta"] * s["days"]
-    resid = s["economic"] - sum(terms.values())
+    s, terms, resid = got
+    flow = s["cash"]
     ratio = abs(resid) / abs(flow)
-    dprice = s["economic"] - flow
     status = PASS if ratio <= TAYLOR_WARN else WARN if ratio <= TAYLOR_FAIL else FAIL
-    detail = f"{ta} -> {tb} across payment date {p}: Price change {_fmt(dprice)} with flow {_fmt(flow)}; residual after {_terms_text(terms)} = {_fmt(resid)} ({ratio:.1%} of the flow)"
+    detail = f"{ta} -> {tb} across payment date {p}: Price change {_fmt(s['economic'] - flow)} with flow {_fmt(flow)}; residual after {_terms_text(terms)} = {_fmt(resid)} ({ratio:.1%} of the flow)"
+    if status != PASS and env.inst == "IRSwap":
+        # A seasoned swap's own par rate (IRFwdRate) jumps on a payment date when the paid period
+        # leaves the remaining schedule (a roll, ~N x acc x DF x (par - that period's float rate) in
+        # IRDelta x dr, the same for any fixed rate, while the net flow shrinks near par). The market
+        # part of the IRFwdRate move is IRFwdRate on tb minus IRFwdRate on tb priced on ta's market (a
+        # CloseMarket override: the trade as of tb, no market move); a config that values an override
+        # on its own date gives the whole move back, i.e. the single-trade residual above.
+        unit = TO_BP[env.spec("IRFwdRate").unit]
+        r_b_on_a = float(env.svc.value(env.r1, tb, ca._scalar_form(ca._risk("IRFwdRate")), None, ta)) * unit
+        dr_mkt = env.bp(env.r1, tb, "IRFwdRate") - r_b_on_a
+        if abs(dr_mkt - s["dr"]) > 1e-9:
+            terms2 = dict(terms, delta=s["delta"] * dr_mkt)
+            if "gamma" in terms2:
+                terms2["gamma"] = 0.5 * env.val(env.r1, ta, "IRGammaParallel") * dr_mkt * dr_mkt
+            resid2 = s["economic"] - sum(terms2.values())
+            ratio = abs(resid2) / abs(flow)
+            status = PASS if ratio <= TAYLOR_WARN else WARN if ratio <= TAYLOR_FAIL else FAIL
+            detail += (f"; IRFwdRate moved {s['dr']:.3f}bp, {dr_mkt:.3f}bp of it with the market (IRFwdRate on {tb} on the {ta} market: the rest is the paid"
+                       f" period rolling off the remaining schedule, not P&L): residual after delta {_fmt(terms2['delta'])} on the market move = {_fmt(resid2)} ({ratio:.1%} of the flow)")
     if status != PASS:
         detail += ": Price must drop exactly the flows Cashflows lists, on their payment date (R2-6); a total-return Price lists none"
     return [CheckResult(name, status, detail)]
+
+
+
+def _drop_residual(env: _Env, inst, ta: date, tb: date):
+    """(step, terms, residual) of the Taylor step ta -> tb with theta, or None without a flow in it."""
+    s = _step(env, inst, ta, tb)
+    if s is None or not s["cash"]:
+        return None
+    terms = dict(s["terms"])
+    if s["theta"] is not None:
+        terms["theta"] = s["theta"] * s["days"]
+    return s, terms, s["economic"] - sum(terms.values())
 
 
 def row_swap_annuity_sign(env: _Env) -> List[CheckResult]:
@@ -774,7 +846,253 @@ def row_swap_annuity_sign(env: _Env) -> List[CheckResult]:
                                           " the sign of IRDelta); a QuantLib-style fixedLegBPS is the fixed leg's own sign: Annuity = -1e4 x fixedLegBPS")]
 
 
+
+# ------------------------------------------------------------------------------------ strict-contract identities (R3-1)
+# docs/v2/IR_STRICT_CONTRACT.md R3-1: each row is a known-answer relation between the new measure and
+# measures the config already maps; FAIL on a sign or identity break, WARN on a tolerance miss.
+
+NOTIONAL_UNIT = {"bp": 1e4, "pct": 100.0, "decimal": 1.0, "number": 1.0}  # a per-unit-of-notional ratio in each unit
+IDENTITY_TOL, IDENTITY_WARN = 1e-6, 0.01
+
+
+def _identity_status(got: float, want: float, floor: float) -> str:
+    """PASS within 1e-6 relative (+ floor), WARN same sign within 1%, else FAIL."""
+    gap, scale = abs(got - want), max(abs(got), abs(want))
+    if gap <= IDENTITY_TOL * scale + floor:
+        return PASS
+    return WARN if got * want > 0 and gap <= IDENTITY_WARN * scale else FAIL
+
+
+def _notional(env: _Env) -> Optional[float]:
+    n = env.ctx.kwargs.get(ca.SIZE_KWARG)
+    return abs(float(n)) if isinstance(n, (int, float)) and n else None
+
+
+def _strike(inst) -> Optional[float]:
+    """The resolved fixed rate (swap) or strike (swaption), DECIMAL, or None."""
+    terms = inst.resolved_terms
+    k = terms.get("fixed_rate", terms.get("strike"))
+    return float(k) if isinstance(k, (int, float)) and not isinstance(k, bool) else None
+
+
+def _priced_date(env: _Env) -> date:
+    """d2 when it has a market (usually off-market, so Price is not ~0), else d1."""
+    return env.d2 if env.d2 != env.d1 and env.market_on(env.d2) else env.d1
+
+
+def _per_notional_row(env: _Env, name: str, measure: str, source: str, why: str) -> List[CheckResult]:
+    if not (env.has(measure) and env.has(source)):
+        return [CheckResult(name, SKIP, f"needs {measure} and {source}")]
+    n = _notional(env)
+    if n is None:
+        return [CheckResult(name, SKIP, f"no numeric {ca.SIZE_KWARG} kwarg")]
+    unit = env.spec(measure).unit
+    factor = NOTIONAL_UNIT.get(unit)
+    if factor is None:
+        return [CheckResult(name, FAIL, f"{measure} declared {unit!r}; a per-notional level is bp/pct/decimal/number")]
+    d = _priced_date(env)
+    got, src = env.val(env.r1, d, measure), env.val(env.r1, d, source)
+    want = src / n * factor
+    status = _identity_status(got, want, 1e-9 * factor)
+    detail = f"on {d}: {measure} {_fmt(got)} {unit} vs {source} {_fmt(src)} / |{ca.SIZE_KWARG}| {_fmt(n)} x {factor:g} = {_fmt(want)}"
+    return [CheckResult(name, status, detail + ("" if status == PASS else why))]
+
+
+def row_premium_cents(env: _Env) -> List[CheckResult]:
+    return _per_notional_row(env, "ir_premium_cents", "PremiumCents", "Price",
+                             ": PremiumCents is Price / |notional_amount| in the declared unit (bp: 1e4 x the ratio, gs's premium in cents);"
+                             " a percent-of-notional declared bp, the signed notional, or another notional breaks it")
+
+
+def row_local_annuity(env: _Env) -> List[CheckResult]:
+    return _per_notional_row(env, "ir_local_annuity", "LocalAnnuityInCents", "Annuity",
+                             ": LocalAnnuityInCents is Annuity / |notional_amount| (decimal: a 10y payer is about +8.5), holder-signed like Annuity;"
+                             " an annuity per bp (Annuity x 1e-4), the signed notional, or an unsigned annuity breaks it")
+
+
+def _ratio_head(env: _Env, measure: str, d: date):
+    """((value, Price, own rate decimal or None), None) on d, or (None, why it is inconclusive)."""
+    pv = env.val(env.r1, d, "Price")
+    n = _notional(env) or 1.0
+    if abs(pv) < 1e-9 * n:
+        return None, f"Price {_fmt(pv)} on {d} is ~0: the ratio is inconclusive (pass a --date when the trade is off-market)"
+    r = env.bp(env.r1, d, "IRFwdRate")
+    return (env.val(env.r1, d, measure), pv, None if r is None else r / 1e4), None
+
+
+def row_forward_price(env: _Env) -> List[CheckResult]:
+    """ForwardPrice / Price = 1 / DF(expiry): the implied rate ln(ratio) / ExpiryInYears must be near
+    the own rate (ForwardPrice = Price x DF is the classic slip)."""
+    name = "ir_forward_price"
+    if not (env.has("ForwardPrice") and env.has("ExpiryInYears")):
+        return [CheckResult(name, SKIP, "needs ForwardPrice and ExpiryInYears")]
+    d = _priced_date(env)
+    head, why = _ratio_head(env, "ForwardPrice", d)
+    if head is None:
+        return [CheckResult(name, SKIP, why)]
+    fp, pv, r = head
+    T = env.val(env.r1, d, "ExpiryInYears")
+    detail = f"on {d}: ForwardPrice {_fmt(fp)} vs Price {_fmt(pv)} (ratio {fp / pv:.6g}), ExpiryInYears {T:.4f}"
+    if T <= 0:
+        ok = _close(fp, pv)
+        return [CheckResult(name, PASS if ok else FAIL, detail + ("" if ok else ": on or after expiry ForwardPrice is Price"))]
+    if fp / pv <= 0:
+        return [CheckResult(name, FAIL, detail + ": opposite sign to Price -- ForwardPrice is Price / DF(expiry), holder-signed like Price")]
+    z = math.log(fp / pv) / T
+    if r is None:
+        return [CheckResult(name, INFO, detail + f": implied rate {z:.4%} (no rate-unit IRFwdRate to compare)")]
+    detail += f": implied rate ln(ratio)/T {z:.4%} vs own rate {r:.4%}"
+    gap = abs(z - r)
+    if gap <= max(0.5 * abs(r), 0.01):
+        return [CheckResult(name, PASS, detail)]
+    if gap <= max(abs(r), 0.02):
+        return [CheckResult(name, WARN, detail + ": the discounting implies a rate far from the own rate -- the right date (a swaption's expiry, a swap's final date)?")]
+    return [CheckResult(name, FAIL, detail + ": ForwardPrice is Price / DF(expiry) -- Price x DF, a price in bp, or the wrong date gives this")]
+
+
+def row_fair_premium(env: _Env) -> List[CheckResult]:
+    """FairPremium / Price = 1 / DF(settlement), settlement a few days away (spot lag, or the
+    premium payment date): within 10 days of discounting at the own rate."""
+    name = "ir_fair_premium"
+    if not env.has("FairPremium"):
+        return [CheckResult(name, SKIP, "FairPremium not mapped")]
+    d = _priced_date(env)
+    head, why = _ratio_head(env, "FairPremium", d)
+    if head is None:
+        return [CheckResult(name, SKIP, why)]
+    fp, pv, r = head
+    ratio = fp / pv
+    detail = f"on {d}: FairPremium {_fmt(fp)} vs Price {_fmt(pv)} (ratio {ratio:.8g})"
+    if ratio <= 0:
+        return [CheckResult(name, FAIL, detail + ": opposite sign to Price -- FairPremium is Price / DF(settlement), holder-signed")]
+    bound = max(abs(r or 0.0), 0.01) * 10.0 / 365.0
+    if abs(math.log(ratio)) <= bound + 1e-12:
+        return [CheckResult(name, PASS, detail + f" (|ln ratio| within {bound:.2e}: at most ~10 days of discounting)")]
+    if abs(math.log(ratio)) <= 0.01:
+        return [CheckResult(name, WARN, detail + ": more than ~10 days of discounting -- a far premium_payment_date is legitimate; otherwise check the settlement date")]
+    return [CheckResult(name, FAIL, detail + ": FairPremium is Price / DF(premium settlement), settlement = spot or the premium payment date -- not the expiry/final date (that is ForwardPrice)")]
+
+
+def row_par_spread(env: _Env) -> List[CheckResult]:
+    """ParSpread = K - IRFwdRate (single curve, matching schedules), the same for both directions."""
+    name = "ir_par_spread"
+    k = _strike(env.r1)
+    d = _priced_date(env)
+    ps, f = env.bp(env.r1, d, "ParSpread"), env.bp(env.r1, d, "IRFwdRate")
+    if ps is None or f is None or k is None:
+        return [CheckResult(name, SKIP, "needs ParSpread and IRFwdRate in bp/pct/decimal and a numeric resolved fixed_rate/strike")]
+    kwarg, _cur, other = env.direction()
+    want = k * 1e4 - f
+    flipped = env.bp(env.resolve(**{kwarg: other}), d, "ParSpread")
+    detail = f"on {d}: ParSpread {ps:.4f}bp vs K - IRFwdRate = {k * 1e4:.4f} - {f:.4f} = {want:.4f}bp; {kwarg}={other}: {flipped:.4f}bp"
+    if abs(flipped - ps) > 1e-6 * max(1.0, abs(ps)):
+        return [CheckResult(name, FAIL, detail + ": ParSpread does not depend on direction (payer and receiver of the same terms share it) -- a holder-signed spread")]
+    if abs(want) > 1.0 and ps * want < 0:
+        return [CheckResult(name, FAIL, detail + ": the sign is reversed -- ParSpread = K - forward (the spread on the floating leg that makes Price 0), not forward - K")]
+    if abs(want) > 1.0 and not 0.5 <= ps / want <= 2.0:
+        return [CheckResult(name, FAIL, detail + ": off by a scale factor -- the declared unit (bp/pct/decimal) of ParSpread or IRFwdRate?")]
+    gap = ps - want
+    if abs(gap) <= max(0.5, 0.01 * abs(want)):
+        return [CheckResult(name, PASS, detail)]
+    return [CheckResult(name, WARN, detail + f": {gap:+.3f}bp apart -- fine if the legs' schedules, day counts or curves differ (then ParSpread is the floating-leg spread itself), else check the definition")]
+
+
+def row_compounded_fixed_rate(env: _Env) -> List[CheckResult]:
+    """(1 + K/f)^f - 1 lies in [K, e^K - 1] for every f >= 1, is K for an annual leg, and never moves."""
+    name = "ir_compounded_fixed_rate"
+    k = _strike(env.r1)
+    if not env.has("CompoundedFixedRate") or env.spec("CompoundedFixedRate").unit not in TO_BP or k is None:
+        return [CheckResult(name, SKIP, "needs CompoundedFixedRate in bp/pct/decimal and a numeric resolved fixed_rate/strike")]
+    d2 = _priced_date(env)
+    c1 = env.bp(env.r1, env.d1, "CompoundedFixedRate") / 1e4
+    c2 = env.bp(env.r1, d2, "CompoundedFixedRate") / 1e4
+    hi = math.expm1(k)
+    detail = f"CompoundedFixedRate {c1:.8%} on {env.d1}, {c2:.8%} on {d2}; K {k:.8%}, bounds [K, e^K - 1 = {hi:.8%}]"
+    if abs(c1 - c2) > 1e-12:
+        return [CheckResult(name, FAIL, detail + ": it moved with the pricing date -- a trade term (the fixed rate restated), not a market level")]
+    if c1 < k - 1e-12 or c1 > hi + 1e-12:
+        return [CheckResult(name, FAIL, detail + ": outside the bounds -- (1 + K/f)^f - 1 for a leg paying f times a year (annual: K); a de-compounded or continuous restatement is below K")]
+    freq = str(env.ctx.kwargs.get("fixed_rate_frequency") or "").strip().lower()
+    if freq in ("1y", "12m", "annual") and abs(c1 - k) > 1e-12:
+        return [CheckResult(name, FAIL, detail + f": fixed_rate_frequency {freq!r} is annual, so CompoundedFixedRate must equal K")]
+    return [CheckResult(name, PASS, detail + (": = K (an annual fixed leg)" if abs(c1 - k) <= 1e-12 else ""))]
+
+
+def row_crif(env: _Env) -> List[CheckResult]:
+    """CRIFIRCurve labels (RiskType, Qualifier, SIMM Label1) and sum(Amount) = sum of the IRDelta ladder."""
+    from pricebt.risk import contracts
+
+    name = "ir_crif"
+    if not env.has("CRIFIRCurve", "frame"):
+        return [CheckResult(name, SKIP, "CRIFIRCurve not mapped")]
+    df = env.frame(env.r1, env.d1, "CRIFIRCurve")
+    bad = []
+    rt = sorted(set(map(str, df["RiskType"])) - {"Risk_IRCurve"})
+    if rt:
+        bad.append(f"RiskType {rt} (always 'Risk_IRCurve')")
+    q = sorted(set(map(str, df["Qualifier"])) - {env.cfg.currency})
+    if q:
+        bad.append(f"Qualifier {q} (the currency ISO code, {env.cfg.currency!r})")
+    labels = sorted({str(x) for x in df["Label1"]} - set(contracts.SIMM_IR_TENORS))
+    if labels:
+        bad.append(f"Label1 {labels} not SIMM tenors {list(contracts.SIMM_IR_TENORS)} (lower case: '10y', not '10Y')")
+    total = float(pd.to_numeric(df["Amount"]).sum()) if len(df) else 0.0
+    head = f"{len(df)} rows on {env.d1}, sum(Amount) {_fmt(total)}"
+    if bad:
+        return [CheckResult(name, FAIL, head + ": " + "; ".join(bad))]
+    if not env.has("IRDelta", "bucketed"):
+        return [CheckResult(name, PASS, head + "; labels valid (no IRDelta ladder to compare the sum)")]
+    lad = env.bucketed(env.r1, env.d1, "IRDelta")
+    ladder = float(lad["value"].sum()) if len(lad) else 0.0
+    status = _identity_status(total, ladder, 1e-9 * max(1.0, abs(ladder)))
+    detail = head + f" vs sum of the IRDelta ladder {_fmt(ladder)}"
+    return [CheckResult(name, status, detail + ("" if status == PASS else ": sum(Amount) must equal the IRDelta bucketed ladder (the same ccy per +1bp, holder-signed, per unit trade) -- a sign, a unit or a missing pillar"))]
+
+
+STRICT_ROWS = (
+    ("ir_premium_cents", row_premium_cents),
+    ("ir_local_annuity", row_local_annuity),
+    ("ir_forward_price", row_forward_price),
+    ("ir_fair_premium", row_fair_premium),
+    ("ir_par_spread", row_par_spread),
+    ("ir_compounded_fixed_rate", row_compounded_fixed_rate),
+    ("ir_crif", row_crif),
+)
+
+
+def check_fake_constants(ctx, inst: str) -> List[CheckResult]:
+    """R3-0: a contract measure mapped to a literal constant ('0.0', '{}') is honest only where the
+    contract defines the value as 0 (contracts.ZERO_BY_CONVENTION); anything else is a placeholder."""
+    import ast
+
+    from pricebt.risk import contracts
+
+    name = "ir_fake_constant"
+    if not contracts.is_strict(inst):
+        return [CheckResult(name, SKIP, f"{inst} is not a strict class (a Bond may declare instead)")]
+    allowed = contracts.ZERO_BY_CONVENTION.get(inst, frozenset())
+    names = {r.measure for r in contracts.contract_for(inst)}
+    bad, fine = [], []
+    for key, mapping in ctx.cfg.risk_measures.items():
+        base = contracts.base_measure(key)[0]
+        if base not in names:
+            continue
+        for fname in filter(None, (mapping.scalar, mapping.bucketed)):
+            expr = _spec(ctx.cfg, fname).expr.strip()
+            try:
+                ast.literal_eval(expr)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                continue
+            (fine if base in allowed else bad).append(f"{key} -> {fname} = {expr!r}")
+    if bad:
+        return [CheckResult(name, FAIL, f"literal constant for {bad}: only {sorted(allowed)} may be a constant for {inst} (the contract defines them as 0);"
+                                        " every other contract measure must be computed -- a placeholder silently zeroes P&L and risk")]
+    return [CheckResult(name, PASS, f"no placeholder constants; zero by convention: {fine or 'none'}")]
+
+
 def check_ir_semantics(ctx, inst: str) -> List[CheckResult]:
+    from pricebt.risk import contracts
+
     env = _Env(ctx, inst)
     return _run(env, (
         ("ir_expiry_in_years", row_expiry),
@@ -786,7 +1104,8 @@ def check_ir_semantics(ctx, inst: str) -> List[CheckResult]:
         ("ir_vega_cube_keys", row_vega_cube),
         ("ir_cashflows", row_cashflows),
         ("ir_cashflow_drop", row_cashflow_drop),
-    ) + ((("swap_annuity_sign", row_swap_annuity_sign),) if inst == "IRSwap" else ()))
+    ) + ((("swap_annuity_sign", row_swap_annuity_sign),) if inst == "IRSwap" else ())
+      + (STRICT_ROWS if contracts.is_strict(inst) else ()))
 
 
 # ------------------------------------------------------------------------------------ FD parameters

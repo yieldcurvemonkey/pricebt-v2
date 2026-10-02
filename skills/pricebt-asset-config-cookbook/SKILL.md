@@ -1,6 +1,6 @@
 ---
 name: pricebt-asset-config-cookbook
-description: Copy-paste patterns for pricebt asset configs - library shapes (service with market handles, in-process library with local curve files, curve + vol markets), resolve/pinning, unit and sign conversion, batching, attributes, CSA routing, multi-currency and FX - plus the recipes for every measure of the IR contract (IRSwap, IRSwaption, Bond) when your library lacks it (own-rate total delta, chain-rule gamma, translated-curve and constant-yield theta, vega/vanna/volga by normal-vol bumps, lognormal-to-normal vol and vega conversion, key-rate ladders, '<tail>;<expiry>' vega cubes, per-row buckets and PnlExplain, Cashflows frames, bump_size pass-through, dead instruments, buy_sell/Straddle and bond size folding, zero-by-convention measures), and a catalogue of every pricebt error message with its fix. Use while writing or debugging an asset config.
+description: Copy-paste patterns for pricebt asset configs - library shapes (service with market handles, in-process library with local curve files, curve + vol markets), resolve/pinning, unit and sign conversion, batching, attributes, CSA routing, multi-currency and FX - plus the recipes for every measure of the IR contract (IRSwap, IRSwaption, Bond) when your library lacks it (own-rate total delta, chain-rule gamma, translated-curve and constant-yield theta, vega/vanna/volga by normal-vol bumps, lognormal-to-normal vol and vega conversion, key-rate ladders, '<tail>;<expiry>' vega cubes, per-row buckets and PnlExplain, Cashflows frames, ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate and CRIF rows, bump_size pass-through, dead instruments, buy_sell/Straddle and bond size folding, zero-by-convention measures), and a catalogue of every pricebt error message with its fix. Use while writing or debugging an asset config.
 ---
 
 # Asset config cookbook
@@ -11,7 +11,7 @@ is `src/pricebt/risk/contracts.py`. The end-to-end procedure and the three contr
 in [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md). Every pattern
 here is in the style of the configs the test suite runs: `tests/assets/toy_usd_irs_full.yaml`,
 `tests/assets/toy_usd_swaption.yaml`, `tests/assets/toy_usd_bond.yaml`, and
-`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`. The measure recipes (patterns 14-27) are
+`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`. The measure recipes (patterns 14-27 and 29) are
 executed as tested code in the templates, so this page describes the math and names the template
 helper instead of repeating it.
 
@@ -34,8 +34,9 @@ helper instead of repeating it.
    [`references/patterns.md`](references/patterns.md).
 2. For a contract measure, check whether your library computes it natively. If it does, convert it
    (unit, sign, bump convention) on the function's line. If it does not, keep the template's recipe
-   for it. If you cannot derive it, declare it (pattern 14).
-3. Load with `python -W error` (a stale declaration then fails), and verify the number as the
+   for it. An IRSwap or IRSwaption config must map every contract measure (no declarations); only
+   a Bond may declare a measure it cannot derive (pattern 14).
+3. Load with `python -W error` (a Bond's stale declaration then fails), and verify the number as the
    pattern says.
 4. Run the checker, [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md).
 5. For an error message, look it up in [`references/error-catalogue.md`](references/error-catalogue.md).
@@ -57,8 +58,8 @@ helper instead of repeating it.
 | 11 | **Several currencies** | one config per currency, selected by `match: {notional_currency: EUR}`, plus an FX config |
 | 12 | **FX** from a platform or a file | an FX config whose `rate(base, quote, d)` returns quote per base, or `None` |
 | 13 | **Slow** valuations | memoise on the market (a value also per `pricebt_date` and trade), batch, `build_on: resolve_date`, and never rebuild the client per call |
-| 14 | The **measure contract**: a measure your library cannot compute | map it with the contract's unit, or declare it under `unsupported_measures:` with a specific reason; paste the block the load error prints |
-| 15 | A swap's or bond's **vega, vanna, volga and vol levels** | map them to `0.0` (zero by convention, R2-8) so mixed books work; do not declare them |
+| 14 | The **measure contract**: a measure your library has no call for | IRSwap/IRSwaption: map it (derive it from PV, a curve shift and a date; the load error ends with a paste-ready mapping skeleton). Bond: map it, or declare it under `unsupported_measures:` with a specific reason |
+| 15 | A swap's or bond's **vega, vanna, volga and vol levels** | map them to `0.0` (zero by convention, R2-8; `contracts.ZERO_BY_CONVENTION`) so mixed books work; a swap cannot declare them |
 | 16 | **`IRDelta` scalar** when your library only bumps curves | the total own-rate derivative `[PV(+h) - PV(-h)] / [r(+h) - r(-h)]` (`own_rate_delta`); a curve DV01 or annuity pv01 is not it off the money |
 | 17 | **`IRGammaParallel`** | the chain-rule second derivative on the same bumps (`own_rate_gamma`); never d(pv01)/dr, which is half the gamma |
 | 18 | **Vol units, lognormal vols, vega** | normal vols in bp; a lognormal library uses the Bachelier-implied vol of its own premium; vega per bp of NORMAL vol |
@@ -68,6 +69,7 @@ helper instead of repeating it.
 | 22 | **Several curves in one ladder; `PnlExplain`** | a list of row dicts (`mkt_type`, `mkt_asset`, `mkt_point`, `value`); PnlExplain names `market_to` |
 | 23 | **`Cashflows`** and coupons | `returns: frame`, `scale_columns: [payment_amount]`; empty for a total-return Price |
 | 24 | gs **`bump_size` / `finite_difference_method`** | name `pricebt_bump_size` in the expression; unnamed parameters raise (the honest default) |
+| 29 | **`ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`** (IRSwap, IRSwaption) | K − own rate; Price / DF(settlement); Price / DF(expiry); Price / \|N\| × 1e4; Annuity / \|N\|; (1 + K/f)^f − 1; the trade's IRDelta ladder as SIMM CRIF rows |
 | 25 | **Dead instruments** | sensitivities `0.0`, levels finite (last live value), `Cashflows` empty; swaptions physically settled |
 | 26 | **Swaption** `buy_sell`, `Straddle`, strikes | fold `buy_sell` into the signed notional; a straddle is payer + receiver legs; reject server grammar at resolve |
 | 27 | **Bond** `size`, `buy_sell`, identifier | static data by identifier; signed face; `notional_amount` attribute + `size_attribute`; own rate = yield |
@@ -101,14 +103,15 @@ conversion with the checker, [`pricebt-verify-asset-config`](../pricebt-verify-a
 
 Every pricebt error names the asset, the config key and the offending value. The causes and fixes
 are in [`references/error-catalogue.md`](references/error-catalogue.md), including the contract
-errors, `UnsupportedMeasureError`, stale-declaration warnings, refused measure parameters, and
+errors (the strict classes' gap and declaration errors and the mapping skeleton), the checker rows of
+the strict contract, `UnsupportedMeasureError`, stale-declaration warnings, refused measure parameters, and
 frame errors. `tests/skills/test_skill_asset_config_cookbook.py` raises the error behind each
 literal fragment and checks that the catalogue quotes it verbatim. Rows with placeholders, or that
 need a whole backtest, are copied from the source only.
 
 ## Checks
 
-- `python -W error` loads the config (no contract problem, no stale declaration).
+- `python -W error` loads the config (no contract problem, no stale declaration; an IRSwap/IRSwaption has no `unsupported_measures:` at all).
 - `python skills/pricebt-verify-asset-config/scripts/check_asset.py <config>` passes.
 - Every conversion line in the config has a comment: `# vendor: <convention> -> pricebt: <convention>`.
 - Each native measure you mapped agrees with the template recipe to about 1e-4 relative, or you can
@@ -116,8 +119,11 @@ need a whole backtest, are copied from the source only.
 
 ## Pitfalls
 
-- **Declaring a zero-by-convention measure** on a swap or bond breaks mixed books with vol
-  attribution. Map `0.0` instead (pattern 15).
+- **A placeholder `0.0`** for a contract measure outside `contracts.ZERO_BY_CONVENTION` (say
+  `IRDiscountDeltaParallel` "because there is one curve") loads, but silently zeroes risk and P&L;
+  the checker FAILs it (`ir_fake_constant`). Compute it.
+- **Declaring a zero-by-convention measure** on a bond breaks mixed books with vol attribution (on
+  a swap it is a load error). Map `0.0` instead (pattern 15).
 - **Mixed units across one book.** Every asset that can sit in one book must declare the same unit
   for `IRFwdRate` and the vol levels. The `ir_pnl_definition` family checks each level's unit and
   raises (DEV-E21); a hand-written `PnlAttribute` without `market_data_unit` is silently off by

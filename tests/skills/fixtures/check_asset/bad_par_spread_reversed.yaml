@@ -1,9 +1,8 @@
-# Broken on purpose (check_asset fixture): par_rate returned in PERCENT-scale numbers while the
-# config declares unit: bp (a 100x unit mismatch). Must FAIL BOTH swap_pv_identity AND
-# swap_par_rate_atm.
-# Copy of tests/assets/toy_usd_irs.yaml (the whole strict IRSwap contract) with ONE thing broken.
+# Broken on purpose (check_asset fixture): ParSpread = IRFwdRate - K (the forward minus the fixed
+# rate) instead of K - IRFwdRate. Must FAIL ir_par_spread.
+# Copy of tests/assets/toy_usd_irs.yaml (the whole strict IRSwap contract) with ONE thing broken (functions.par_spread).
 schema_version: 1
-asset: bad_identity_par_pct
+asset: bad_par_spread_reversed
 description: >
   Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
   fixture, never shipped. Exercises build_on: each_market. Maps the whole strict IRSwap contract
@@ -35,7 +34,7 @@ trade:
 functions:
   npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
   dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
-  par_rate: {expr: 'tr.par_rate(market, trade) / 100.0', unit: bp}  # BROKEN: percent-scale value, declared bp
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
   gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
   theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                  # ccy per YEAR
   year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}             # intensive time coordinate
@@ -49,7 +48,7 @@ functions:
   expiry_in_years:   {expr: 'tri.expiry_in_years(market, trade)', unit: decimal}
   annuity:           {expr: 'tri.annuity(market, trade)', unit: ccy}
   cashflows:         {expr: 'tri.empty_cashflows()', unit: ccy, returns: frame, scale_columns: [payment_amount]}
-  par_spread:        {expr: 'tri.par_spread(market, trade)', unit: bp}
+  par_spread:        {expr: '-tri.par_spread(market, trade)', unit: bp}   # BROKEN: forward - K
   fair_premium:      {expr: 'tri.fair_premium(market, trade)', unit: ccy}        # no spot lag: = npv
   forward_price:     {expr: 'tri.forward_price(market, trade)', unit: ccy}       # npv / DF(final date)
   premium_cents:     {expr: 'tri.premium_cents(market, trade)', unit: bp}

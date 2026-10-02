@@ -1,9 +1,9 @@
-# Broken on purpose (check_asset fixture): par_rate returned in PERCENT-scale numbers while the
-# config declares unit: bp (a 100x unit mismatch). Must FAIL BOTH swap_pv_identity AND
-# swap_par_rate_atm.
-# Copy of tests/assets/toy_usd_irs.yaml (the whole strict IRSwap contract) with ONE thing broken.
+# Broken on purpose (check_asset fixture): IRDiscountDeltaParallel mapped to a literal '0.0' ("one
+# curve, so no discount risk" -- wrong: a single-curve swap's discount delta is its whole curve delta).
+# Only contracts.ZERO_BY_CONVENTION may be a constant. Must FAIL ir_fake_constant.
+# Copy of tests/assets/toy_usd_irs.yaml (the whole strict IRSwap contract) with ONE thing broken (risk_measures.IRDiscountDeltaParallel).
 schema_version: 1
-asset: bad_identity_par_pct
+asset: bad_fake_constant
 description: >
   Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
   fixture, never shipped. Exercises build_on: each_market. Maps the whole strict IRSwap contract
@@ -35,7 +35,7 @@ trade:
 functions:
   npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
   dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
-  par_rate: {expr: 'tr.par_rate(market, trade) / 100.0', unit: bp}  # BROKEN: percent-scale value, declared bp
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
   gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
   theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                  # ccy per YEAR
   year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}             # intensive time coordinate
@@ -89,7 +89,7 @@ risk_measures:
   IRTheta: theta
   YearFraction: year_fraction
   CashPaidToDate: cash_paid_to_date
-  IRDiscountDeltaParallel: discount_delta
+  IRDiscountDeltaParallel: zero_per_bp   # BROKEN: a placeholder 0.0
   IRGamma: {bucketed: gamma_ladder}
   IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
   IRVanna: zero_per_bp2

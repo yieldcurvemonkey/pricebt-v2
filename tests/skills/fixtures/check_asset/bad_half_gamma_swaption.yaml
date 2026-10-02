@@ -1,14 +1,14 @@
 # Broken on purpose (check_asset fixture): the half-gamma trap. IRGammaParallel is mapped to half the
 # second derivative -- here the library's "convexity" Taylor coefficient gamma/2 per bp^2; the same
 # symptom as d(pv01)/dr of an annuity pv01 (R14). Must FAIL ir_gamma_ratio (ratio ~0.5).
-# Copy of tests/assets/toy_usd_swaption.yaml with ONE thing broken (functions.gamma).
+# Copy of tests/assets/toy_usd_swaption.yaml (the whole strict IRSwaption contract) with ONE thing broken (functions.gamma).
 schema_version: 1
 asset: bad_half_gamma_swaption
 description: >
   Toy USD swaption: Bachelier (normal) pricing with a flat vol over the toy rates world in
   tests/toylib/swaption.py. Test-only fixture, never shipped; mirrors DESIGN.md section 13's
-  swaption extensibility walkthrough at toy scale, and maps the full IR measure contract
-  (docs/v2/IR_RISK_DESIGN.md section 2, section 00). Units: npv USD; sensitivities USD per bp
+  swaption extensibility walkthrough at toy scale, and maps the full strict IR measure contract
+  (docs/v2/IR_RISK_DESIGN.md section 2, section 00; docs/v2/IR_STRICT_CONTRACT.md). Units: npv USD; sensitivities USD per bp
   (bp^2) of the forward swap rate / normal vol; rates and vols in bp; Theta USD per calendar day.
   Physically settled: after expiry an exercised leg is the underlying swap, an unexercised one 0.
 instrument: IRSwaption
@@ -48,6 +48,13 @@ functions:
   prob_exercise:   {expr: 'ts.prob_exercise(market, trade)', unit: decimal}
   annuity:         {expr: 'ts.annuity(market, trade)', unit: ccy}
   cashflows:       {expr: 'ts.cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+  par_spread:      {expr: 'ts.par_spread(market, trade)', unit: bp}                        # strike - forward
+  fair_premium:    {expr: 'ts.fair_premium(market, trade, pricebt_date)', unit: ccy}       # no spot lag: = npv
+  forward_price:   {expr: 'ts.forward_price(market, trade, pricebt_date)', unit: ccy}      # npv / DF(expiration_date)
+  premium_cents:   {expr: 'ts.premium_cents(market, trade, pricebt_date)', unit: bp}
+  local_annuity:   {expr: 'ts.local_annuity_in_cents(market, trade)', unit: decimal}
+  compounded_rate: {expr: 'ts.compounded_fixed_rate(market, trade)', unit: bp}            # annual fixed leg: the strike
+  crif_ir_curve:   {expr: 'ts.crif_ir_curve(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}
 portfolio_functions:
   delta_ladder:
     expr: 'ts.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
@@ -91,4 +98,11 @@ risk_measures:
   Annuity: annuity
   Cashflows: cashflows
   PnlExplain: pnl_explain
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif_ir_curve
   ProbabilityOfExercise: prob_exercise

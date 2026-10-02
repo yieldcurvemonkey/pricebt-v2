@@ -187,3 +187,24 @@ def test_meridian_example_and_mistakes(config, check):
     results = check_asset.run_checks(MERIDIAN / config, dates=MERIDIAN_DATES, sys_path=[MERIDIAN], backtest=check is None)
     fails = [r.name for r in results if r.status == check_asset.FAIL]
     assert (check in fails) if check else not fails, fails
+
+
+@pytest.mark.parametrize("cashflows_expr,status", [
+    (None, "PASS"),
+    ("cashflows(market, trade, pricebt_date).assign(payment_amount=lambda f: 2 * f.payment_amount)", "FAIL"),
+    ("cashflows(market, trade, pricebt_date).query(\"payment_type == 'Fixed'\")", "FAIL"),
+])
+def test_meridian_cashflow_drop_tells_the_par_roll_from_a_wrong_drop(cashflows_expr, status):
+    """Meridian's Price drops each coupon on its payment date, and its own par rate (IRFwdRate) jumps
+    there when the paid period leaves the remaining schedule: IRDelta x that roll is ~94% of the net
+    flow of the near-par probe. ir_cashflow_drop re-takes the delta term on the market part of the
+    IRFwdRate move (IRFwdRate on the step's end date minus the same on the start date's market, a
+    CloseMarket override): listing every flow twice, or the fixed leg only, FAILs; the honest config
+    PASSes and says why."""
+    raw = yamlio.load_file(MERIDIAN / "meridian_usd_irs.yaml")
+    if cashflows_expr:
+        raw["functions"]["cashflows"]["expr"] = cashflows_expr
+    rows = {r.name: r for r in check_asset.run_checks(raw, dates=MERIDIAN_DATES, sys_path=[MERIDIAN], backtest=False)}
+    assert rows["ir_cashflow_drop"].status == status, rows["ir_cashflow_drop"]
+    if status == "PASS":
+        assert "of it with the market" in rows["ir_cashflow_drop"].detail and "rolling off the remaining schedule" in rows["ir_cashflow_drop"].detail

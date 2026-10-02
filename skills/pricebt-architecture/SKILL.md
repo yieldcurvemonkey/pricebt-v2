@@ -57,7 +57,7 @@ Read these before interpreting any result. They are gs behaviour, kept on purpos
 ## The measure layer (IR pricing and risk)
 
 1. **Catalogue as data.** `pricebt.risk` holds every gs 2.1.17 measure and preset, with gs names and classes. It computes nothing: a config maps each measure you use to a function.
-2. **Contracts at load (DEV-I11).** An `IRSwap`, `IRSwaption` or `Bond` config must map or declare every measure and form of its contract (`src/pricebt/risk/contracts.py`). `load_asset` lists every gap and prints a paste-ready `unsupported_measures:` block. A declared measure raises `UnsupportedMeasureError` when requested.
+2. **Contracts at load (DEV-I11 amended, DEV-I19).** Every config of a class with a contract (`src/pricebt/risk/contracts.py`) answers every measure and form of it. The strict classes (`contracts.STRICT_CLASSES`: `IRSwap`, `IRSwaption`; `docs/v2/IR_STRICT_CONTRACT.md`) must **map** each one, the R3-1 rows (`ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`) included: a declaration is itself a load error, and `load_asset` lists every gap and ends with a paste-ready mapping skeleton (`contracts.mapping_skeleton`, stubs that do not compile until written). A `Bond` may map or declare: its error prints an `unsupported_measures:` block, and a declared measure raises `UnsupportedMeasureError` when requested. A literal `0.0` is honest only for `contracts.ZERO_BY_CONVENTION`.
 3. **Contract semantics.** Sensitivities are with respect to the instrument's **own rate** (`IRFwdRate`: par rate, forward swap rate, yield; DEV-I12) and the normal vol. `Theta` is per calendar day (DEV-I15).
 4. **Parameters pass through (DEV-I10).** `bump_size`, `finite_difference_method`, `local_curve` and `scale_factor` reach a function as `pricebt_<name>`. They are refused (raise) if the function does not name them, and they are part of every cache key.
 5. **Frames.** A `functions:` entry with `returns: frame` produces a table measure (`Cashflows`). Tables stay out of `result_summary`/`risk_summary` (DEV-R11).
@@ -91,7 +91,7 @@ Details: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md) and [`pric
 - **Trade object**: the library's own representation, built from the resolved terms.
 - **Unit value**: a function evaluated for quantity 1; pricebt applies `quantity_` and FX.
 - **Extensive / intensive**: scales with position size / does not.
-- **Measure contract**: the measures an `IRSwap`, `IRSwaption` or `Bond` config must map or declare under `unsupported_measures:`.
+- **Measure contract**: the measures an `IRSwap` or `IRSwaption` config must map (strict classes), or a `Bond` config must map or declare under `unsupported_measures:`.
 - **Own rate**: the instrument's `IRFwdRate`, which the `IRDelta` scalar and `IRGammaParallel` differentiate against.
 - **`PricingService`**: the single producer of values (`session.pricing`); use it for spot checks.
 

@@ -1,15 +1,16 @@
-"""skills/pricebt-connect-pricing-library: the fictional Meridian SDK, its asset config, and the three
-deliberate-mistake configs (the mistake tests assert the WRONG behaviour, so the example stays honest);
-and the three contract templates (references/config-template*.yaml): each maps the whole measure
-contract of `pricebt.risk.contracts`, loads blank, fails loudly when priced unfilled, pastes the
-declaration block back, and -- with its library primitives filled by the toy library -- prices every
-contract measure like the toy reference config, which proves its recipes."""
+"""skills/pricebt-connect-pricing-library: the fictional Meridian SDK, its asset config (the whole strict
+IRSwap contract, docs/v2/IR_STRICT_CONTRACT.md), and the three deliberate-mistake configs (the mistake
+tests assert the WRONG behaviour, so the example stays honest); and the three contract templates
+(references/config-template*.yaml): each maps the whole measure contract of `pricebt.risk.contracts`,
+loads blank, fails loudly when priced unfilled, answers a gap with the paste-ready mapping skeleton
+(IRSwap, IRSwaption) or declaration block (Bond), and -- with its library primitives filled by the toy
+library -- prices every contract measure like the toy reference config, which proves its recipes."""
 from __future__ import annotations
 
 import math
 import sys
 import warnings
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +32,7 @@ from pricebt.backtests.strategy import Strategy  # noqa: E402
 from pricebt.backtests.triggers import PeriodicTrigger, PeriodicTriggerRequirements  # noqa: E402
 from pricebt.errors import AssetEvaluationError, ConfigError, NotSupportedError  # noqa: E402
 from pricebt.instrument import Bond, IRSwap, IRSwaption  # noqa: E402
-from pricebt.markets import PricingContext  # noqa: E402
+from pricebt.markets import CloseMarket, PricingContext  # noqa: E402
 from pricebt.markets.portfolio import Portfolio  # noqa: E402
 from pricebt.risk import IRDelta, Price, contracts  # noqa: E402
 from pricebt.session import PricebtSession  # noqa: E402
@@ -188,7 +189,76 @@ def test_derived_measures_match_a_bump_and_reprice(por, fixed_rate):
         assert val(m) == 0.0
 
 
-def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix():
+def _spec_of(r):
+    t = r.resolved_terms
+    return mdn.connect().swap("USD", str(t["effective_date"]), str(t["termination_date"]), fixed_rate_pct=t["fixed_rate"] * 100.0,
+                              notional=abs(t["notional"]), direction="PAY" if t["notional"] > 0 else "RECEIVE")
+
+
+@pytest.mark.parametrize("por,fixed_rate", [("Pay", "ATM+50"), ("Receive", "ATM-40")])
+def test_scenario_measures_match_independent_reprices(por, fixed_rate):
+    """IRGammaParallel (chain rule on the +-1bp scenarios), Theta (forwards held: every DF divides by
+    DF(t+1d), so PV scales by 1/DF(t+1d) with no flow in the day), the IRGamma diagonal, and
+    PnlExplain, each against a computation written here from the SDK's raw prices."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(por, fixed_rate=fixed_rate), D1, None)
+    val = lambda m, d=D2: float(s.pricing.value(r, d, m, None))  # noqa: E731
+    spec = _spec_of(r)
+    (pu, ru), (pd_, rd), (p0, r0) = _bumped_pv_and_par(spec, D2, 1e-4), _bumped_pv_and_par(spec, D2, -1e-4), _bumped_pv_and_par(spec, D2, 0.0)
+    delta = (pu - pd_) / (ru - rd)
+    gamma = (pu + pd_ - 2 * p0 - delta * (ru + rd - 2 * r0)) / ((ru - rd) / 2) ** 2
+    assert val(risk.IRGammaParallel) == pytest.approx(gamma, rel=1e-9)
+    assert (gamma < 0) == (por == "Pay")                                         # a payer swap is short convexity in its own rate
+    no_chain = (pu + pd_ - 2 * p0) / ((ru - rd) / 2) ** 2
+    assert abs(no_chain / gamma - 1) > 1e-3                                       # the chain term matters here: the check is not vacuous
+    c = mdn.connect()
+    m = c.market(D2.isoformat(), "USD.SOFR")
+    df1 = c.discount_factors(m, [(D2 + timedelta(days=1)).isoformat()])[0]
+    assert val(risk.Theta) == pytest.approx(p0 * (1 / df1 - 1), rel=1e-9)        # no flow on D2 + 1d
+    ladder = s.pricing.value(r, D2, risk.IRGamma, None).result()
+    assert dict(zip(ladder["mkt_point"], ladder["value"]))["10Y"] == pytest.approx(
+        sum(c.price([spec], c.scenario(m, pillar_shifts_bp={"USD.SOFR:10Y": h}), ["PV"])[0]["PV"] for h in (1.0, -1.0)) - 2 * p0, rel=1e-9)
+    with PricingContext(D1):
+        rows = r.calc(risk.PnlExplain(CloseMarket(date=D2))).result()
+        base = float(r.calc(Price).result())
+    with PricingContext(D1, market=CloseMarket(date=D2)):
+        moved = float(r.calc(Price).result())                                     # D2's curve seen from D1: no time passes
+    assert list(rows["mkt_type"]) == ["IR", "CROSSES"] and rows["value"].sum() == pytest.approx(moved - base, rel=1e-12)
+
+
+@pytest.mark.parametrize("por,fixed_rate", [("Pay", "ATM+50"), ("Receive", "ATM-40")])
+def test_strict_contract_identities_on_meridian(por, fixed_rate):
+    """The R3-1 measures from first principles: Cashflows discount back to Price exactly (every flow
+    Price includes is listed, holder-signed), ForwardPrice x DF(end) and FairPremium x DF(spot) give
+    Price, PremiumCents and LocalAnnuityInCents are per |notional|, ParSpread = K - IRFwdRate (both
+    directions), CompoundedFixedRate = K (annual leg), sum(CRIF Amount) = the IRDelta ladder."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(por, fixed_rate=fixed_rate), D1, None)
+    val = lambda m: float(s.pricing.value(r, D2, m, None))  # noqa: E731
+    t, n = r.resolved_terms, abs(r.resolved_terms["notional"])
+    c = mdn.connect()
+    m = c.market(D2.isoformat(), "USD.SOFR")
+    price = val(Price)
+    flows = s.pricing.value(r, D2, risk.Cashflows, None)
+    assert (flows["payment_date"] > D2).all() and set(flows["payment_type"]) == {"Fixed", "Float"}
+    dfs = c.discount_factors(m, [p.isoformat() for p in flows["payment_date"]])
+    assert sum(a * df for a, df in zip(flows["payment_amount"], dfs)) == pytest.approx(price, rel=1e-9)
+    df_spot, df_end = c.discount_factors(m, [c.spot_date(m), t["termination_date"].isoformat()])
+    assert val(risk.ForwardPrice) * df_end == pytest.approx(price, rel=1e-12)
+    assert val(risk.FairPremium) * df_spot == pytest.approx(price, rel=1e-12)
+    assert val(risk.PremiumCents) == pytest.approx(price / n * 1e4, rel=1e-12)
+    assert val(risk.LocalAnnuityInCents) == pytest.approx(val(risk.Annuity) / n, rel=1e-12)
+    assert (val(risk.LocalAnnuityInCents) > 0) == (por == "Pay")
+    assert val(risk.ParSpread) == pytest.approx(t["fixed_rate"] * 1e4 - val(risk.IRFwdRate), rel=1e-12)
+    other = s.pricing.resolve(_swap("Receive" if por == "Pay" else "Pay", fixed_rate=t["fixed_rate"]), D1, None)
+    assert float(s.pricing.value(other, D2, risk.ParSpread, None)) == pytest.approx(val(risk.ParSpread), rel=1e-12)
+    assert val(risk.CompoundedFixedRate) == pytest.approx(t["fixed_rate"] * 1e4, rel=1e-12)
+    crif = s.pricing.value(r, D2, risk.CRIFIRCurve, None)
+    assert set(crif["Label1"]) <= set(contracts.SIMM_IR_TENORS) and set(crif["RiskType"]) == {"Risk_IRCurve"}
+    assert crif["Amount"].sum() == pytest.approx(s.pricing.value(r, D2, IRDelta, None).result()["value"].sum(), rel=1e-12)
+
+
+def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix(tmp_path):
     s = PricebtSession.use(assets=[CONFIG])
     r = s.pricing.resolve(_swap(fixed_rate="ATM+25"), D1, None)
     client = s.pricing.market(s.pricing.asset_for(r), D1, None).client
@@ -200,10 +270,17 @@ def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix():
     sys.path.insert(0, str(ROOT / "skills" / "pricebt-risk-measures" / "scripts"))
     import measures
 
-    assert measures.main(["matrix", "--strict", str(CONFIG)]) == 0            # no declaration any library could avoid
+    assert measures.main(["matrix", "--strict", str(CONFIG)]) == 0
     rows = {(x["measure"], x["form"]): x for x in measures.capability_matrix(CONFIG)["rows"]}
-    assert sorted(k[0] for k, x in rows.items() if x["status"] == measures.DECLARED) == ["Cashflows", "IRGamma", "IRGammaParallel", "Theta"]
-    assert measures.main(["matrix", "--strict", str(ROOT / "tests" / "assets" / "toy_usd_irs.yaml")]) == 1   # declares zeros
+    assert {x["status"] for x in rows.values()} == {measures.MAPPED}           # the whole strict contract, no declaration
+    assert {m for m, _f in rows} == {r.measure for r in contracts.contract_for("IRSwap")}
+    # --strict still refuses a declaration every library can avoid -- on a Bond, the one class that may declare
+    bond = yaml.safe_load((ROOT / "tests" / "assets" / "toy_usd_bond.yaml").read_text(encoding="utf-8"))
+    del bond["risk_measures"]["IRVanna"]
+    bond["unsupported_measures"] = {"IRVanna": "no vol bump in this library"}
+    path = tmp_path / "bond_declares_a_zero.yaml"
+    path.write_text(yaml.safe_dump(bond, sort_keys=False), encoding="utf-8")
+    assert measures.main(["matrix", str(path)]) == 0 and measures.main(["matrix", "--strict", str(path)]) == 1
 
 
 # ------------------------------------------------------------------ deliberate mistakes
@@ -309,6 +386,9 @@ def lib_translate(m, days): return tri._TranslatedCurve(m, days)
 def lib_annuity(m, t): return tri.annuity(m, t)
 def lib_cashflows(m, t): return []
 def lib_shift_pillar(m, pillar, h): return _KeyRateCurve(m, pillar, h)
+def lib_discount_factor(m, d): return m.discount_factor(d)
+def lib_fixed_frequency(t): return 1
+def lib_at(m, d): return tri.at(m, d)
 '''
 
 _TOY_SWAPTION = _TOY_KEY_RATE + '''
@@ -330,6 +410,11 @@ def lib_vol_shift(m, h): return _NS(curve=m.curve, sigma=m.sigma + h)
 def lib_translate(m, days): return _NS(curve=tri._TranslatedCurve(m.curve, days), sigma=m.sigma)
 def lib_cashflows(m, leg): return []
 def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), sigma=m.sigma)
+def lib_discount_factor(m, d): return m.curve.discount_factor(d)
+def lib_premium_date(m, r): return m.curve.ref_date
+def lib_fixed_frequency(r): return 1
+def lib_at(m, d): return _NS(curve=tri.at(m.curve, d), sigma=m.sigma)
+def lib_with_vols(m, m_vols): return _NS(curve=m.curve, sigma=m_vols.sigma)
 '''
 
 _TOY_BOND = _TOY_KEY_RATE + '''
@@ -383,13 +468,17 @@ def _filled(instrument):
     return raw
 
 
-def _requests(instrument):
-    """(measure, form, request) for every form of every row of the instrument's contract."""
+def _requests(instrument, d):
+    """(measure, form, request) for every form of every row of the instrument's contract; PnlExplain
+    explains d to a week later."""
     for req in contracts.contract_for(instrument):
         obj = getattr(risk, req.measure)
         is_fd = isinstance(obj, risk.RiskMeasureWithFiniteDifferenceParameter)
         for form in req.forms:
-            yield req.measure, form, obj(aggregation_level="Type") if form == "scalar" and is_fd else obj
+            if req.measure == "PnlExplain":
+                yield req.measure, form, obj(CloseMarket(date=d + timedelta(days=7)))
+            else:
+                yield req.measure, form, obj(aggregation_level="Type") if form == "scalar" and is_fd else obj
 
 
 def _values(cfg, inst, d, resolve_on=None):
@@ -397,7 +486,7 @@ def _values(cfg, inst, d, resolve_on=None):
     r = s.pricing.resolve(inst, resolve_on or d, None)
     out = {}
     with PricingContext(d):
-        for measure, form, request in _requests(type(inst).__name__):
+        for measure, form, request in _requests(type(inst).__name__, d):
             v = r.calc(request).result()
             out[(measure, form)] = float(v) if form == "scalar" else pd.DataFrame(v)
     return out
@@ -410,6 +499,11 @@ def _compare(instrument, got, ref):
         if form == "scalar":
             assert math.isfinite(v), measure
             assert v == pytest.approx(r, rel=TOL.get((instrument, measure), 1e-9), abs=1e-9), measure
+        elif measure == "CRIFIRCurve":  # the template's CRIF is its key-rate ladder (the toy's: nearest pillar): the identity
+            assert list(v.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"]) and set(v["Label1"]) <= set(contracts.SIMM_IR_TENORS)
+            assert v["Amount"].sum() == pytest.approx(got[("IRDelta", "bucketed")]["value"].sum(), rel=1e-12, abs=1e-9)
+        elif measure == "PnlExplain":   # the same rows by risk factor as the toy's full revaluation
+            assert dict(zip(v["mkt_type"], v["value"])) == pytest.approx(dict(zip(r["mkt_type"], r["value"])), rel=1e-9, abs=1e-9)
         elif form == "frame":
             assert len(v) == len(r) and v["payment_amount"].sum() == pytest.approx(r["payment_amount"].sum())
         elif measure == "IRDelta":   # key-rate ladder: sums to the parallel (discount-only, single curve) delta,
@@ -439,21 +533,48 @@ def test_blank_template_fails_loudly_at_the_first_todo(instrument):
         s.pricing.resolve(CASES[instrument][4][0](), CASES[instrument][3], None)
 
 
-@pytest.mark.parametrize("instrument", CASES)
-def test_template_declaration_path_pastes_back(instrument):
-    """Map only Price: the load error carries the paste-ready block for the rest, and pasting it loads."""
+def _price_only(instrument):
     raw = _template_raw(instrument)
     raw["risk_measures"] = {"Price": raw["risk_measures"]["Price"]}
     with pytest.raises(ConfigError) as exc:
         load_asset(raw)
     missing = [(r.measure, f) for r in contracts.contract_for(instrument) if r.measure != "Price" for f in r.forms]
-    block = contracts.unsupported_block(instrument, missing)
-    assert block in str(exc.value)
+    return raw, missing, str(exc.value)
+
+
+def test_bond_template_declaration_path_pastes_back():
+    """Bond keeps map-or-declare: map only Price, and the load error carries the paste-ready block for
+    the rest; pasting it loads."""
+    raw, missing, err = _price_only("Bond")
+    block = contracts.unsupported_block("Bond", missing)
+    assert block in err
     raw["unsupported_measures"] = yaml.safe_load(block)["unsupported_measures"]
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         cfg = load_asset(raw)
-    assert set(cfg.unsupported_measures) == {r.measure for r in contracts.contract_for(instrument)} - {"Price"}
+    assert set(cfg.unsupported_measures) == {r.measure for r in contracts.contract_for("Bond")} - {"Price"}
+
+
+@pytest.mark.parametrize("instrument", ["IRSwap", "IRSwaption"])
+def test_strict_template_gap_gets_the_mapping_skeleton_never_a_declaration_block(instrument):
+    """IRSwap/IRSwaption (IR_STRICT_CONTRACT R3-0): map only Price, and the load error lists every gap
+    and ends with the paste-ready mapping skeleton, not an unsupported_measures block. The skeleton's
+    stub expressions do not compile, so pasting it unchanged still does not load; and declaring the
+    gaps instead is itself refused."""
+    raw, missing, err = _price_only(instrument)
+    skeleton = contracts.mapping_skeleton(instrument, missing)
+    assert skeleton in err and "unsupported_measures:" not in err
+    assert all(m in err for m, _f in missing)
+    pasted = yaml.safe_load(skeleton)
+    raw["functions"].update(pasted["functions"])
+    raw["portfolio_functions"].update(pasted.get("portfolio_functions", {}))
+    raw["risk_measures"].update(pasted["risk_measures"])
+    with pytest.raises(ConfigError):
+        load_asset(raw)
+    declared = _price_only(instrument)[0]
+    declared["unsupported_measures"] = yaml.safe_load(contracts.unsupported_block(instrument, missing))["unsupported_measures"]
+    with pytest.raises(ConfigError, match="unsupported_measures cannot satisfy them"):
+        load_asset(declared)
 
 
 @pytest.mark.parametrize("instrument,variant", [(i, k) for i in CASES for k in (0, 1)])
