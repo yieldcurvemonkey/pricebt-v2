@@ -227,10 +227,14 @@ def test_a_gamma_fd_matches_independent_second_difference_within_1pct(d):
 
     m = session.pricing.market(asset, d, None)
     fresh_trade = _rebuild_on(m, payer.resolved_terms)
-    npv_mid = float(m.npv(fresh_trade))
+    npv_mid, par_mid = float(m.npv(fresh_trade)), float(m.fair_rate(fresh_trade)) * 1e4
     npv_up, par_up = _independent_bump_price(m, fresh_trade, 1.0)
     npv_down, par_down = _independent_bump_price(m, fresh_trade, -1.0)
-    independent_gamma = (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+    # Re-baselined to the contract's chain-rule IRGammaParallel (docs/v2/IR_STRICT_CONTRACT.md R3-3 C,
+    # MERGE_NOTES_pnl_explain.md section 4), not loosened: the bare (n+ + n- - 2n0)/((p+ - p-)/2)^2 this
+    # row first compared against drops the par rate's own convexity in the shift (~10% at 10y ATM).
+    dpar = par_up - par_down
+    independent_gamma = (npv_up + npv_down - 2.0 * npv_mid - (npv_up - npv_down) / dpar * (par_up + par_down - 2.0 * par_mid)) / (dpar / 2.0) ** 2
 
     rel = abs(config_gamma - independent_gamma) / max(abs(independent_gamma), 1e-9)
     print(f"A-GAMMA-FD {d}: config={config_gamma:.6f} independent={independent_gamma:.6f} rel={rel:.4%}")
@@ -489,7 +493,7 @@ def test_a_mature_no_nan_across_maturity_delta_equals_minus_pv(mature_bt):
     # STRICT '<': the config's own alive() is `maturity_date > reference_date` (§2.5) -- dv01/gamma/
     # theta/par are ALREADY 0.0/dead on the date that EQUALS maturity itself, even though npv/PV is
     # still nonzero there (npv's own guard is unsettled(), maturity+2b, a looser bound). The maturity
-    # STEP -- where PNL_delta should equal -PV(t-1) -- is therefore last-truly-alive -> maturity, not
+    # STEP -- the one a dead-trade par convention decides -- is therefore last-truly-alive -> maturity, not
     # maturity -> maturity+1 (verified live: `d <= maturity` picked a date where dv01 was already 0).
     alive_dates = [d for d in sorted(bt.results) if inst in bt.results[d].portfolio and d < maturity]
     assert alive_dates, "test setup problem: trade never alive before its own maturity in this window"
@@ -501,8 +505,16 @@ def test_a_mature_no_nan_across_maturity_delta_equals_minus_pv(mature_bt):
     price_risk = bt.price_measure
     pv_prev = float(bt.results[last_alive][inst][price_risk])
     delta_at_step = float(table.loc[maturity_step, "PNL_delta"])
-    print(f"A-MATURE: last_alive={last_alive} maturity_step={maturity_step} pv_prev={pv_prev:.4f} PNL_delta={delta_at_step:.4f}")
-    assert delta_at_step == pytest.approx(-pv_prev, rel=1e-6, abs=1.0)
+    resid_at_step = float(table.loc[maturity_step, "residual"])
+    print(f"A-MATURE: last_alive={last_alive} maturity_step={maturity_step} pv_prev={pv_prev:.4f} PNL_delta={delta_at_step:.4f} residual={resid_at_step:.6f}")
+    # Re-baselined with the dead-trade IRFwdRate decision (R3, docs/v2/LIVE_ARBS_REPORT.md "Strict contract
+    # (R3)"): par now continues at the final period's own par (R2-7), so the maturity step explains to ~0.
+    # The earlier `PNL_delta == -PV(t-1)` pinned the old par = fixed_rate jump, whose residual was ~ +PV.
+    assert abs(resid_at_step) < 1e-3 * abs(pv_prev), f"maturity step residual {resid_at_step} vs PV(t-1) {pv_prev}"
+    assert abs(delta_at_step) < 1e-3 * abs(pv_prev)
+    paid = [d for d in table.index if abs(table.loc[d, "cash"]) > 1.0]
+    assert len(paid) == 1 and abs(table.loc[paid[0], "economic"]) < 1e-6 * 1_000_000, \
+        f"the final coupon must leave npv on the step cash_paid_to_date gains it: {table.loc[paid].to_dict('records') if paid else paid}"
 
     cum = table[["actual_dpv", "cash", "economic", "PNL_delta", "PNL_gamma", "PNL_carry", "explained", "residual"]].cumsum()
     assert np.isfinite(cum.to_numpy(dtype=float)).all()

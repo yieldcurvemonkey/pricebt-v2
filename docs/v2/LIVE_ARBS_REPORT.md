@@ -164,3 +164,174 @@ Exactly the documented one: an empty, today-dated folder appears in ARBS's fixin
 process. No network call, no curve-store write, on any of the live runs performed for this tier (three
 full-file runs plus several targeted single-test/diagnostic runs during development, all deliberate, none
 in a loop or retry harness). Nothing crossed a rail; nothing unexpected happened.
+
+---
+
+## Strict contract (R3)
+
+**Status: run 2026-10-01** (user authorisation for live store-only reads, `docs/v2/PNL_EXPLAIN_PLAN.md` §1.1
+rails unchanged). The ARBS config now maps **every** strict-contract measure of `IRSwap` (the 19 base
+rows plus the 8 R3-1 rows, `docs/v2/IR_STRICT_CONTRACT.md`) and has **no** `unsupported_measures:`
+block. It loads under owner A's strict check with no warning.
+
+- [`tests/test_live_arbs_contract.py`](../../tests/test_live_arbs_contract.py) (new): **12 of 13 passed in 34.3s**.
+  The one failure is `check_asset`'s `ir_cashflow_drop` row. Owner D changed that row during this work,
+  and the change conflicts with the contract's `Theta`; see "Open conflict" below.
+- [`tests/test_live_arbs_pnl.py`](../../tests/test_live_arbs_pnl.py) and [`tests/test_live_arbs.py`](../../tests/test_live_arbs.py),
+  rerun against the new config: **26 of 27 passed in 373.8s**. The one failure is A-CHECK, on the same
+  `ir_cashflow_drop` row. A-TIME, the whole pnl file without itself, was 331.5s, against 283.9s at T2.
+- `tests/test_arbs_config_static.py` (no ARBS, parses the YAML only): 7 of 7 passed.
+
+### Run it
+
+```powershell
+cd C:\Users\chris\clee\gsquant-temp-claude\pricebt-req
+$env:PYTHONPATH = "src;tests"
+$env:PRICEBT_LIVE_ARBS = "1"
+& C:\Users\chris\anaconda3\envs\stir\python.exe -m pytest tests/test_live_arbs_contract.py -o addopts= -p no:cacheprovider -q -s
+```
+
+### Functions added or changed (`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`)
+
+| Measure | Function | How |
+|---|---|---|
+| `IRDiscountDeltaParallel` | `discount_delta` | ±1bp on the **discount** curve only, with the projection curve held: rateslib `npv(curves=[forecast, discount])`. Verified that the list order is `[forecast, discount]`, and that discount-only plus projection-only adds up to the full parallel shift to 1e-7 relative. |
+| `IRGamma` (bucketed) | `gamma_ladder` | The **diagonal** of `rl.Portfolio(...).gamma(solver=sv)` on the existing `_risk_model` risk curve. The pillars are the delta ladder's (`_PILLARS` = 2Y/5Y/10Y/30Y). Units are USD per bp². This is the full Hessian, not half of it: its total over every cell equals the chain-rule `IRGammaParallel` to 0.07% (see the recorded comparisons below). |
+| `IRGammaParallel` | `gamma` (changed) | The **chain-rule** second derivative (MERGE_NOTES §4). On a 10y ATM payer on 2024-05-20 it gives −0.8168, against −0.7365 from the old bare second difference (10.9% low). |
+| `Theta` | `theta_1d` (new) | USD per **calendar day**. It reuses T2's translated curve, holds the own par fixed, and adds the flows npv drops in (t, t+1d] (see decision 2). |
+| `IRTheta` (custom) | `theta` (changed) | `365 × theta_1d`: one definition, so `Theta·365 == IRTheta` holds exactly. |
+| `IRFwdRate` | `par_rate` → `par_bp` | The live branch is unchanged. Only the dead-trade branch changed (see decision 3). |
+| `IRSpotRate` | `spot_rate` | The par rate of a swap starting at spot and ending on this trade's termination date. Once termination ≤ spot, it is the zero-length limit of that swap: the overnight forward at spot. This stays finite and continuous (432.6 → 431.3 → 430.1bp across the 1y swap's maturity). |
+| `Cashflows` | `cashflows` | Every flow still inside npv (`Payment >= reference date`), holder-signed, both legs, with `payment_date = Payment + 1 calendar day` (see decision 1). |
+| `ExpiryInYears` | `expiry_in_years` | (termination − reference date).days / 365, floored at 0 |
+| `Annuity` | `annuity` | `1e4 × pv01`, holder-signed (payer > 0); 0 once the swap is dead |
+| `ParSpread` | `par_spread` | rateslib `IRS.spread()`, the float-leg spread that makes npv 0. It equals K − par to 1e-13bp for these matching annual legs. Dead swap: K − the continued par. |
+| `FairPremium` | `fair_premium` | `Price / DF(spot)` (USD spot = reference date + 2b) |
+| `ForwardPrice` | `forward_price` | `Price / DF(termination)`; on or after termination, `Price` |
+| `PremiumCents` | `premium_cents` | `Price / abs(N) × 1e4`, unit bp, intensive |
+| `LocalAnnuityInCents` | `local_annuity_in_cents` | `Annuity / abs(N)`, unit decimal, intensive |
+| `CompoundedFixedRate` | `compounded_fixed_rate` | `(1 + K/f)^f − 1`, with f read from the trade's fixed-leg schedule (`periods_per_annum`). usd_irs is annual, so the result is K. |
+| `CRIFIRCurve` | `crif_ir_curve` | One row per pillar of this trade's own delta ladder. `Risk_IRCurve`, Qualifier `USD`, Bucket `"1"`, Label1 the pillar in lower case, Label2 `OIS`, AmountCurrency `USD`. A dead swap gives an empty frame. |
+| `PnlExplain` | `pnl_explain` (portfolio, buckets) | One `IR` row = Σ w·(npv(`market_to`) − npv(`market`)) (see decision 4) |
+| `IRVega` / `IRVanna` / `IRVolga` / the three vol levels / `IRBasis` / `IRXccyDelta` | `zero_per_bp`, `zero_per_bp2`, `zero_vol`, `vega_cube` (`{}`) | 0.0 **by convention**. The swap is single-curve (USD-SOFR-1D both discounts and projects), single-currency, and has no vol exposure. Each of these measures is in `contracts.ZERO_BY_CONVENTION["IRSwap"]`. No other measure is a constant (the static test asserts this). |
+| (helper) `unsettled` | changed `>` to `>=` | See decision 1. It changes npv only on the final coupon's payment date. |
+| `IRDelta` scalar | `dv01`, **unchanged** | Still the annuity pv01. It is the own-rate delta exactly only at the money (R2-1, documented in the config). The 040304 notebook sizes on it. |
+
+### Decisions
+
+1. **Cashflows: the date a flow drops.** I verified live on the 10y payer resolved 2024-01-03, whose first
+   Payment is 2025-01-08. ARBS npv keeps the coupon **on** its Payment date (71,142.83 → 71,595.66) and drops
+   it the next day (52,448.50). So `payment_date` is the date Price drops the flow, which is Payment + 1
+   calendar day. The checker's and `pnl_explain_table`'s (t0, t1] rule then counts the flow on exactly the
+   step on which npv loses it, and on which `cash_paid_to_date` (its rule is `Payment < ref`) gains it.
+   The contract's "payment_date > pricing date" then holds while the flow is still inside npv. Side
+   finding: the old `unsettled` guard (`maturity + 2b > ref`) zeroed npv a day **before** the final coupon
+   paid. On a 1y payer that left a −4,489.71 / +4,489.71 residual pair on 2025-01-08 and 2025-01-09.
+   Fixed to `>=`, the final coupon now drops like every other coupon.
+2. **Theta holds the own par fixed** (contract: "holding the own IRFwdRate fixed"; R3-3: "own par fixed").
+   On a normal day the translated curve already does this: the par moved 0.000000bp, and Theta agreed with
+   T2's formula to 1e-10. On a **coupon day** the paid period leaves the remaining swap, and its par jumps
+   (−12.73bp under the one-day translation on 2025-01-08). That jump is time, not a market move, so
+   `theta_1d` removes it at the translated pv01: `npv_T − pv01_T·(par_T − par_0) + coupon_today − npv_0`.
+   On 2025-01-08 the config gives 9,506.25/day, where T2's formula gave 6.39/day. Evidence, from the
+   canonical `pnl_explain_table` (`ir_pnl_definition(vega=False, vanna=False, volga=False)` with
+   `Cashflows`; 10y payer 2024-01-03 → 2025-01-31):
+
+   | Theta | coupon-step residual (2025-01-09) | run Σ abs(residual) |
+   |---|---|---|
+   | own par held (shipped) | **1,571.24** (8.7% of the 18,106.50 flow) | 20,360.51 |
+   | T2 formula (par not held) | 11,071.09 (61.1%) | 29,858.82 |
+
+   The 1,571 left over is −a·Δpar. The delta term uses the pre-drop annuity, while the paid period's
+   annuity `a` has already left; that is a first-order limit of an own-par risk factor on a
+   period-dropping Price.
+3. **Dead-trade par (R2-7): continuous, the final period's own par.** On a dead date, `par_bp` returns
+   `K × (−float_cf / fixed_cf)` of the final accrual period, from the remarked trade's own `cashflows()`.
+   Both legs pay on one date, so the discount factor cancels. This **equals** `fair_rate` on every
+   dead-but-unsettled date: 526.5049687718308 against 526.5049687718309 on 2025-01-06..08. It stays finite
+   after the payment, where `fair_rate` raises `ZeroDivisionError`. It is continuous with the last live
+   value: 526.507952 → 526.504969bp across maturity. Evidence, from `pnl_explain_table` (as above) on a 1y
+   payer 2024-01-03 → 2025-03-31:
+
+   | Dead par | last-alive → maturity step residual | run Σ abs(residual) |
+   |---|---|---|
+   | final-period par (shipped) | **0.003** (PNL_delta −0.30) | 91.41 |
+   | `fixed_rate × 1e4` (merged T2 convention) | 4,518.71 (PNL_delta −4,487.33 ≈ −PV) | 4,610.12 (13,588.47 before the `unsettled` fix) |
+
+   `ParSpread` continues the same way, as K − par (−44.04bp after maturity).
+4. **PnlExplain includes time on ARBS.** An ARBS market object carries its own valuation date. The toys
+   re-anchor; ARBS cannot. So the IR row is npv(market_to) − npv(market): the market move **plus** the
+   carry between the two dates, and any coupon npv drops in between. For example, across the coupon,
+   2025-01-08 → 01-09 gives IR = −19,147.17, which includes the −18,106.50 coupon. This is the spec's
+   "IR row = npv(market_to) − npv(market)"; it is recorded here as a deliberate difference from the toys.
+5. **IRSpotRate after spot ≥ termination** uses the overnight forward at spot, the zero-length limit of the
+   spot-starting swap. I did not fall back to the own par: that would jump 432 → 526bp on a 1y swap's last
+   days.
+
+### Results (`tests/test_live_arbs_contract.py`, every number as printed with `-s`)
+
+| Test | Result | Numbers |
+|---|---|---|
+| coverage: all 27 rows mapped, finite on 2 dates | PASS | 10y payer (resolved 2024-01-03). On 2024-05-20: Price 53,344.34, IRDelta 825.14, IRDiscountDeltaParallel −17.68, IRGammaParallel −0.7832, IRFwdRate 413.54, IRSpotRate 406.91, Theta 7.870/day, ExpiryInYears 9.6356, Annuity 8,251,357, ParSpread −64.65bp, FairPremium 53,360.08, ForwardPrice 78,568.48, PremiumCents 533.44bp, LocalAnnuityInCents 8.2514, CompoundedFixedRate 348.89bp. On 2024-11-04: Price 39,932.65, IRDelta 854.57, Theta 5.155/day, ParSpread −46.73bp. PnlExplain gives one `IR` row. |
+| identities, payer + receiver + quantity 2.5 | PASS (both dates) | `PremiumCents == Price/abs(N)·1e4`, `LocalAnnuityInCents == Annuity/abs(N)`, `Annuity == 1e4·dv01`, `ForwardPrice·DF(term) == Price` (DF(term) 0.678953 / 0.707153), and `FairPremium·DF(spot) == Price` (DF(spot) 0.99970499 / 0.99974186) all hold to 1e-9. `ParSpread` equals K − par exactly (−64.649172 / −46.728405bp; the bound is 0.5bp). `CompoundedFixedRate` = K = 348.893553bp. `Σ CRIF Amount == Σ IRDelta ladder` to 1e-9 (766.153934 / 759.184314). Receiver: the signed measures negate and the levels are equal. Quantity 2.5 multiplies the extensive measures by 2.5 and leaves the intensive ones unchanged. |
+| IRSpotRate on a fresh spot swap's trade date | PASS | 406.88922628 == IRFwdRate 406.88922628 |
+| Cashflows across a coupon date | PASS | 10y: flow 18,106.4971 equals the hand both-leg `Cashflow`; listed (payment_date 2025-01-09) through 2025-01-08 and gone on 01-09 (rows 20 → 18); npv 71,142.83 / 71,595.66 / 52,448.50 on 01-07/08/09; cash jump 18,106.4971. 1y final coupon: npv 4,489.7097 on its Payment date, 0 the next day, dnpv + flow = 0.0000 exactly. |
+| PnlExplain IR row == Δnpv | PASS | 2024-05-20 → 06-03: IR −2,191.991600 == Δnpv −2,191.991600. ×2.5 at quantity 2.5; the receiver negates. Across the coupon: −19,147.1663 == Δnpv. |
+| IRGamma diagonal vs IRGammaParallel (recorded) | PASS | The config ladder equals the independently calibrated Hessian's diagonal to 1e-9. Fresh 10y on 2024-01-03: diagonal sum −0.481748 vs IRGammaParallel −0.855965 (ratio 0.563); full-Hessian sum −0.855348 (ratio 0.9993, asserted within 1%). Fresh on 2024-05-20: −0.462401 vs −0.816778 (0.566); Hessian 1.0000. Seasoned (traded 2024-01-03, on 2024-11-04): −0.271336 vs −0.788942 (0.344); Hessian 0.9105. The 2Y/5Y cross terms carry the rest; for a seasoned trade between pillars the 4-pillar risk curve also differs from the dense curve. Recorded, not asserted. |
+| IRDiscountDeltaParallel vs dv01 (recorded) | PASS | ATM on its trade date: 4.95 vs dv01 838.02 (ratio 0.0059) and 6.11 vs 812.56 (0.0075). Seasoned (npv 39,932.65): −11.05 vs 854.57 (−0.0129). Discount plus projection-only matches the full parallel shift to 1e-7 relative (872.5710 vs 872.5711). Payer struck ATM−50 (npv 40,628.10): −15.31, which is < 0 as it must be. |
+| Theta·365 vs IRTheta (recorded) | PASS | Equal by construction (1881.6296 on 2024-11-04). Coupon day 2025-01-08: config 9,506.2458/day vs T2's formula 6.3944/day. The translated par moved −12.733141bp; coupon today 18,106.4971. On 2025-01-07 both give 8.5022/day. |
+| dead par across maturity | PASS | 1y payer: t_a 2025-01-03, t_m 2025-01-06, PV(t_a) 4,487.33, par 526.507952 → 526.504969bp. Maturity step: economic 1.3119, PNL_delta −0.3039, PNL_theta 1.6128, residual 0.0030. Drop step 2025-01-09: actual −4,489.7097, cash +4,489.7097, residual 0.000000. Run Σ abs(residual) 91.41, max 4.01. |
+| `check_asset` no FAIL, every `contract[...]` row PASS | **FAIL** (one row) | PASS=176. All 27 `contract[...]` rows PASS, along with `contract_declarations`, `swap_*`, `ir_gamma_ratio` (0.991), `ir_taylor` (1.6%) and `ir_cashflows`. WARN: `ir_theta` (ratio 0.0375: the annuity dv01 off-market, as the row itself explains), `ir_ladder_sum[IRGamma]` (diagonal vs parallel, 45.9%) and `performance`. SKIP: `ir_dead_levels` (the 10y probe ends in 2034) and `fx_round_trip`. **FAIL: `ir_cashflow_drop`**, see below. |
+
+### Open conflict: `check_asset_ir.row_cashflow_drop` (owner D's file) contradicts the contract's Theta
+
+Earlier in this session the row measured the step's rate move with `IRFwdRate`, and on this config it
+read **WARN 8.7%**: delta 12,042.1 + gamma 76.1 + theta −9,506.25 left a residual of −1,571.24 on the
+receiver probe. It now uses `IRSpotRate` ("dr from IRSpotRate") and reads **FAIL 51.2%**: delta 1,273.57 +
+gamma 0.85 + theta −9,506.25 leaves a residual of 9,272.5.
+
+The two views are each self-consistent:
+- **(A)** The rate is `IRFwdRate` and Theta holds `IRFwdRate` fixed. This is what the contract's `Theta`
+  row and the R3-3 spec say, and what `src`'s `ir_pnl_definition` attributes against.
+- **(B)** The rate is `IRSpotRate` and Theta does **not** hold the own par. That is T2's formula, under
+  which this row would read about 1.3%.
+
+The new row therefore FAILs any contract-correct Theta on a swap whose Price drops paid periods. This
+config ships (A), because the canonical `pnl_explain_table` is 7× better under it (decision 2).
+
+Suggested fix for D: measure the step with `IRFwdRate`, the same variable `ir_pnl_definition` uses.
+Alternatively, if the `IRSpotRate` view is kept, do not add the `Theta` term on that step. I changed no
+D file, and I did not weaken my tests: both `test_check_asset_no_fail_and_every_contract_row_passes` and
+A-CHECK still assert no FAIL. They will go green once the row agrees with the contract.
+
+### T2 tests re-baselined to R3 (not loosened)
+
+- **A-GAMMA-FD:** the independent finite difference now uses the contract's chain-rule formula. It matches
+  `gamma` at 0.0000% on all 5 dates; for example −0.855965 on 2024-01-03, where the old formula gave
+  −0.772266.
+- **A-MATURE:** `PNL_delta == −PV(t−1)` asserted the old jump of par to fixed_rate. It now asserts that the
+  maturity step's residual and PNL_delta are each < 1e-3·PV (measured: 0.0030 and −0.3039 against PV
+  4,487.33). It also asserts that the final coupon leaves npv on the step where `cash_paid_to_date` gains
+  it, with economic < 1 USD. The old `unsettled` guard would fail this check: decision 1 measured its
+  −4,489.71 / +4,489.71 pair.
+- **Other changes, from the same rerun:**
+  - **A-CASH:** the residual with cash is now 1,571.24 (8.7% of the coupon); at T2 it was 11,072 (61%),
+    which T2-C had explained as a moneyness residual.
+  - **A-ROLL:** r2 0.999905, residual_share 9.44e-5.
+  - **A-GAMMA-USE:** with gamma vs without, 202.07 vs 240.02 (10y) and 862.13 vs 1,014.97 (30y).
+  - **A-IDENT:** worst overage −1.81, unchanged.
+
+### Side effects observed
+
+Exactly the documented one: today's (2026-10-01) fixings-cache folder exists and is **empty**. There was
+no network attempt: every scratch probe ran with outbound `connect` patched to raise, and none raised.
+`test_no_network_load_market_and_fixings_cache_unchanged` passed in the rerun. Nothing was written to the
+curve store. Live reads in this tier:
+- the contract file, run once;
+- the pnl and base files, run once;
+- two direct-call mutation runs (the dead-par and coupon-day Theta tests against scratch variants of the
+  config with the old conventions; both tests failed, as they must);
+- about a dozen single-shot scratch probes.
+
+All were deliberate, none in a loop. A gamma ladder computed on a market leaves that market's shared
+`_risk_model` solver unchanged: a delta ladder computed after it is identical (max difference 0.0).

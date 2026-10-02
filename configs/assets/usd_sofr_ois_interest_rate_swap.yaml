@@ -4,25 +4,12 @@ description: >
   USD SOFR OIS swap priced by ARBS on Eris EOD curves. Reads the ARBS curve store only: no curve-store writes and no
   network for dates <= _LAST_SAFE (2026-08-20); each call creates an empty today-dated folder in ARBS's fixings cache.
   Instrument: pricebt.instrument.IRSwap (gs fields). Units: npv USD; dv01 USD per +1bp (payer > 0); rates in bp.
+  Maps the whole strict IRSwap contract (docs/v2/IR_STRICT_CONTRACT.md R3-0; numbers in docs/v2/LIVE_ARBS_REPORT.md
+  "Strict contract (R3)"). Single curve (USD-SOFR-1D discounts and projects), single currency, no vol: the vol
+  measures, IRBasis and IRXccyDelta are 0.0 by convention (contracts.ZERO_BY_CONVENTION).
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
-unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); only what this config does not map
-  IRDiscountDeltaParallel: "single-curve OIS pricing (USD-SOFR-1D discounts and projects); no discount-only bump function is wired for ARBS yet"
-  IRGamma: "no gamma ladder function is wired for ARBS yet"
-  IRVega: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  IRVanna: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  IRVolga: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  IRBasis: "single-curve OIS pricing (no projection-vs-discount basis); no zero function is wired for ARBS yet"
-  IRXccyDelta: "single-currency USD swap (no cross-currency basis); no zero function is wired for ARBS yet"
-  IRSpotRate: "no spot-starting-equivalent par rate function is wired for ARBS yet"
-  IRAnnualImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  IRAnnualATMImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  IRDailyImpliedVol: "an OIS swap has no vol exposure (0.0 by convention, R2-8); no zero function is wired for ARBS yet"
-  Theta: "the per-year IRTheta is mapped; Theta (per day) = IRTheta / 365 is not wired (R2-4)"
-  ExpiryInYears: "no years-to-final-date function is wired for ARBS yet"
-  Annuity: "market.pv01 exists but no Annuity function (1e4 x pv01) is wired for ARBS yet"
-  Cashflows: "no cashflow-schedule (frame) function is wired for ARBS yet"
 defaults:
   pay_or_receive: Receive          # gs server default (R04 s1); coerced to PayReceive.Receive (value 'Rec')
   termination_date: 10y
@@ -125,8 +112,11 @@ code: |
   def alive(m, t):                          # rate/risk functions: the swap still has accrual periods ahead
       return m.maturity_date(t).date() > m.reference_date().date()
 
-  def unsettled(m, t):                      # npv only: the final coupon pays at maturity + PaymentLag 2b (R06 s2)
-      return pd.Timestamp(m.calendar_advance(m.maturity_date(t), "2b")).date() > m.reference_date().date()
+  def unsettled(m, t):                      # npv only: the final coupon pays at maturity + PaymentLag 2b (R06 s2), and ARBS
+      # npv keeps a coupon ON its payment date (dropping it the day after, verified live), so '>=': with '>' Price
+      # went to 0 a day before Cashflows/cash_paid_to_date paid the final coupon (live: a -4,489.71 / +4,489.71
+      # residual pair on 2025-01-08/09 for a 1y payer), the same drop day as every earlier coupon now.
+      return pd.Timestamp(m.calendar_advance(m.maturity_date(t), "2b")).date() >= m.reference_date().date()
 
   def remark(m, t):                        # the same swap rebuilt on market m (m's fixings); memo per market (R06 s3.4)
       memo = m.__dict__.setdefault("_pricebt_remark", {})
@@ -217,30 +207,116 @@ code: |
       return float(cf.loc[pay.apply(predicate), "Cashflow"].sum())                 # Payment/Cashflow;
       # a payer's fixed leg Cashflow < 0, float leg > 0 -- net is payer-positive when float > fixed, 2.4)
 
-  def gamma(m, t):                     # 2.1: 2nd derivative of NPV, NEVER of dv01 (half-gamma trap)
-      if not alive(m, t):
-          return 0.0
-      rh_up, rh_down = _bump_curves(m)
+  def _price(m, t):                    # = the npv function (Price): holder-signed PV, 0 once the final coupon has dropped
+      return m.npv(t) if unsettled(m, t) else 0.0
+
+  def _ref_d(m):
+      ref = m.reference_date()
+      return ref.date() if hasattr(ref, "date") else ref
+
+  def _final_period_par(m, t):         # dead-trade IRFwdRate (R2-7; LIVE_ARBS_REPORT.md "Strict contract (R3)"):
+      cf = remark(m, t).cashflows(curves=m.handle())   # the par of the FINAL accrual period from its own two
+      last = cf[cf["Payment"] == cf["Payment"].max()]  # flows, K * float / -fixed. Both legs pay on one date, so
+      kind = last["Type"].astype(str)                  # the DF cancels: it equals fair_rate on every dead-but-
+      fl = float(last.loc[kind.str.contains("Float"), "Cashflow"].sum())   # unsettled date (verified live) and
+      fx = float(last.loc[kind.str.contains("Fixed"), "Cashflow"].sum())   # stays finite once the coupon has
+      return m.fixed_rate(t) * 1e4 * (-fl / fx)                            # paid (fair_rate then divides by 0)
+
+  def par_bp(m, t):                    # IRFwdRate, bp: the remaining swap's par; continuous past maturity (R2-7)
+      return m.fair_rate(remark(m, t)) * 1e4 if alive(m, t) else _final_period_par(m, t)
+
+  def gamma(m, t):                     # IRGammaParallel: chain-rule d2 npv / d par2 per bp2 of this trade's OWN par
+      if not alive(m, t):              # (contracts.py IRGammaParallel; MERGE_NOTES_pnl_explain.md section 4). The
+          return 0.0                   # bare (n+ + n- - 2n0)/((p+ - p-)/2)^2 drops the par's own convexity: ~10% low
+      rh_up, rh_down = _bump_curves(m) # at 10y ATM (live: -0.7365 vs -0.8168 on 2024-05-20). NEVER d(dv01)/dpar.
       t_up, t_down = remark(rh_up, t), remark(rh_down, t)   # fresh fixings-kwargs per wrapper (fair_rate
       npv_up, npv_down, npv_mid = rh_up.npv(t_up), rh_down.npv(t_down), m.npv(t)   # does not rebuild)
-      par_up, par_down = rh_up.fair_rate(t_up) * 1e4, rh_down.fair_rate(t_down) * 1e4   # this trade's
-      return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2      # OWN measured move
+      par_up, par_down = rh_up.fair_rate(t_up) * 1e4, rh_down.fair_rate(t_down) * 1e4
+      par_mid = m.fair_rate(remark(m, t)) * 1e4
+      dpar = par_up - par_down
+      return (npv_up + npv_down - 2.0 * npv_mid - (npv_up - npv_down) / dpar * (par_up + par_down - 2.0 * par_mid)) / (dpar / 2.0) ** 2
 
-  def theta(m, t):                     # 2.2: one-calendar-day forward difference at constant forwards
-      if not alive(m, t):
+  def theta_1d(m, t):                  # Theta (DEV-I15): ccy per CALENDAR DAY, curve translated one day (forwards fixed),
+      if not alive(m, t):              # own par held fixed, plus the flows npv drops in (t, t+1d].
           return 0.0
       rh = _translated_curve(m)
-      remarked = remark(rh, t)
-      npv_new = rh.npv(remarked)
-      ref = m.reference_date()
-      ref_d = ref.date() if hasattr(ref, "date") else ref
-      # A coupon paid exactly on today's reference date is STILL inside npv(today) (verified live: npv
-      # is unchanged between Payment-1d and Payment, then drops the day AFTER Payment -- i.e. npv keeps
-      # a coupon while Payment >= reference_date) but has already left tomorrow's (translated) npv. Add
-      # it back so theta measures pure time decay, never the discrete cash transfer explain_table's own
-      # `cash` column (cash_paid_to_date below) already attributes.
+      tt = remark(rh, t)
+      ref_d = _ref_d(m)
+      # npv keeps a coupon while Payment >= reference_date and drops it the day AFTER Payment (verified live), so
+      # the flows npv drops in (t, t+1d] are exactly those with Payment == t: still in npv(t), already out of the
+      # translated npv. Add them back so Theta is time decay, never the cash transfer Cashflows reports.
       coupon_today = _cashflow_sum(m, t, lambda d: d == ref_d)
-      return (npv_new + coupon_today - m.npv(t)) * 365.0
+      # Own par held fixed: on a normal day the translated par equals today's to ~1e-6bp (A-THETA), so this term
+      # is ~0. On a coupon day the paid period leaves the remaining swap and its par jumps (live: -14.2bp on
+      # 2025-01-08 for a 10y payer); that jump is time, not market, so take it out at the translated pv01
+      # (npv_T - pv01_T * (par_T - par_0) = pv01_T * (par_0 - K), the identity A-IDENT checks).
+      par_shift = rh.fair_rate(tt) * 1e4 - m.fair_rate(remark(m, t)) * 1e4
+      return rh.npv(tt) - rh.pv01(tt) * par_shift + coupon_today - m.npv(t)
+
+  def theta(m, t):                     # PNL_EXPLAIN_PLAN 2.2 IRTheta: ccy per YEAR = 365 x Theta (one definition)
+      return 365.0 * theta_1d(m, t)
+
+  def discount_delta(m, t):            # IRDiscountDeltaParallel: +-1bp on the DISCOUNT curve only, the projection
+      if not alive(m, t):              # curve (forwards) held: rateslib curves=[forecast, discount] (verified live:
+          return 0.0                   # [h, h+1bp] moves npv by the discounting part only)
+      up, down = (w.handle() for w in _bump_curves(m))
+      h, rt = m.handle(), remark(m, t)
+      return (float(rt.npv(curves=[h, up])) - float(rt.npv(curves=[h, down]))) / 2.0
+
+  def spot_rate(m, t):                 # IRSpotRate, bp: par of the spot-starting swap with this trade's termination date
+      mat, spot = pd.Timestamp(m.maturity_date(t)), m.spot_date()
+      if mat <= pd.Timestamp(spot):            # nothing left to start from spot: the zero-length limit of that swap,
+          return float(m.handle().rate(spot, m.calendar_advance(spot, "1b"))) * 100.0   # the overnight forward at spot
+      return m.fair_rate(m.build_irswap(effective_date=m.spot_date(), maturity_date=mat.to_pydatetime(), notional=1_000_000)) * 1e4
+
+  def expiry_in_years(m, t):           # ExpiryInYears (DEV-I17): calendar days to the termination date / 365
+      return max((m.maturity_date(t).date() - _ref_d(m)).days, 0) / 365.0
+
+  def annuity(m, t):                   # Annuity: 1e4 x the fixed-leg pv01, holder-signed (pv01 is payer > 0)
+      return 1e4 * m.pv01(t) if alive(m, t) else 0.0
+
+  def par_spread(m, t):                # ParSpread, bp: rateslib's float-leg spread making npv 0 (direction-free);
+      if alive(m, t):                  # = K - par for these matching annual legs. Dead: K - the continued par.
+          return float(remark(m, t).spread(curves=m.handle()))
+      return m.fixed_rate(t) * 1e4 - par_bp(m, t)
+
+  def fair_premium(m, t):              # FairPremium (DEV-I19): Price / DF(spot); USD spot = reference + 2b
+      return _price(m, t) / float(m.handle()[m.spot_date()])
+
+  def forward_price(m, t):             # ForwardPrice (DEV-I19): Price / DF(termination); on or after it: Price
+      mat = m.maturity_date(t)
+      return _price(m, t) if mat.date() <= _ref_d(m) else _price(m, t) / float(m.handle()[mat.to_pydatetime()])
+
+  def compounded_fixed_rate(m, t):     # CompoundedFixedRate, bp: (1 + K/f)^f - 1, f = fixed-leg periods a year
+      f = float(t.kwargs.leg1["schedule"].periods_per_annum)   # usd_irs: annual, so K itself
+      return ((1.0 + m.fixed_rate(t) / f) ** f - 1.0) * 1e4
+
+  _CF_COLUMNS = ["payment_date", "payment_amount", "currency", "payment_type"]
+
+  def cashflows(m, t):                 # Cashflows (R2-6): the flows npv still holds, holder-signed, one row each.
+      cf = remark(m, t).cashflows(curves=m.handle())
+      ref_d = _ref_d(m)
+      rows = []
+      for p, a, k in zip(cf["Payment"], cf["Cashflow"], cf["Type"]):
+          p = p.date() if hasattr(p, "date") else p
+          if p >= ref_d:               # still inside npv(t) (npv drops a flow the day after Payment)
+              # payment_date = the date Price DROPS the flow = Payment + 1 calendar day, so a step (t0, t1]
+              # counts it exactly when npv loses it (and when cash_paid_to_date's `Payment < ref` gains it).
+              rows.append((p + _dt.timedelta(days=1), float(a), "USD", str(k).replace("Period", "")))
+      return pd.DataFrame(rows, columns=_CF_COLUMNS)
+
+  _CRIF_COLUMNS = ["RiskType", "Qualifier", "Bucket", "Label1", "Label2", "Amount", "AmountCurrency"]
+
+  def crif_ir_curve(m, t):             # CRIFIRCurve: one SIMM row per ladder pillar from this trade's delta ladder
+      if not alive(m, t):
+          return pd.DataFrame(columns=_CRIF_COLUMNS)
+      ladder = delta_ladder(m, [t], [1.0], _PILLARS)
+      return pd.DataFrame([("Risk_IRCurve", "USD", "1", b.lower(), "OIS", v, "USD") for b, v in ladder.items()], columns=_CRIF_COLUMNS)
+
+  def pnl_explain(m, m_to, trades, weights):   # PnlExplain (CloseMarket): full revaluation, IR = sum w (npv(to) - npv)
+      # An ARBS market carries its own valuation date (no re-anchoring as the toys do), so the IR row also holds
+      # the time between the two markets' dates (carry, and a coupon npv drops in between).
+      return [{"mkt_type": "IR", "mkt_asset": "USD", "value": sum(w * (_price(m_to, t) - _price(m, t)) for t, w in zip(trades, weights))}]
 
   def year_fraction(m):                # 2.3: intensive time coordinate, no trade dependency at all
       ref = m.reference_date()
@@ -253,18 +329,37 @@ code: |
       return _cashflow_sum(m, t, lambda d: d < ref_d)        # same date it first counts as paid here --
       # never a double count (both) or a miss (neither) on the payment step itself.
 
-  def delta_ladder(m, trades, weights, tenors):
-      tenors = tuple(tenors)
+  _PILLARS = ("2Y", "5Y", "10Y", "30Y")
+
+  def _on_risk(m, trades, weights, tenors):   # (solver, live trades rebuilt on the risk curve, weights applied), or None
       live = [(t, w) for t, w in zip(trades, weights) if alive(m, t) and w != 0.0]
       if not live:
-          return {b: 0.0 for b in tenors}
+          return None
       rh, sv = _risk_model(m, tenors)
-      rebuilt = [rh.build_irswap(effective_date=m.effective_date(t), maturity_date=m.maturity_date(t),
-                                 fixed_rate=m.fixed_rate(t), notional=m.notional(t) * w) for t, w in live]
+      return sv, [rh.build_irswap(effective_date=m.effective_date(t), maturity_date=m.maturity_date(t),
+                                  fixed_rate=m.fixed_rate(t), notional=m.notional(t) * w) for t, w in live]
+
+  def delta_ladder(m, trades, weights, tenors):
+      tenors = tuple(tenors)
+      got = _on_risk(m, trades, weights, tenors)
+      if got is None:
+          return {b: 0.0 for b in tenors}
+      sv, rebuilt = got
       d = rl.Portfolio(rebuilt).delta(solver=sv)
       blk = d.xs("instruments", level=0) if "instruments" in set(d.index.get_level_values(0)) else d
       s = blk.iloc[:, 0].astype(float); s.index = s.index.get_level_values(-1)
       return {b: float(s.get(b, 0.0)) + 0.0 for b in tenors}   # USD per +1bp of each pillar par rate, payer > 0
+
+  def gamma_ladder(m, trades, weights, tenors):   # IRGamma (DEV-I13): the DIAGONAL of rateslib's solver cross-gamma,
+      tenors = tuple(tenors)                      # USD per bp2 of each pillar par rate (the full Hessian, not half:
+      got = _on_risk(m, trades, weights, tenors)  # its sum over every cell equals the chain-rule IRGammaParallel,
+      if got is None:                             # verified live); the cross terms are dropped, so the diagonal
+          return {b: 0.0 for b in tenors}         # sum differs from IRGammaParallel (recorded in the report)
+      sv, rebuilt = got
+      g = rl.Portfolio(rebuilt).gamma(solver=sv)
+      rows, cols = list(g.index.get_level_values(-1)), list(g.columns.get_level_values(-1))
+      cells = g.to_numpy(dtype=float)
+      return {b: float(cells[rows.index(b), cols.index(b)]) + 0.0 if b in rows and b in cols else 0.0 for b in tenors}
 
 market:
   expr: 'load_market(pricebt_date)'        # -> RLIRSwapCurve, or None (weekend, US holiday, store hole, beyond _LAST_SAFE)
@@ -276,31 +371,84 @@ trade:
   build_on: resolve_date                   # npv/pv01 are safe on later markets; other functions use remark() (R06 s3.4)
 functions:
   npv:        {expr: '0.0 if not unsettled(market, trade) else market.npv(trade)', unit: ccy}
-  dv01:       {expr: '0.0 if not alive(market, trade) else market.pv01(trade)', unit: ccy_per_bp}   # pv01 safe as-is (R06 s3.4)
-  par_rate:   {expr: 'market.fixed_rate(trade) * 1e4 if not alive(market, trade) else market.fair_rate(remark(market, trade)) * 1e4', unit: bp}   # PNL_EXPLAIN_PLAN.md 2.5: dead -> fixed_rate*1e4, not NaN (DECISIONS_LOG.md)
+  dv01:       {expr: '0.0 if not alive(market, trade) else market.pv01(trade)', unit: ccy_per_bp}   # annuity pv01: the own-rate delta exactly only at the money (R2-1); safe as-is (R06 s3.4)
+  par_rate:   {expr: 'par_bp(market, trade)', unit: bp}   # dead: the final period's par, continuous with the last live value (R2-7; LIVE_ARBS_REPORT.md)
   fixed_rate: {expr: 'market.fixed_rate(trade) * 1e4', unit: bp}
   carry_1m:   {expr: 'float("nan") if not (alive(market, trade) and _carry_ok(market, trade, "1m")) else market.carry_bps_running(remark(market, trade), "1m")', unit: bp}
   roll_1m:    {expr: 'float("nan") if not (alive(market, trade) and _roll_ok(market, trade, "1m")) else market.roll_bps_running(remark(market, trade), "1m")', unit: bp}
   gamma:             {expr: 'gamma(market, trade)', unit: ccy_per_bp2}
-  theta:             {expr: 'theta(market, trade)', unit: ccy}                    # ccy per YEAR, not per day
+  theta:             {expr: 'theta(market, trade)', unit: ccy}                    # ccy per YEAR (IRTheta), = 365 x theta_1d
+  theta_1d:          {expr: 'theta_1d(market, trade)', unit: ccy}                 # ccy per calendar DAY (Theta)
   year_fraction:     {expr: 'year_fraction(market)', unit: decimal}               # intensive time coordinate
   cash_paid_to_date: {expr: 'cash_paid_to_date(market, trade)', unit: ccy}
+  discount_delta:    {expr: 'discount_delta(market, trade)', unit: ccy_per_bp}
+  zero_per_bp:       {expr: '0.0', unit: ccy_per_bp}    # IRVega/IRBasis/IRXccyDelta: no vol, one curve, one currency (ZERO_BY_CONVENTION)
+  zero_per_bp2:      {expr: '0.0', unit: ccy_per_bp2}   # IRVanna/IRVolga: no vol exposure (R2-8)
+  zero_vol:          {expr: '0.0', unit: bp}            # vol levels: 0.0 by convention on a swap (R2-8)
+  spot_rate:         {expr: 'spot_rate(market, trade)', unit: bp}
+  expiry_in_years:   {expr: 'expiry_in_years(market, trade)', unit: decimal}
+  annuity:           {expr: 'annuity(market, trade)', unit: ccy}
+  cashflows:         {expr: 'cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+  par_spread:        {expr: 'par_spread(market, trade)', unit: bp}
+  fair_premium:      {expr: 'fair_premium(market, trade)', unit: ccy}
+  forward_price:     {expr: 'forward_price(market, trade)', unit: ccy}
+  premium_cents:     {expr: '_price(market, trade) / abs(market.notional(trade)) * 1e4', unit: bp}   # intensive (bp)
+  local_annuity_in_cents: {expr: 'annuity(market, trade) / abs(market.notional(trade))', unit: decimal}   # intensive
+  compounded_fixed_rate:  {expr: 'compounded_fixed_rate(market, trade)', unit: bp}
+  crif_ir_curve:     {expr: 'crif_ir_curve(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}
 portfolio_functions:
   delta_ladder:
-    expr: 'delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    expr: 'delta_ladder(market, trades, weights, _PILLARS)'
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR, mkt_asset: USD-SOFR-1D, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'gamma_ladder(market, trades, weights, _PILLARS)'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: USD-SOFR-1D, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'                          # no vol exposure: an empty cube (R2-8)
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: USD-SOFR-1D, mkt_class: SWAPTION}
+  pnl_explain:                          # PnlExplain(CloseMarket(date=...)): receives market_to (IR_RISK_DESIGN section 8)
+    expr: 'pnl_explain(market, market_to, trades, weights)'
+    unit: ccy
+    returns: buckets
 attributes:
   effective_date:   'resolved["effective_date"]'
   termination_date: 'resolved["termination_date"]'
   notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'   # signed by quantity: rebalance netting (s9.4)
 size_attribute: notional_amount
-risk_measures:
+risk_measures:   # the whole strict IRSwap contract (R3-0); IRTheta, YearFraction, CashPaidToDate: swap_pnl's custom names
   Price: npv
   IRDelta: {scalar: dv01, bucketed: delta_ladder}      # IRDeltaParallel / IRDeltaLocalCcy fall back here (s8.1 rule 3)
-  IRFwdRate: par_rate
+  IRDiscountDeltaParallel: discount_delta
   IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRFwdRate: par_rate
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity_in_cents
+  CompoundedFixedRate: compounded_fixed_rate
+  CRIFIRCurve: crif_ir_curve
+  PnlExplain: pnl_explain
   IRTheta: theta
   YearFraction: year_fraction
   CashPaidToDate: cash_paid_to_date
