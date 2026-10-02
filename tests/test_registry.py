@@ -29,11 +29,17 @@ def _asset(name, *, instrument="ConfigInstrument", match=None, currency="USD", m
         "functions": {"f": {"expr": "1", "unit": "ccy"}},
         "risk_measures": {"Price": "f"},
     }
-    # A class with a measure contract (IRSwap) must map or declare all of it (IR_RISK_DESIGN.md
-    # section 2); these tests are about matching, so everything but Price is declared.
-    unsupported = {r.measure: "registry test: only Price is priced" for r in contracts.contract_for(instrument) if r.measure != "Price"}
-    if unsupported:
-        cfg["unsupported_measures"] = unsupported
+    # A class with a measure contract must provide all of it (IR_RISK_DESIGN.md section 2). These
+    # tests are about matching, so a strict class (IRSwap: mapping only, IR_STRICT_CONTRACT.md R3-0)
+    # gets the contract's mapping skeleton with literal stubs, any other everything but Price declared.
+    missing = [(r.measure, f) for r in contracts.contract_for(instrument) for f in r.forms if r.measure != "Price"]
+    if contracts.is_strict(instrument):
+        filled = yaml.safe_load(contracts.mapping_skeleton(instrument, missing).replace(contracts.SKELETON_EXPR, "0.0"))
+        cfg["functions"].update(filled["functions"])
+        cfg["portfolio_functions"] = filled["portfolio_functions"]
+        cfg["risk_measures"].update(filled["risk_measures"])
+    elif missing:
+        cfg["unsupported_measures"] = {m: "registry test: only Price is priced" for m, _f in missing}
     if match is not None:
         cfg["match"] = match
     return cfg

@@ -1260,3 +1260,34 @@ NaN (rejected: the user asked that the library define every measure, and NaN poi
 `pnl_explain`); curve-delta semantics for the scalar `IRDelta` (rejected: P&L decomposition needs a
 sensitivity to the level it is multiplied by); editing the in-flight branch's files (rejected: the
 branches must merge by union, decision 0.12). Later work is IR_RISK_DESIGN §12.
+
+## 2026-10-01 — v2-ir-required: IRSwap and IRSwaption must map every contract measure
+
+**Situation:** the user asked to "require all the irswap and irswaptions related measures in the
+config", with full design authority. The specification is
+[`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md) (R3-0..R3-4; its "As built" section records the
+contract-core decisions); [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §000 points to it.
+
+**Decisions (pointers, not restatements):**
+- **No declarations for IRSwap/IRSwaption** (DEV-I11 amended): only a mapping satisfies a contract
+  row; declaring a contract measure, a form, or a preset/fallback of one is a load error, and the
+  error ends with a paste-ready mapping skeleton whose stubs do not compile. Bond keeps
+  map-or-declare.
+- **Eight more contract rows** (R3-1, DEV-I19): `ParSpread`, `FairPremium`, `ForwardPrice`,
+  `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`.
+  `ForwardPrice` forwards to the date `ExpiryInYears` counts to (a swap's termination date), for
+  consistency with DEV-I17. `PnlExplain` is a bucketed form (a buckets portfolio function always
+  fills the bucketed slot).
+- **"All" is checkable**: `contracts.EXCLUDED` names every IR-relevant catalogue measure outside the
+  contract with a reason, and a test requires it to be exact.
+- **Zero by convention stays legal**: `contracts.ZERO_BY_CONVENTION` lists the measures a class may
+  map to a literal 0 (its contract text defines them as 0); the checker skill fails any other
+  literal constant.
+
+**Evidence:** `tests/test_contracts.py` (strict rejection of every declaration shape, every gap in
+one error, the skeleton, one test per new row's unit rule, the EXCLUDED completeness test, three
+named mutations), `tests/test_unsupported_measures.py` (declaration cases now on Bond).
+
+**Alternatives considered:** keeping declarations with a stricter reason check (rejected: the user
+asked for the measures to be required, and a declared swap breaks a mixed book's P&L definition);
+a placeholder `'...'` stub (rejected: it compiles as `Ellipsis`, so a pasted skeleton would load).

@@ -288,3 +288,45 @@ file is reported, not "fixed". The orchestrator integrates.
 5. Every new rule has a named mutation that makes a named test fail.
 6. No CRLF in touched files.
 7. Guards are green, and `src/pricebt` imports no library.
+
+## As built: contract core (owner A, 2026-10-01)
+
+`src/pricebt/risk/contracts.py`, `src/pricebt/assets/config.py`; tests in `tests/test_contracts.py`,
+`tests/test_unsupported_measures.py`, `tests/test_registry.py`. Decisions this spec left open, or
+changed, with the reason:
+
+- **`PnlExplain` is a `bucketed` form, not a scalar one.** `assets.config._risk_target_kind` puts a
+  `returns: buckets` portfolio function in the **bucketed** slot even from a bare string
+  (`PnlExplain: pnl_explain`), and the dict form `{scalar: <buckets function>}` is rejected at parse.
+  So the row is `PnlExplain | value | bucketed`, the skeleton emits a `portfolio_functions:` stub
+  with `returns: buckets`, and the shipped shape `PnlExplain: pnl_explain` satisfies it.
+- **`PnlExplainClose` resolves to `PnlExplain`.** It is a class, not a measure instance, so it has
+  no `base_name`; `base_measure` maps it explicitly. A `PnlExplainClose` key counts toward the row
+  (and serves `PnlExplain` requests through `provided_forms`), and declaring it on a strict class
+  is the R3-0 error. `PnlExplainLive` does not resolve (it is in `EXCLUDED`). The relative-measure
+  classes (`PnlExplain` family, `PnlPredictLive`) count as `pricebt.risk` names for the
+  unknown-name warning.
+- **The stub expression is `'... TODO'` (`contracts.SKELETON_EXPR`), not `'...'`.** `...` compiles
+  (it is `Ellipsis`), so a skeleton pasted as-is would have loaded. `... TODO` is a syntax error;
+  `test_mapping_skeleton_names_every_missing_form_with_its_unit_and_does_not_load` checks both
+  that the pasted skeleton fails and that the filled one loads.
+- **Skeleton shape.** Function names are the measure in snake_case (`ir_delta`), with `_buckets` for
+  a bucketed form; the unit is `decimal` where the kind allows it, else the kind's single unit
+  (`ccy`, `ccy_per_bp`, `ccy_per_bp2`); a frame gets `unit: ccy`, `returns: frame` and its
+  `scale_columns`; an intensive kind gets `scale_with_quantity: false`; each stub's comment names
+  the measure, the form, the kind and the allowed units. `risk_measures:` lines are
+  `Measure: {scalar|bucketed: name}`, to merge with an existing entry when one form is already
+  mapped.
+- **Messages.** A gap on a strict class: `<Measure> (<forms>): not mapped (IRSwap/IRSwaption require a
+  mapping for every contract measure) -- <contract text>`. A declaration: `unsupported_measures
+  declares <name> [(a preset or fallback of <base>)], a <class> contract measure: IRSwap/IRSwaption
+  configs must map every contract measure; unsupported_measures cannot satisfy them -- map it and
+  remove the declaration`. Order: unit and shape problems of mapped slots, then every gap in
+  contract order, then the declarations.
+- **`EXCLUDED` drops `FairPremiumInPercent`.** Its `asset_class` is FX, so the R3-1 filter never
+  sees it, and the completeness test requires `EXCLUDED` to equal exactly the uncovered IR-relevant
+  names (no stale entries). Everything else in the R3-1 table is as listed.
+- **Mutations run** (each made a named test fail, then reverted): `IRSwaption` dropped from
+  `STRICT_CLASSES` → `test_a_declaration_never_satisfies_a_strict_row[IRSwaption]`; a declaration
+  allowed to satisfy a strict row → `test_a_declaration_never_satisfies_a_strict_row[IRSwap]`;
+  `CRIFIRCurve` dropped from `FRAME_SCALE_COLUMNS` → `test_crif_ir_curve_is_a_frame_whose_amount_scales`.

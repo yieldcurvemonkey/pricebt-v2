@@ -1,6 +1,6 @@
 # pricebt v2: interest-rate pricing and risk (swaps, swaptions, bonds): design and plan
 
-Status: **implemented** (design revision 2: §00 overrides §0-§12). Branch `v2-ir-risk` (worktree `pricebt-ir`), based on `v2-skills` with `v2-redesign` merged. "What was built" (below the evidence table) maps each section to its commit, files and tests; text the implementation superseded is marked *(as built: ...)* in place.
+Status: **implemented** (design revision 2: §00 overrides §0-§12; revision 3, §000 and [`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md), overrides both for IRSwap/IRSwaption contracts). Branch `v2-ir-risk` (worktree `pricebt-ir`), based on `v2-skills` with `v2-redesign` merged. "What was built" (below the evidence table) maps each section to its commit, files and tests; text the implementation superseded is marked *(as built: ...)* in place.
 Author: Opus session, 2026-09-29, with full design authority from the user ("port all interest-rate related functionality from gs_quant's pricing and risk for backtest-related functionality ... require that the external library defines how to calculate all the IR derivative measures gs supports ... nearly 1:1 ... treat Portfolios with extra care ... swaptions and bonds").
 
 This document **extends** `DESIGN.md`; every MUST there still holds (MUST-1 no library in `src`, MUST-2 gs API parity with DEV ids, MUST-3 one config per asset, MUST-4 currency and bp units, MUST-5 adding an asset is config-only). Where this document changes a rule of `DESIGN.md`, it says so and gives the DEV id.
@@ -35,8 +35,20 @@ Commits on `v2-ir-risk` (design: `c38b91a`, `c2c6e63`). Every row's tests are in
 | §8 `CloseMarket`, `PnlExplain` (DEV-M1, DEV-M2) | `3bfe06f` (E) | `src/pricebt/markets/__init__.py`, `src/pricebt/risk/__init__.py`, `src/pricebt/assets/pricing.py` | `test_pnl_explain_measure.py`, `test_portfolio_notebooks.py` (030007) |
 | §9 skills library (R13 U1-U18, U20-U36) | `86dfeae` (D) | `skills/**` (new: `pricebt-risk-measures`, `pricebt-pnl-attribution`; `check_asset_ir.py`), `.claude/skills/**` | `tests/skills/**` |
 | §10 docs, merge notes; nested-scope evaluation (DESIGN §4.4); demo notebook | F (this phase) | `docs/v2/**`, `README.md`, `src/pricebt/assets/namespace.py`, `notebooks/src/ir_pricing_and_risk_toy.py` | `test_docs_links.py`, `test_docs_contract_tables.py`, `test_namespace_scopes.py`, `test_ir_pricing_and_risk_demo.py` |
+| §000 / R3-0 strict contracts: `STRICT_CLASSES`, `is_strict`, declarations of a contract measure rejected for IRSwap/IRSwaption, `mapping_skeleton` in the load error, `EXCLUDED`, `ZERO_BY_CONVENTION`, `SIMM_IR_TENORS` (DEV-I11 amended) | `v2-ir-required`, owner A | `src/pricebt/risk/contracts.py`, `src/pricebt/assets/config.py` (error composition) | `test_contracts.py` (strict cases, skeleton, EXCLUDED completeness), `test_unsupported_measures.py` (declaration cases moved to Bond), `test_registry.py` |
+| §000 / R3-1 eight new IRSwap/IRSwaption rows (`ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`), kind `notional_level` (DEV-I19) | `v2-ir-required`, owner A (contract); owners B-D (toys, ARBS, skills configs) | `src/pricebt/risk/contracts.py`; every IRSwap/IRSwaption yaml | `test_contracts.py` (one test per new row's rule), `test_docs_contract_tables.py`, `test_toylib_ir.py` |
 
 Merging the concurrent `v2-pnl-explain` branch: [`MERGE_NOTES_pnl_explain.md`](MERGE_NOTES_pnl_explain.md). Not built: §12.
+
+---
+
+## 000. Revision 3: strict contracts (OVERRIDES §00 and §2 where they conflict)
+
+Branch `v2-ir-required`, 2026-10-01. The user: "require all the irswap and irswaptions related measures in the config". The specification is [`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md) (R3-0..R3-4); in short:
+
+- **R3-0 (DEV-I11 amended).** For `IRSwap` and `IRSwaption` (`contracts.STRICT_CLASSES`) a contract row is satisfied **only by a mapping**. Declaring a contract measure under `unsupported_measures:` (the measure, one of its forms, or a preset/fallback resolving to one, e.g. `IRDeltaParallel`, `IRGammaParallelLocalCcy`, `PnlExplainClose`) is a load error, mapped or not, so R2-9's mapping-wins warning never applies there and `UnsupportedMeasureError` arises only for `Bond`. The load error lists every gap and ends with a paste-ready mapping skeleton (`contracts.mapping_skeleton`) instead of §2's declaration block. `Bond` is unchanged (map or declare).
+- **R3-1 (DEV-I19).** Both strict contracts gain `ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve` (a frame) and `PnlExplain` (bucketed; §8's "not in the contract" no longer holds for swaps and swaptions), with the new kind `notional_level`. Every other IR-relevant `pricebt.risk` measure is in `contracts.EXCLUDED` with a reason, and a test keeps that list exact.
+- Shared data the checker skill imports: `contracts.ZERO_BY_CONVENTION` (measures a class may map to a literal 0) and `contracts.SIMM_IR_TENORS`.
 
 ---
 
