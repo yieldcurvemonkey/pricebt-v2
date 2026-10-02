@@ -97,12 +97,12 @@ _IR_BASE = (
          "s: TOTAL derivative of Price w.r.t. the own rate r (IRFwdRate) along the library's parallel curve shift, own-strike vol fixed: [PV(+h)-PV(-h)]/[r(+h)-r(-h)] per bp of r (a fixed-annuity pv01 is exact only at the money); "
          "b: curve ladder, ccy per +1bp at each pillar, labels.mkt_type IR. Pay-fixed swap > 0, payer swaption > 0, long bond < 0. IRDeltaParallel/IRDeltaLocalCcy resolve here (DEV-I12)."),
     _req("IRDiscountDeltaParallel", "sens1", "scalar",
-         "PV change for a +1bp parallel shift of the discount curve only; not in general equal to the IRDelta scalar. IRDiscountDeltaParallelLocalCcy falls back here."),
+         "PV change for a +1bp parallel shift of the discount curve only: forwards (projection) held fixed, only discount factors bumped. Not in general equal to the IRDelta scalar; for a single-curve library this is NOT the parallel dv01 (near zero for an at-the-money swap). IRDiscountDeltaParallelLocalCcy falls back here."),
     _req("IRGammaParallel", "sens2", "scalar",
          "chain-rule second derivative of Price w.r.t. the own rate r on the IRDelta bumps, per bp^2 of r: "
          "[n+ + n- - 2n0 - ((n+ - n-)/(r+ - r-))(r+ + r- - 2r0)] / ((r+ - r-)/2)^2; never d(pv01)/dr (half the gamma at the money). IRGammaParallelLocalCcy falls back here (DEV-I16)."),
     _req("IRGamma", "sens2", "bucketed",
-         "diagonal gamma ladder, ccy per bp^2 at each pillar, a 6-column bucketed frame (DEV-I13: gs returns a 12-column cross-gamma frame)."),
+         "diagonal gamma ladder, ccy per bp^2 at each pillar, a 6-column bucketed frame (DEV-I13: gs returns a 12-column cross-gamma frame). The diagonal may be a true Hessian diagonal or the parallel gamma placed at its nearest pillar (implementations differ, DEV-I13)."),
     _req("IRVega", "sens1", "scalar bucketed",
          "s: PV change for +1bp of normal implied vol (IRAnnualImpliedVol); b: vol cube, mkt_point '<tail>;<expiry>' (e.g. '5Y;1Y'), labels.mkt_type IR VOL. "
          "Swaps/bonds: 0.0 / empty by convention (R2-8). IRVegaParallel/IRVegaLocalCcy resolve here."),
@@ -126,7 +126,7 @@ _IR_BASE = (
          "IRAnnualImpliedVol / sqrt(252); swaps/bonds: 0.0 (R2-8). Intensive."),
     _req("Theta", "theta", "scalar",
          "one calendar day of carry holding the own IRFwdRate and IRAnnualImpliedVol fixed: Price(t+1d) + cashflows Price drops in (t, t+1d] - Price(t), ccy PER DAY "
-         "(DEV-I15; curve translated DF(x)/DF(t+1d), never rolled). A per-year IRTheta = 365 x Theta: never map Theta to a per-year function."),
+         "(DEV-I15; curve translated DF(x)/DF(t+1d), never rolled). A per-year IRTheta = 365 x Theta: never map Theta to a per-year function. A discrete own-rate jump when a paid period leaves the remaining schedule is a schedule-roll term; a config that removes it from the own-rate move (holding the own rate fixed) spreads it over the calendar days to the next business day, so Theta x step days counts it once on a business-day grid; on coarser grids the excess lands in the residual."),
     _req("ExpiryInYears", "time", "scalar",
          "max(final_or_expiry - t, 0).days / 365 (calendar days, ACT/365F): a swaption's expiry, a swap's or bond's final date (DEV-I17). Intensive. "
          "It stays 0 from expiry on, so PNL_theta (Theta x change in ExpiryInYears x -365) attributes no carry after it: an exercised swaption's Theta (the underlying swap's, R2-7) lands in the residual."),
@@ -144,7 +144,7 @@ _IR_BASE = (
 _IR_STRICT_EXTRA = (
     _req("ParSpread", "rate", "scalar",
          "the spread, in the declared rate unit, added to the floating leg's rate that makes Price zero; independent of direction (payer and receiver of the same terms share it). "
-         "Single curve with matching leg schedules: fixed_rate - IRFwdRate; swaption: the underlying swap's (strike - forward). Dead instruments: continuous with the last live value (R2-7); the dead-swap convention IRFwdRate = fixed_rate gives 0. Intensive."),
+         "Single curve with matching leg schedules: fixed_rate - IRFwdRate; swaption: the underlying swap's (strike - forward). Dead instruments: continuous with the last live value (R2-7). Intensive."),
     _req("FairPremium", "value", "scalar",
          "the premium, paid by the holder on the premium settlement date, that makes the instrument plus premium worth zero: Price / DF(settlement), ccy. "
          "Settlement: the swaption's premium_payment_date if the library supports it and it is set, else the library's spot date for the currency; a library with no spot lag uses the pricing date, so FairPremium == Price (DEV-I19)."),
@@ -160,11 +160,11 @@ _IR_STRICT_EXTRA = (
          "the fixed rate (swaption: the strike) restated as an annually compounded rate: (1 + K/f)^f - 1 for a fixed leg paying f times a year (an annual fixed leg: K itself). A trade term, finite on every date. Intensive (DEV-I19)."),
     _req("CRIFIRCurve", "table", "frame",
          "ISDA SIMM CRIF rows for IR curve delta, one per ladder pillar. Required columns RiskType ('Risk_IRCurve'), Qualifier (the currency ISO code), Bucket (the SIMM currency volatility group as a string; '1' for regular-volatility currencies such as USD and EUR), "
-         "Label1 (SIMM tenor, lower case, one of 2w 1m 3m 6m 1y 2y 3y 5y 10y 15y 20y 30y), Label2 (sub-curve, e.g. 'OIS', 'SOFR', 'Libor3m'), Amount (PV change for +1bp at that pillar, in AmountCurrency, holder-signed), AmountCurrency; "
+         "Label1 (SIMM tenor, lower case, one of 2w 1m 3m 6m 1y 2y 3y 5y 10y 15y 20y 30y), Label2 (the ISDA SIMM sub-curve name, e.g. 'OIS'; a SOFR curve is 'OIS'), Amount (PV change for +1bp at that pillar, in AmountCurrency, holder-signed, on the basis of the config's own IRDelta bucketed ladder), AmountCurrency; "
          "returns: frame with scale_columns including Amount. Identity: sum of Amount = sum of the IRDelta bucketed ladder. Dead instrument: an empty frame with these columns. DEV-I19: gs returns the full CRIF schema; pricebt requires this subset."),
     _req("PnlExplain", "value", "bucketed",
          "the change in value from market to market_to by risk factor, no time component (IR_RISK_DESIGN section 8): a returns: buckets portfolio function (hence the bucketed form) that also receives market_to and pricebt_to_date, "
-         "rows labelled by mkt_type (IR, IR VOL, ...), ccy. Swaps: one IR row = Price(market_to) - Price(market), plus an optional IR VOL row of 0. PnlExplainClose resolves here."),
+         "rows labelled by mkt_type (IR, IR VOL, ...), ccy. Swaps: one IR row = Price(market_to) - Price(market), plus an optional IR VOL row of 0. Allowed caveat: a library whose market objects carry their own valuation date (it cannot value a later market from the pricing date) includes the carry between the two dates. PnlExplainClose resolves here."),
 )
 
 CONTRACTS: Dict[str, Tuple[MeasureRequirement, ...]] = {

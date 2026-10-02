@@ -1326,3 +1326,49 @@ PASS there. ARBS reads WARN 8.7%.
 
 The P&L attribution (`ir_pnl_definition`) is unchanged and still shows the jump in its residual on payment
 dates. That is a documented limitation of the own-rate convention, not a checker bug.
+
+## 2026-10-02 — `pricebt_asset=` must name an asset of the same instrument class (fix F1, R3)
+
+**Situation:** the adversarial review found that `AssetRegistry.match` returned whatever asset
+`pricebt_asset=` named, whatever its `instrument:`. The load-time measure contract is checked for
+the config's own `instrument:` only, so an `IRSwap(..., pricebt_asset=<a ConfigInstrument asset>)`
+priced with no contract at all and escaped the strict rule.
+
+**Decision:** `match` raises `ConfigError` when the named asset's `instrument:` differs from the
+instrument's class name (DESIGN §5.3 item 1). The comparison is generic (class name against
+`instrument:`), so `assets/` names no rates vocabulary. It applies both ways: a `ConfigInstrument`
+cannot be routed to an `IRSwap` asset either.
+
+**Evidence:** `tests/test_registry.py::test_match_explicit_asset_of_another_instrument_class_raises`
+(three class pairs) and `::test_match_explicit_asset_same_class_routes_past_match_rules`. Mutation:
+the guard disabled makes the three parametrised cases fail.
+
+**One caller routed across classes:**
+`tests/test_instrument.py::test_setting_a_config_instrument_term_changes_the_toy_price` routed a
+`ConfigInstrument` to `toy_usd_irs` (an `IRSwap` asset) only to borrow the toy's functions. It now
+registers the same yaml with `instrument: ConfigInstrument` under its own name, so it still tests
+a `ConfigInstrument`'s terms (DEV-I14).
+
+**Alternative considered:** guarding only strict classes (raise only when the instrument is
+IRSwap/IRSwaption and the asset is not). Rejected: it puts rates vocabulary in `assets/`, and any
+cross-class routing hands a config kwargs shaped for another class.
+
+## 2026-10-02 — `Theta` and the schedule roll on payment dates (fix F1, R3)
+
+**Situation:** on a payment date the paid period leaves the remaining schedule, so a swap's own rate
+`IRFwdRate` jumps by construction (the 2026-10-01 `ir_cashflow_drop` entry). `Theta` (DEV-I15) holds
+the own rate fixed. The contract did not say where the jump belongs.
+
+**Decision (contract text, `Theta` row and DEV-I15):** the jump is a schedule-roll term. A config that
+removes it from the own-rate move (holding the own rate fixed) spreads it over the calendar days to
+the next business day, so `Theta` × step days counts it once on a business-day grid. On coarser grids
+the excess lands in the residual.
+
+**Same round, contract text only (no behaviour change):** `ParSpread` loses the dead-swap
+"`IRFwdRate = fixed_rate` gives 0" sentence (T2-A superseded); `IRDiscountDeltaParallel` says
+forwards are held fixed (not the parallel dv01 for a single-curve library, near zero ATM);
+`CRIFIRCurve` `Label2` example is `OIS` only, and `Amount` follows the config's own `IRDelta`
+ladder; the `IRGamma` diagonal may be a Hessian diagonal or the parallel gamma at its nearest
+pillar; `PnlExplain` may include the carry between the two dates for a library whose markets carry
+their own valuation date. `ZERO_BY_CONVENTION` is now pinned exactly in
+`tests/test_contracts.py::test_strict_classes_and_shared_constants`.

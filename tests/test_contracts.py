@@ -195,7 +195,10 @@ def test_strict_classes_and_shared_constants():
     assert set(contracts.ZERO_BY_CONVENTION) == contracts.STRICT_CLASSES
     for cls, names in contracts.ZERO_BY_CONVENTION.items():
         assert names <= {r.measure for r in contracts.contract_for(cls)}, cls
-    assert contracts.ZERO_BY_CONVENTION["IRSwaption"] == {"IRBasis", "IRXccyDelta"} < contracts.ZERO_BY_CONVENTION["IRSwap"]
+    # pinned exactly: a literal 0 is honest only where the contract text defines the value as 0
+    assert contracts.ZERO_BY_CONVENTION["IRSwap"] == {
+        "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol", "IRBasis", "IRXccyDelta"}
+    assert contracts.ZERO_BY_CONVENTION["IRSwaption"] == {"IRBasis", "IRXccyDelta"}
     assert contracts.SIMM_IR_TENORS == ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")
     crif = next(r for r in contracts.contract_for("IRSwap") if r.measure == "CRIFIRCurve")
     assert " ".join(contracts.SIMM_IR_TENORS) in crif.doc  # the contract text and the constant agree

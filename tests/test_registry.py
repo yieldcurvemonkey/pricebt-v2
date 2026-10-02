@@ -148,8 +148,25 @@ def test_market_key_defaults_to_asset_name_so_different_assets_dont_conflict():
 def test_match_explicit_asset_found():
     reg = AssetRegistry()
     reg.add(_asset("only"))
-    cfg = reg.match("AnyClass", {}, explicit_asset="only")
+    cfg = reg.match("ConfigInstrument", {}, explicit_asset="only")
     assert cfg.name == "only"
+
+
+def test_match_explicit_asset_same_class_routes_past_match_rules():
+    """pricebt_asset= picks the asset by name: its match: rules are not consulted (DESIGN.md 5.3 item 1)."""
+    reg = AssetRegistry()
+    reg.add(_asset("usd", instrument="IRSwap", match={"notional_currency": "USD"}))
+    assert reg.match("IRSwap", {"notional_currency": "EUR"}, explicit_asset="usd").name == "usd"
+
+
+@pytest.mark.parametrize("cls, asset_instrument", [("IRSwap", "ConfigInstrument"), ("ConfigInstrument", "IRSwap"), ("IRSwaption", "IRSwap")])
+def test_match_explicit_asset_of_another_instrument_class_raises(cls, asset_instrument):
+    """An asset's measure contract is checked at load for its own `instrument:` only, so routing a
+    different class to it (an IRSwap to a ConfigInstrument asset) would escape that class's contract."""
+    reg = AssetRegistry()
+    reg.add(_asset("other", instrument=asset_instrument))
+    with pytest.raises(ConfigError, match=rf"pricebt_asset='other' is an asset for instrument: {asset_instrument}, not {cls}"):
+        reg.match(cls, {}, explicit_asset="other")
 
 
 def test_match_explicit_asset_unknown_raises():

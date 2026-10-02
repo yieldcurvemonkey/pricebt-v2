@@ -160,6 +160,11 @@ Requirements:
   delta term equals `−PV(t−1)`, which is exactly the drop to zero.
 - Preferred: change the ARBS `par_rate` dead-trade value from NaN to `fixed_rate·1e4`. Before doing so, grep every
   consumer: `tests/`, `notebooks/`, `skills/`, and `docs/v2/LIVE_ARBS_REPORT.md`.
+
+  *(Superseded, R3: T2-A implemented the `fixed_rate·1e4` rule above, but it is a jump at maturity, which R2-7
+  forbids, and with `Cashflows` mapped the final coupon is explained by `cashflow_pnl`. The shipped ARBS `par_rate`
+  is continuous past maturity, the final period's own par: DECISIONS_LOG 2026-10-01 "ARBS dead-trade par is
+  continuous; T2-A superseded". The no-NaN requirement stands.)*
 - If anything depends on the NaN, add a separate `explain_rate` function instead. Then make the definition's market
   measure configurable (`swap_pnl_definition(rate_measure=...)`).
 - Record which option you chose in `DECISIONS_LOG.md`.

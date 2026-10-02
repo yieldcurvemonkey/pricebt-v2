@@ -35,7 +35,7 @@ from pricebt.backtests.generic_engine import GenericEngine
 from pricebt.backtests.strategy import Strategy
 from pricebt.backtests.triggers import DateTrigger, DateTriggerRequirements, PeriodicTrigger, PeriodicTriggerRequirements
 from pricebt.common import AggregationLevel
-from pricebt.errors import ConfigError
+from pricebt.errors import ConfigError, UnsupportedMeasureError
 from pricebt.instrument import Bond, IRSwap, IRSwaption
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import (
@@ -82,7 +82,7 @@ def _module_globals():
 
 
 def _run(assets, triggers, end, start=D0, frequency="1b", risks=None, pnl_explain=None):
-    PricebtSession.use(assets=[a if isinstance(a, Path) else ASSETS / a for a in assets])
+    PricebtSession.use(assets=[a if isinstance(a, (Path, dict)) else ASSETS / a for a in assets])
     strategy = Strategy(initial_portfolio=None, triggers=triggers)
     return GenericEngine().run_backtest(
         strategy, start=start, end=end, frequency=frequency, risks=risks, pnl_explain=pnl_explain, show_progress=False
@@ -725,6 +725,21 @@ def test_g_an_irswap_config_without_the_explain_measures_fails_to_load_naming_th
         PricebtSession.use(assets=[cfg])
     for measure in ("IRGammaParallel", "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "Theta", "ExpiryInYears"):
         assert measure in str(err.value), measure
+
+
+def test_g_a_bond_config_that_declares_theta_raises_naming_it_in_the_explain():
+    """Bond keeps map-or-declare (R3-0), so the declared path still reaches the explain: the toy
+    bond with Theta declared under unsupported_measures: (instead of mapped) loads, and a backtest
+    with bond_pnl_definition() raises UnsupportedMeasureError naming Theta. The `bond` fixture is
+    the control (the same bond, Theta mapped, explains)."""
+    cfg = yaml.safe_load((ASSETS / "toy_usd_bond.yaml").read_text(encoding="utf8"))
+    del cfg["risk_measures"]["Theta"]
+    cfg["unsupported_measures"] = {**(cfg.get("unsupported_measures") or {}), "Theta": "test: no carry model"}
+    b = Bond(identifier=BOND_ID, size=N, buy_sell="Buy", settlement_currency="USD", name="bond")
+    with pytest.raises(UnsupportedMeasureError) as err:
+        bt = _run([cfg], [_on(BOND_START, AddTradeAction(b, name="Add"))], date(2024, 6, 3), start=BOND_START, pnl_explain=bond_pnl_definition())
+        bt.pnl_explain_table()
+    assert err.value.measure == "Theta" and "Theta" in str(err.value)
 
 
 # =============================================================================== (h) DEV-R11 views

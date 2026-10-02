@@ -441,8 +441,15 @@ def test_setting_a_config_instrument_term_changes_the_toy_price():
     from pricebt.markets import PricingContext
     from pricebt.session import PricebtSession
 
-    PricebtSession.use(assets=[Path(__file__).parent / "assets" / "toy_usd_irs.yaml"])
-    ci = ConfigInstrument("toy_usd_irs", pay_or_receive="Pay", termination_date="10y", fixed_rate=0.01, notional_amount=1e6)
+    import yaml
+
+    # the toy swap's functions under a ConfigInstrument asset: pricebt_asset= must name an asset of
+    # the instrument's own class (DESIGN.md section 5.3 item 1)
+    cfg = yaml.safe_load((Path(__file__).parent / "assets" / "toy_usd_irs.yaml").read_text(encoding="utf8"))
+    cfg.update(asset="toy_usd_ci", instrument="ConfigInstrument")
+    cfg.pop("match", None)
+    PricebtSession.use(assets=[cfg])
+    ci = ConfigInstrument("toy_usd_ci", pay_or_receive="Pay", termination_date="10y", fixed_rate=0.01, notional_amount=1e6)
     with PricingContext(date(2024, 3, 4)):
         pay = ci.price().result()
         ci.pay_or_receive = "Receive"

@@ -109,6 +109,13 @@ class AssetRegistry:
             cfg = self._by_name.get(explicit_asset)
             if cfg is None:
                 raise ConfigError(f"unknown asset {explicit_asset!r}; registered: {self.names()}")
+            if cfg.instrument != class_name:
+                # the asset's load-time measure contract is checked for its own `instrument:` only
+                raise ConfigError(
+                    f"pricebt_asset={explicit_asset!r} is an asset for instrument: {cfg.instrument}, "
+                    f"not {class_name}; route a {class_name} to an asset whose instrument: is {class_name}",
+                    asset=explicit_asset,
+                )
             return cfg
 
         candidates = [cfg for cfg in self._by_name.values() if cfg.instrument == class_name]

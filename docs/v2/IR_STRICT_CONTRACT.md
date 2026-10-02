@@ -30,12 +30,14 @@ For the classes **`IRSwap` and `IRSwaption`**, a contract row is satisfied **onl
   on loading.
 - **The load error lists every gap.** It ends with a **paste-ready mapping skeleton** (`contracts.mapping_skeleton`)
   instead of an `unsupported_measures:` block:
-  - a `functions:` stub per missing scalar or frame form, with the contract's unit and `expr: '...'`;
+  - a `functions:` stub per missing scalar or frame form, with the contract's unit and `expr: '... TODO'`
+    (`contracts.SKELETON_EXPR`);
   - a `portfolio_functions:` stub per missing bucketed form;
   - the `risk_measures:` lines.
 
-  The stub expressions are deliberately not valid Python (`'...'`). A config cannot load from the skeleton alone,
-  because a strict contract forbids placeholders.
+  The stub expressions are deliberately not valid Python (`'... TODO'`, `contracts.SKELETON_EXPR`; a bare `'...'`
+  would compile as `Ellipsis`). A config cannot load from the skeleton alone, because a strict contract forbids
+  placeholders.
 - **`UnsupportedMeasureError` can no longer arise for a strict class.** It still applies to `Bond`.
 - **`Bond` is unchanged.** It keeps map-or-declare, R2-9 and the unsupported block.
 - **Shared data constants in `contracts.py`.** The checker skill imports these and never keeps its own copy:
@@ -68,14 +70,14 @@ them (it already has its own `ParSpread`). All values are holder-signed and per 
 
 | Measure | Kind | Forms | Contract semantics |
 |---|---|---|---|
-| `ParSpread` | rate | s | The spread, in the declared rate unit, added to the floating leg's rate that makes `Price` zero. It does not depend on direction: payer and receiver of the same terms share it. With a single curve and matching leg schedules it equals `fixed_rate − IRFwdRate`. Swaption: the underlying swap's (strike minus forward). Dead instruments: continuous with the last live value (R2-7). The dead-swap convention `IRFwdRate = fixed_rate` gives 0. Intensive. |
+| `ParSpread` | rate | s | The spread, in the declared rate unit, added to the floating leg's rate that makes `Price` zero. It does not depend on direction: payer and receiver of the same terms share it. With a single curve and matching leg schedules it equals `fixed_rate − IRFwdRate`. Swaption: the underlying swap's (strike minus forward). Dead instruments: continuous with the last live value (R2-7). Intensive. *(Fix round F1: a "dead-swap convention `IRFwdRate = fixed_rate` gives 0" sentence was removed; it contradicted R2-7 continuity and was superseded with T2-A, DECISIONS_LOG 2026-10-01.)* |
 | `FairPremium` | value | s | The premium, paid by the holder on the **premium settlement date**, that makes the instrument plus premium worth zero: `Price / DF(settlement)`, in ccy. The settlement date is the swaption's `premium_payment_date` if the library supports it and it is set; otherwise the library's spot date for the currency. A library with no spot lag (the toys) uses the pricing date, so `FairPremium == Price`. **DEV-I19.** |
 | `ForwardPrice` | value | s | `Price` forward-valued to the instrument's expiry date, the same date `ExpiryInYears` counts to: a swaption's `expiration_date`, a swap's termination date (DEV-I17). That is `Price / DF(expiry)`, in ccy. On or after expiry: `Price`. **DEV-I19:** gs declares the unit `BPS` but documents "price at expiry in the local currency"; pricebt follows the docstring. |
 | `PremiumCents` | notional_level | s | `Price / |notional|` in the declared unit. In `bp` this is gs's "premium in cents": 1 cent per 100 of notional = 1bp of notional. `|notional|` is the unit trade's absolute notional: the swaption's or swap's `notional_amount`. Intensive. **DEV-I19.** |
 | `LocalAnnuityInCents` | notional_level | s | `Annuity / |notional|`, i.e. the PV of 1.0 per annum per unit of notional, holder-signed like `Annuity` (a 10y pay-fixed swap ≈ +8.5). Declare unit `decimal`, or `number` with `scale_with_quantity: false`. This number equals the PV in cents, per 100 of notional, of 1bp per annum. Intensive. **DEV-I19.** |
 | `CompoundedFixedRate` | rate | s | The fixed rate (swaption: the strike) restated as an **annually compounded** rate: `(1 + K/f)^f − 1` for a fixed leg paying f times a year. An annual fixed leg gives K itself. It is a trade term, finite on every date. Intensive. **DEV-I19.** |
-| `CRIFIRCurve` | table | frame | ISDA SIMM CRIF rows for IR curve delta, one row per ladder pillar. Required columns: `RiskType` (always `"Risk_IRCurve"`), `Qualifier` (the currency ISO code), `Bucket` (a SIMM currency volatility group as a string; `"1"` for regular-volatility currencies such as USD and EUR), `Label1` (SIMM tenor, lower case, one of `2w 1m 3m 6m 1y 2y 3y 5y 10y 15y 20y 30y`), `Label2` (sub-curve, e.g. `"OIS"`, `"SOFR"`, `"Libor3m"`), `Amount` (PV change for +1bp at that pillar, in `AmountCurrency`, holder-signed), `AmountCurrency`. `returns: frame` with `scale_columns` including `Amount`. **Identity: Σ Amount = Σ of the `IRDelta` bucketed ladder for the same instrument.** Dead instrument: an empty frame with these columns. **DEV-I19:** the gs server returns the full CRIF schema; pricebt requires this subset. |
-| `PnlExplain` | value | s | Already served by the Phase-E mechanism (IR_RISK_DESIGN §8): a `returns: buckets` **portfolio function** in the `risk_measures:` scalar slot. It receives `market_to` and `pricebt_to_date` and returns risk-factor rows (`mkt_type` IR, IR VOL, ...), in ccy. Swaps: one IR row equal to `Price(market_to) − Price(market)`, plus a vol row of 0 (optional). `PnlExplainClose` resolves here. *Implementer: confirm how `_mapped_slots` classifies a buckets portfolio function in the scalar slot, and make the row's `forms` match. A `PnlExplain` key must satisfy the row.* |
+| `CRIFIRCurve` | table | frame | ISDA SIMM CRIF rows for IR curve delta, one row per ladder pillar. Required columns: `RiskType` (always `"Risk_IRCurve"`), `Qualifier` (the currency ISO code), `Bucket` (a SIMM currency volatility group as a string; `"1"` for regular-volatility currencies such as USD and EUR), `Label1` (SIMM tenor, lower case, one of `2w 1m 3m 6m 1y 2y 3y 5y 10y 15y 20y 30y`), `Label2` (the ISDA SIMM sub-curve name, e.g. `"OIS"`; a SOFR curve is `"OIS"`, since `SOFR` is not a SIMM sub-curve name), `Amount` (PV change for +1bp at that pillar, in `AmountCurrency`, holder-signed, on the basis of the config's own `IRDelta` bucketed ladder: that is what the identity below checks), `AmountCurrency`. `returns: frame` with `scale_columns` including `Amount`. **Identity: Σ Amount = Σ of the `IRDelta` bucketed ladder for the same instrument.** Dead instrument: an empty frame with these columns. **DEV-I19:** the gs server returns the full CRIF schema; pricebt requires this subset. |
+| `PnlExplain` | value | s | Already served by the Phase-E mechanism (IR_RISK_DESIGN §8): a `returns: buckets` **portfolio function** in the `risk_measures:` scalar slot. It receives `market_to` and `pricebt_to_date` and returns risk-factor rows (`mkt_type` IR, IR VOL, ...), in ccy. Swaps: one IR row equal to `Price(market_to) − Price(market)`, plus a vol row of 0 (optional). Allowed, with this caveat: a library whose market objects carry their own valuation date (it cannot value a later market from the pricing date) includes the carry between the two dates. `PnlExplainClose` resolves here. *Implementer: confirm how `_mapped_slots` classifies a buckets portfolio function in the scalar slot, and make the row's `forms` match. A `PnlExplain` key must satisfy the row.* |
 
 ### Frame data
 
@@ -106,8 +108,12 @@ That test is what makes "all" checkable.
 | `BaseCPI`, `InflMaturityCPI`, `Infl_CompPeriod`, `InflationDelta`, `InflationDeltaParallel`, `InflDeltaParallelLocalCcyInBps` | inflation instruments |
 | `PnlExplainLive`, `PnlPredictLive` | live market: `NotSupportedError` (DEV-M1) |
 | `FairVarStrike`, `FairVolStrike` | variance swaps |
-| `CrossMultiplier`, `FairPremiumInPercent` | FX |
+| `CrossMultiplier` | FX |
 | any `pricebt.risk` measure with a `base_name` whose base is in the contract | resolves to its base (R2-10) |
+
+`FairPremiumInPercent` is not listed: its `asset_class` is FX, so the filter above never sees it, and the test requires
+`EXCLUDED` to be exact (no stale entries). `ProbabilityOfExercise` is swaption-only: it is in the IRSwaption contract and
+outside the IRSwap contract by design.
 
 Adjust the list to what `pricebt.risk` actually exports. The test is the referee.
 
@@ -123,8 +129,7 @@ Adjust the list to what `pricebt.risk` actually exports. The test is the referee
 **Rules for every agent:**
 - Never run `git add`, `git commit`, `git stash`, `git checkout -- <file>` or `git reset`. The orchestrator commits
   per owner.
-- Write LF line endings: use the Edit/Write tools, or `open(p, "w", newline="
-")`. Never use `Path.write_text` on
+- Write LF line endings: use the Edit/Write tools, or `open(p, "w", newline="\n")`. Never use `Path.write_text` on
   Windows, and never use heredocs for text with backslashes or backticks.
 - Interim verification does not wait for owner A. Under the current contract, a config that maps every base row and
   has no `unsupported_measures:` block already loads, and extra mapped names are unrestricted. So check that:
@@ -330,3 +335,34 @@ changed, with the reason:
   `STRICT_CLASSES` → `test_a_declaration_never_satisfies_a_strict_row[IRSwaption]`; a declaration
   allowed to satisfy a strict row → `test_a_declaration_never_satisfies_a_strict_row[IRSwap]`;
   `CRIFIRCurve` dropped from `FRAME_SCALE_COLUMNS` → `test_crif_ir_curve_is_a_frame_whose_amount_scales`.
+
+## As built: fix round F1 (2026-10-02)
+
+Contract text in `src/pricebt/risk/contracts.py` (the guide tables regenerated), after an adversarial review:
+
+- `ParSpread`: the "dead-swap convention `IRFwdRate = fixed_rate` gives 0" sentence is gone (it contradicted R2-7
+  continuity; T2-A is superseded, DECISIONS_LOG 2026-10-01).
+- `IRDiscountDeltaParallel`: forwards (projection) held fixed, only discount factors bumped; for a single-curve library
+  this is **not** the parallel dv01 (near zero for an at-the-money swap).
+- `Theta` (DEV-I15): a discrete own-rate jump when a paid period leaves the remaining schedule is a schedule-roll term;
+  a config that removes it from the own-rate move (holding the own rate fixed) spreads it over the calendar days to the
+  next business day, so `Theta` × step days counts it once on a business-day grid; on coarser grids the excess lands in
+  the residual.
+- `CRIFIRCurve`: `Label2` example `OIS` only (`SOFR` is not an ISDA SIMM sub-curve name; a SOFR curve is `OIS`);
+  `Amount` follows the config's own `IRDelta` bucketed ladder basis, which is what the Σ identity checks.
+- `IRGamma` (DEV-I13): the diagonal may be a true Hessian diagonal or the parallel gamma at its nearest pillar.
+- `PnlExplain`: a library whose market objects carry their own valuation date includes the carry between the two
+  dates; allowed, with that caveat.
+- **Registry class guard** (`AssetRegistry.match`, DESIGN §5.3 item 1): `pricebt_asset=` naming an asset whose
+  `instrument:` is another class is a `ConfigError`. Without it an `IRSwap` routed to a `ConfigInstrument` asset
+  escaped the strict contract. Tests: `tests/test_registry.py::test_match_explicit_asset_of_another_instrument_class_raises`.
+
+Toys (owner B, reported in the same round):
+
+- The toys' `IRDiscountDeltaParallel` is now discount-only, with forwards held: ATM ≈ 0, −83.66 at K = 2% on the 10y
+  probe.
+- `toy_usd_irs` and `toy_eur_irs` keep their pv01 CRIF populated on dead dates, so that Σ CRIF == Σ `IRDelta` ladder
+  holds. Their total-return pv01 never reaches 0, so this is a documented exception to the "dead → empty CRIF" rule,
+  limited to these two test configs.
+- A toy swaption now has a dead guard: all sensitivities, ladders and the annuity are 0 once the underlying has ended,
+  or once expiry passes with no leg exercised.
