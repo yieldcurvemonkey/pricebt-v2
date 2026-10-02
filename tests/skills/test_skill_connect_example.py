@@ -183,6 +183,7 @@ def test_derived_measures_match_a_bump_and_reprice(por, fixed_rate):
     assert (annuity > 0) == (por == "Pay")                                     # payer-positive signed notional
     if fixed_rate == "ATM":
         assert delta == pytest.approx(annuity * 1e-4, rel=1e-9)                # at the money: own-rate delta = annuity pv01
+        assert abs(val(risk.IRDiscountDeltaParallel)) < 0.01 * delta            # discount-only, forwards held: ~0 at the money
         assert val(risk.IRSpotRate) == pytest.approx(val(risk.IRFwdRate), rel=1e-12)   # spot-starting: the same swap
     assert val(risk.ExpiryInYears) == pytest.approx((r.resolved_terms["termination_date"] - D1).days / 365)
     for m in (risk.IRVega(aggregation_level="Type"), risk.IRVanna(aggregation_level="Type"), risk.IRAnnualImpliedVol, risk.IRBasis(aggregation_level="Type")):
@@ -243,6 +244,10 @@ def test_strict_contract_identities_on_meridian(por, fixed_rate):
     assert (flows["payment_date"] > D2).all() and set(flows["payment_type"]) == {"Fixed", "Float"}
     dfs = c.discount_factors(m, [p.isoformat() for p in flows["payment_date"]])
     assert sum(a * df for a, df in zip(flows["payment_amount"], dfs)) == pytest.approx(price, rel=1e-9)
+    # IRDiscountDeltaParallel: the same flows (forwards held) rediscounted on +-1bp pillar zeros built here
+    shifted = [mdn.MarketHandle(c, D2, "USD.SOFR", tuple(z + h for z in m._zeros)) for h in (1e-4, -1e-4)]
+    up, dn = ([x._df_and_grad(p)[0] for p in flows["payment_date"]] for x in shifted)
+    assert val(risk.IRDiscountDeltaParallel) == pytest.approx(sum(a * (u - v) for a, u, v in zip(flows["payment_amount"], up, dn)) / 2.0, rel=1e-9)
     df_spot, df_end = c.discount_factors(m, [c.spot_date(m), t["termination_date"].isoformat()])
     assert val(risk.ForwardPrice) * df_end == pytest.approx(price, rel=1e-12)
     assert val(risk.FairPremium) * df_spot == pytest.approx(price, rel=1e-12)
@@ -255,6 +260,7 @@ def test_strict_contract_identities_on_meridian(por, fixed_rate):
     assert val(risk.CompoundedFixedRate) == pytest.approx(t["fixed_rate"] * 1e4, rel=1e-12)
     crif = s.pricing.value(r, D2, risk.CRIFIRCurve, None)
     assert set(crif["Label1"]) <= set(contracts.SIMM_IR_TENORS) and set(crif["RiskType"]) == {"Risk_IRCurve"}
+    assert set(crif["Label2"]) == {"OIS"} and set(crif["Bucket"]) == {"1"}   # SIMM sub-curve name ('SOFR' is not one)
     assert crif["Amount"].sum() == pytest.approx(s.pricing.value(r, D2, IRDelta, None).result()["value"].sum(), rel=1e-12)
 
 
@@ -264,9 +270,13 @@ def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix(tmp_path):
     client = s.pricing.market(s.pricing.asset_for(r), D1, None).client
     s.pricing.value(r, D1, Price, None)
     before = client.calls
-    for m in (IRDelta(aggregation_level="Type"), risk.Annuity, risk.IRSpotRate, risk.IRFwdRate, risk.IRDiscountDeltaParallel):
+    for m in (IRDelta(aggregation_level="Type"), risk.Annuity, risk.IRSpotRate, risk.IRFwdRate):
         s.pricing.value(r, D1, m, None)
     assert client.calls == before                          # all from the one memoised batch
+    # IRDiscountDeltaParallel rediscounts the batch's CASHFLOWS on the +-1bp scenarios (forwards held), so it
+    # is not in the batch: two scenario() calls and two discount_factors() calls
+    s.pricing.value(r, D1, risk.IRDiscountDeltaParallel, None)
+    assert client.calls == before + 4
     sys.path.insert(0, str(ROOT / "skills" / "pricebt-risk-measures" / "scripts"))
     import measures
 
@@ -281,6 +291,119 @@ def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix(tmp_path):
     path = tmp_path / "bond_declares_a_zero.yaml"
     path.write_text(yaml.safe_dump(bond, sort_keys=False), encoding="utf-8")
     assert measures.main(["matrix", str(path)]) == 0 and measures.main(["matrix", "--strict", str(path)]) == 1
+
+
+def _contract_values(s, r, d):
+    """{(measure, form): value} for every form of every IRSwap contract row on d (frames as DataFrames)."""
+    out = {}
+    with PricingContext(d):
+        for measure, form, request in _requests("IRSwap", d):
+            v = r.calc(request).result()
+            out[(measure, form)] = float(v) if form == "scalar" else pd.DataFrame(v)
+    return out
+
+
+def _forward_bp(m, start, end):
+    """Independent: the simple forward over [start, end] on Meridian market handle m, bp."""
+    df_s, df_e = (m._df_and_grad(x)[0] for x in (start, end))
+    return (df_s / df_e - 1.0) / ((end - start).days / 365.0) * 1e4
+
+
+@pytest.mark.parametrize("d", [date(2025, 1, 7), date(2025, 1, 16)])
+def test_dead_swap_levels_continue_and_sensitivities_are_zero(d):
+    """R2-7 on Meridian: a 1y payer resolved 2024-01-02 matures 2025-01-06 (spot 01-04 + 1y = a Saturday,
+    rolled), after which the SDK's PAR_PCT is NaN (no annuity left). Its unadjusted schedule ends with a
+    stub, 2025-01-04 -> 01-06. Every contract measure stays finite; IRFwdRate is that final period's par,
+    which IS the live PAR_PCT while only that period is left (no jump at death), so ParSpread = K - it;
+    every sensitivity is exactly 0 and the frames are empty."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(term="1y"), D1, None)
+    t = r.resolved_terms
+    assert t["termination_date"] == date(2025, 1, 6)
+    got = _contract_values(s, r, d)
+    for (measure, form), v in got.items():
+        if form == "scalar":
+            assert math.isfinite(v), measure
+        else:
+            assert np.isfinite(v.select_dtypes("number").to_numpy()).all(), measure
+    c, stub = mdn.connect(), (date(2025, 1, 4), t["termination_date"])
+    assert got[("IRFwdRate", "scalar")] == pytest.approx(_forward_bp(c.market(d.isoformat(), "USD.SOFR"), *stub), rel=1e-12)
+    # continuity: the last live state (only the stub left) is a weekend -- value Friday's curve from Sunday
+    sunday = c.scenario(c.market("2025-01-03", "USD.SOFR"), valuation_date="2025-01-05", hold="FORWARDS")
+    live = c.price([_spec_of(r)], sunday, ["PAR_PCT"])[0]["PAR_PCT"] * 100.0
+    assert live == pytest.approx(_forward_bp(sunday, *stub), rel=1e-12)
+    assert got[("ParSpread", "scalar")] == pytest.approx(t["fixed_rate"] * 1e4 - got[("IRFwdRate", "scalar")], rel=1e-12)
+    for m in ("Price", "IRDelta", "IRDiscountDeltaParallel", "IRGammaParallel", "Theta", "Annuity", "LocalAnnuityInCents",
+              "PremiumCents", "FairPremium", "ForwardPrice", "ExpiryInYears", "IRVega", "IRVanna", "IRVolga", "IRBasis", "IRXccyDelta"):
+        assert got[(m, "scalar")] == 0.0, m
+    for m in ("IRDelta", "IRGamma"):
+        assert (got[(m, "bucketed")]["value"] == 0.0).all(), m
+    assert got[("Cashflows", "frame")].empty and got[("CRIFIRCurve", "frame")].empty
+    assert 0.0 < got[("IRSpotRate", "scalar")] < 1000.0   # the overnight forward at spot, in bp
+
+
+@pytest.mark.parametrize("resolve_on,priced,n", [
+    (D1, date(2025, 1, 3), 3),                 # coupon 2025-01-04 (Saturday): the Friday step spans the weekend
+    (date(2024, 2, 1), date(2025, 2, 4), 1),   # spot 2024-02-05: coupon 2025-02-05 (Wednesday), a one-day step
+])
+@pytest.mark.parametrize("por", ["Pay", "Receive"])
+def test_theta_holds_the_own_par_across_a_coupon_counting_the_roll_once(resolve_on, priced, n, por):
+    """DEV-I15 on Meridian: across a coupon the remaining swap's par jumps (the paid period leaves the
+    schedule). Theta holds the own par fixed by taking that jump out at the translated annuity pv01, and
+    divides the jump term by n = calendar days to the next business day, so Theta x n (what P&L explain
+    books over the step) removes it exactly once. Recomputed here from the SDK's raw prices."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(por, fixed_rate="ATM+30"), resolve_on, None)
+    c, spec = mdn.connect(), _spec_of(r)
+    m = c.market(priced.isoformat(), "USD.SOFR")
+    tomorrow = (priced + timedelta(days=1)).isoformat()
+    later = c.scenario(m, valuation_date=tomorrow, hold="FORWARDS")
+    row0 = c.price([spec], m, ["PV", "PAR_PCT", "CASHFLOWS"])[0]
+    row1 = c.price([spec], later, ["PV", "PAR_PCT"])[0]
+    cash = sum(f["amount"] if f["direction"] == "RECEIVE" else -f["amount"] for f in row0["CASHFLOWS"] if f["date"] == tomorrow)
+    assert cash != 0.0                                                        # the coupon IS in the one-day window
+    moved = lambda bp: c.swap("USD", spec.start, spec.end, spec.fixed_rate_pct + bp / 100.0, spec.notional, spec.direction)  # noqa: E731
+    pv01 = (c.price([moved(-1)], later, ["PV"])[0]["PV"] - c.price([moved(1)], later, ["PV"])[0]["PV"]) / 2.0
+    jump = (row1["PAR_PCT"] - row0["PAR_PCT"]) * 100.0
+    assert abs(jump) > 1.0                                                    # material: the check is not vacuous
+    raw = row1["PV"] + cash - row0["PV"]
+    theta = float(s.pricing.value(r, priced, risk.Theta, None))
+    assert theta == pytest.approx(raw - pv01 * jump / n, rel=1e-9)
+    assert abs(theta - raw) > 100.0                                           # the held-par term matters here
+
+
+def test_theta_on_the_last_live_day_is_the_final_flow_less_price():
+    """A 1y payer resolved 2024-01-04 (spot 01-08) ends Wednesday 2025-01-08. On 2025-01-07 it is alive and
+    the translated market (valued from 01-08) is already dead: Theta takes the carried par there (no NaN)
+    and, with nothing left to carry, is exactly the final flows less today's Price."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(term="1y"), date(2024, 1, 4), None)
+    assert r.resolved_terms["termination_date"] == date(2025, 1, 8)
+    d = date(2025, 1, 7)
+    c = mdn.connect()
+    row = c.price([_spec_of(r)], c.market(d.isoformat(), "USD.SOFR"), ["PV", "CASHFLOWS"])[0]
+    cash = sum(f["amount"] if f["direction"] == "RECEIVE" else -f["amount"] for f in row["CASHFLOWS"] if f["date"] == "2025-01-08")
+    assert cash != 0.0 and row["PV"] != 0.0
+    assert float(s.pricing.value(r, d, risk.Theta, None)) == pytest.approx(cash - row["PV"], rel=1e-9)
+
+
+def test_close_market_override_values_dfs_from_the_pricing_date():
+    """Under a CloseMarket override every function values the override's curve from the PRICING date, as
+    Price does: ForwardPrice x DF(end) and FairPremium x DF(spot) give Price on D2's zero curve seen from
+    D1 (DFs computed here from D2's raw pillar zeros), never on D2's own dates."""
+    s = PricebtSession.use(assets=[CONFIG])
+    r = s.pricing.resolve(_swap(fixed_rate="ATM+50"), D1, None)
+    t = r.resolved_terms
+    c = mdn.connect()
+    seen = mdn.MarketHandle(c, D1, "USD.SOFR", c.market(D2.isoformat(), "USD.SOFR")._zeros)   # test-only: D2's zeros from D1
+    df_spot, df_end = (seen._df_and_grad(x)[0] for x in (date.fromisoformat(c.spot_date(seen)), t["termination_date"]))
+    with PricingContext(D1, market=CloseMarket(date=D2)):
+        price, fwd, fair = (float(r.calc(m).result()) for m in (Price, risk.ForwardPrice, risk.FairPremium))
+    with PricingContext(D1):
+        own = float(r.calc(Price).result())
+    assert abs(price - own) > 1e3                                             # the override moved Price: not vacuous
+    assert fwd * df_end == pytest.approx(price, rel=1e-12)
+    assert fair * df_spot == pytest.approx(price, rel=1e-12)
 
 
 # ------------------------------------------------------------------ deliberate mistakes
@@ -377,11 +500,13 @@ def lib_spot_date(m): return m.ref_date
 def lib_add_tenor(m, start, tenor): return tr._pin_date(start, tenor)
 def lib_par_rate(m, start, end): return tr._par_rate(m, start, end)
 def lib_swap(m, r): return tr.build_swap(m, r)
-def lib_pv(m, t): return tr.npv(m, t)
+class _DiscountOnly:   # the discount curve shifted, the projection forwards held (IRDiscountDeltaParallel)
+    def __init__(self, m, h): self.disc, self.fwd = tri.bumped(m, h), m
+def lib_pv(m, t): return tri.npv_two_curve(m.disc, m.fwd, t) if isinstance(m, _DiscountOnly) else tr.npv(m, t)
 def lib_own_rate(m, t): return tr._par_rate(m, t.effective_date, t.termination_date)
 def lib_spot_rate(m, t): return tri.spot_rate(m, t) / 1e4
 def lib_shift(m, h): return tri.bumped(m, h)
-def lib_shift_discount(m, h): return tri.bumped(m, h)
+def lib_shift_discount(m, h): return _DiscountOnly(m, h)
 def lib_translate(m, days): return tri._TranslatedCurve(m, days)
 def lib_annuity(m, t): return tri.annuity(m, t)
 def lib_cashflows(m, t): return []
@@ -397,7 +522,7 @@ def lib_market(d): return ts.market(d, "USD", None)
 def lib_add_tenor(m, start, tenor): return tr._pin_date(start, tenor)
 def lib_fwd_par_rate(m, start, end): return tr._par_rate(m.curve, start, end)
 def lib_swaption(m, r, is_payer): return dict(r, pay_or_receive="Pay" if is_payer else "Receive")
-def lib_pv(m, leg): return ts._value(m.curve, m.sigma, leg)
+def lib_pv(m, leg): return ts._value(m.curve, m.sigma, leg, fwd=getattr(m, "fwd", None))   # fwd: projection held
 def lib_fwd_rate(m, leg): return ts._fwd(m.curve, leg)
 def lib_normal_vol(m, leg): return ts.annual_vol(m, leg) / 1e4
 def lib_atm_normal_vol(m, leg): return ts.atm_vol(m, leg) / 1e4
@@ -405,7 +530,7 @@ def lib_prob_exercise(m, leg): return ts.prob_exercise(m, leg)
 def lib_annuity(m, leg): return ts.annuity(m, leg)
 def lib_spot_rate(m, leg): return ts.spot_rate(m, leg) / 1e4
 def lib_shift(m, h): return _NS(curve=tri.bumped(m.curve, h), sigma=m.sigma)
-def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), sigma=m.sigma)
+def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), sigma=m.sigma, fwd=m.curve)
 def lib_vol_shift(m, h): return _NS(curve=m.curve, sigma=m.sigma + h)
 def lib_translate(m, days): return _NS(curve=tri._TranslatedCurve(m.curve, days), sigma=m.sigma)
 def lib_cashflows(m, leg): return []
@@ -462,9 +587,14 @@ def _template_raw(instrument):
     return yaml.safe_load((TEMPLATES / CASES[instrument][0]).read_text(encoding="utf-8"))
 
 
+PARALLEL = ("parallel_delta", "scalar")   # test-only: the whole-curve parallel delta the key-rate ladder must sum to
+
+
 def _filled(instrument):
     raw = _template_raw(instrument)
     raw["code"] += CASES[instrument][2]
+    if instrument != "Bond":   # an unmapped extra function, priced by _values: the template's own +-H parallel bump
+        raw["functions"]["parallel_delta"] = {"expr": "(pv(lib_shift(market, H), trade) - pv(lib_shift(market, -H), trade)) / 2.0", "unit": "ccy_per_bp"}
     return raw
 
 
@@ -489,10 +619,13 @@ def _values(cfg, inst, d, resolve_on=None):
         for measure, form, request in _requests(type(inst).__name__, d):
             v = r.calc(request).result()
             out[(measure, form)] = float(v) if form == "scalar" else pd.DataFrame(v)
+    if isinstance(cfg, dict) and PARALLEL[0] in cfg["functions"]:
+        out[PARALLEL] = s.pricing.unit_value(r, d, PARALLEL[0], None)
     return out
 
 
 def _compare(instrument, got, ref):
+    parallel = got.pop(PARALLEL, None)
     assert got.keys() == ref.keys()
     for (measure, form), v in got.items():
         r = ref[(measure, form)]
@@ -506,9 +639,12 @@ def _compare(instrument, got, ref):
             assert dict(zip(v["mkt_type"], v["value"])) == pytest.approx(dict(zip(r["mkt_type"], r["value"])), rel=1e-9, abs=1e-9)
         elif form == "frame":
             assert len(v) == len(r) and v["payment_amount"].sum() == pytest.approx(r["payment_amount"].sum())
-        elif measure == "IRDelta":   # key-rate ladder: sums to the parallel (discount-only, single curve) delta,
-            assert tuple(v["mkt_point"]) == TOY_PILLARS   # up to an option's third-order finite-difference terms
-            assert v["value"].sum() == pytest.approx(got[("IRDiscountDeltaParallel", "scalar")], rel=1e-4, abs=1e-9)
+        elif measure == "IRDelta":   # key-rate ladder (hats summing to 1): sums to the PARALLEL whole-curve delta, up to
+            assert tuple(v["mkt_point"]) == TOY_PILLARS   # an option's third-order finite-difference terms. Not
+            # IRDiscountDeltaParallel (it holds the forwards: about 0 at the money) except on a bond, whose fixed flows
+            # project nothing; not the own-rate IRDelta scalar (dr/ds apart, R2-2), which the toy's ladder sums to
+            want = got[("IRDiscountDeltaParallel", "scalar")] if parallel is None else parallel
+            assert v["value"].sum() == pytest.approx(want, rel=1e-4, abs=1e-9)
         elif measure == "IRGamma":
             assert tuple(v["mkt_point"]) == TOY_PILLARS and np.isfinite(v["value"]).all()
         else:                        # IRVega cube: same '<tail>;<expiry>' points and values as the toy's

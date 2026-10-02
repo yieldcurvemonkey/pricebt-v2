@@ -34,7 +34,7 @@ Fill in one row per contract (measure, form) **before** you write YAML, from wha
 | `Price` | ccy, holder-signed; drops paid flows or is total return (pick one) | A/C `npv`; B "PV" code; D dirty price per 100 → × face/100, sign from `buy_sell` | | | | | |
 | `IRDelta` (scalar) | ccy per +1bp of r, **total** derivative; payer and long option > 0, long bond < 0 | A AD or bump; B curve DV01 / (dr/ds), often receiver-positive; D yield DV01, often loss-positive | | | | | |
 | `IRDelta` (bucketed) | ccy per +1bp per pillar, `labels.mkt_type: IR`, a portfolio function over `trades, weights` | A key-rate AD; B bucketed DV01 code (check sign and key format); C per-pillar bumps | | | | | |
-| `IRDiscountDeltaParallel` | ccy per +1bp discount-curve shift only | A shift the discount curve object; single-curve: the parallel DV01; B a discount-only scenario (Bond without one: declare) | | | | | |
+| `IRDiscountDeltaParallel` | ccy per +1bp discount-curve shift only, projection forwards held (≈0 for an at-the-money swap) | A shift the discount curve object; single-curve: hold the forwards and rediscount the projected flows (never the parallel DV01, which moves the forwards too); B a discount-only scenario (Bond without one: declare) | | | | | |
 | `IRGammaParallel` | ccy per bp² of r, chain rule; payer swap < 0, long option > 0 | derive by the ±1bp formula; D convexity × dirty PV × 1e-8; never d(annuity pv01)/dr | | | | | |
 | `IRGamma` (bucketed) | ccy per bp² per pillar, diagonal | derive per pillar (costly; Bond: or declare) | | | | | |
 | `IRVega` (scalar) | ccy per +1bp **normal** vol; long > 0; swap and bond 0.0 | normal model: native; lognormal or SABR: bump through a normal↔lognormal map; per 1 vol point ÷ 100 | | | | | |

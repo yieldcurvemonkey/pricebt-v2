@@ -245,6 +245,22 @@ MUTATIONS = [
     ("toy_usd_swaption.yaml", ("functions", "fair_premium", "expr"), "ts.fair_premium(market, trade) / 0.995", "ir_fair_premium", "WARN"),
     ("toy_usd_swaption.yaml", ("functions", "local_annuity", "expr"), "ts.annuity(market, trade) / abs(trade['notional']) * 1.002", "ir_local_annuity", "WARN"),
     ("toy_usd_swaption.yaml", ("risk_measures", "IRVega"), {"scalar": "zero_per_bp", "bucketed": "vega_cube"}, "ir_fake_constant", "FAIL"),
+    # fix round F4: slips the earlier rows let through (each PASSed on the previous check_asset_ir.py)
+    # an unsigned premium / annuity: right on the Buy side (Price > 0), wrong only on the Sell side
+    ("toy_usd_swaption.yaml", ("functions", "premium_cents", "expr"), "abs(ts.premium_cents(market, trade, pricebt_date))", "ir_premium_cents", "FAIL"),
+    ("toy_usd_swaption.yaml", ("functions", "local_annuity", "expr"), "abs(ts.local_annuity_in_cents(market, trade))", "ir_local_annuity", "FAIL"),
+    # a semiannual fixed leg (as the kwarg says) restated as K itself, uncompounded; the annual kwarg passes
+    ("toy_usd_irs_full.yaml", ("defaults", "fixed_rate_frequency"), "6m", "ir_compounded_fixed_rate", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("defaults", "fixed_rate_frequency"), "1y", "ir_compounded_fixed_rate", "PASS"),
+    # CRIF labels: an int Bucket, a non-SIMM sub-curve, an AmountCurrency that is not the Qualifier's
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Bucket=1)", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Label2='SOFR')", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(AmountCurrency='EUR')", "ir_crif", "FAIL"),
+    # constants: a non-zero zero-by-convention value, and NaN / inf placeholders
+    ("toy_usd_irs_full.yaml", ("functions", "zero_per_bp", "expr"), "5.0", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "float('nan')", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "math.nan", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "zero_per_bp", "expr"), "-math.inf", "ir_fake_constant", "FAIL"),
 ]
 
 
@@ -252,6 +268,41 @@ MUTATIONS = [
 def test_each_ir_row_catches_a_mistake(config, path, value, row, expected):
     rows = _rows(check_asset.run_checks(_set(copy.deepcopy(_load(config)), path, value), dates=DATES, backtest=False))
     assert rows[row].status == expected, rows[row]
+
+
+# the toy USD curve moved down to ~0.25%: below 0.5% a Price x DF slip sat inside the old relative band
+_LOW_RATES = [(("market", "expr"), '(lambda m: None if m is None else tri.bumped(m, -0.0375))(tr.market(pricebt_date, "USD", pricebt_csa))'),
+              (("market", "key"), "toy_usd_ois_low_rates")]
+
+
+@pytest.mark.parametrize("forward_price,expected", [
+    (None, "PASS"),                                                                                              # honest: no false FAIL at 0.25%
+    ("tri.npv(market, trade, pricebt_date) * market.discount_factor(trade.termination_date)", "FAIL"),           # Price x DF
+])
+def test_forward_price_times_df_is_caught_at_low_rates(forward_price, expected):
+    cfg = copy.deepcopy(_load("toy_usd_irs_full.yaml"))
+    for path, value in _LOW_RATES + ([(("functions", "forward_price", "expr"), forward_price)] if forward_price else []):
+        _set(cfg, path, value)
+    rows = _rows(check_asset.run_checks(cfg, dates=DATES, backtest=False))
+    assert rows["ir_forward_price"].status == expected, rows["ir_forward_price"]
+    assert "own rate 0.2" in rows["ir_forward_price"].detail                                                    # really at ~0.25%
+
+
+MERIDIAN = REPO / "skills" / "pricebt-connect-pricing-library" / "example"
+
+
+@pytest.mark.parametrize("fair_premium,expected", [
+    (None, "PASS"),
+    ('_risk(market, trade, pricebt_date)["PV"] * _dfs(market, trade, pricebt_date)[0]', "FAIL"),   # Price x DF(spot)
+])
+def test_fair_premium_times_df_spot_is_caught(fair_premium, expected):
+    """The toys have no spot lag (FairPremium == Price), so the direction of the ratio is proven on the
+    Meridian example, which settles at spot: Price x DF(spot) is within the old ~10-day band."""
+    raw = yamlio.load_file(MERIDIAN / "meridian_usd_irs.yaml")
+    if fair_premium:
+        raw["functions"]["fair_premium"]["expr"] = fair_premium
+    rows = _rows(check_asset.run_checks(raw, dates=[date(2024, 1, 2), date(2024, 4, 2)], sys_path=[MERIDIAN], backtest=False))
+    assert rows["ir_fair_premium"].status == expected, rows["ir_fair_premium"]
 
 
 def test_stale_declaration_warns_on_a_bond_and_fails_to_load_on_a_swap():

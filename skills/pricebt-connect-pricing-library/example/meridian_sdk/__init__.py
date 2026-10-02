@@ -21,8 +21,9 @@ the asset config in ../meridian_usd_irs.yaml has to convert every one of them:
 Math (deterministic, closed form, no data files): zero rates at pillars 1Y..30Y, linearly
 interpolated in time (flat outside), continuously compounded, ACT/365F. Pillar level and slope move
 with the business-day index so the 10y par rate mean-reverts over a few months. Swaps: annual fixed
-coupons vs float coupons on the same schedule (each valued N*(DF(prev) - DF(c)), so the float leg is
-N*(DF(start) - DF(end)) before the first coupon). PV drops each flow on its payment date. DV01/BUCKET_DV01 are analytic first-order sensitivities to
+coupons vs float coupons on the same unadjusted schedule (each valued N*(DF(prev) - DF(c)), so the float leg is
+N*(DF(start) - DF(end)) before the first coupon; schedule() lists the periods). PV drops each flow on its
+payment date; once every flow has dropped PAR_PCT is NaN (no annuity left). DV01/BUCKET_DV01 are analytic first-order sensitivities to
 the pillar zero rates, so the buckets sum to DV01 exactly (up to float rounding).
 """
 from __future__ import annotations
@@ -83,6 +84,18 @@ def _spot(d: date) -> date:
     for _ in range(2):
         d = _following(d + timedelta(days=1))
     return d
+
+
+def _periods(start: date, end: date) -> list:
+    """Annual accrual periods (accrual start, payment date) from start, unadjusted; the final (possibly
+    stub) one pays on end."""
+    out, prev, i = [], start, 1
+    while True:
+        c = min(start + relativedelta(years=i), end)
+        out.append((prev, c))
+        if c >= end:
+            return out
+        prev, i = c, i + 1
 
 
 def _add_tenor(d: date, tenor: str) -> date:
@@ -213,6 +226,12 @@ class Client:
             return MarketHandle(self, d, market.curve, zeros)
         return _ForwardHeldHandle(shifted, d)
 
+    def schedule(self, spec: TradeSpec, market: MarketHandle) -> List[tuple]:
+        """Every accrual period of `spec`, past ones included, as (accrual start, payment date) ISO
+        strings (one remote call). A tenor `end` resolves against `market`'s spot, as in price()."""
+        self._remote()
+        return [(p.isoformat(), c.isoformat()) for p, c in _periods(date.fromisoformat(spec.start), self._end(spec, market))]
+
     def discount_factors(self, market: MarketHandle, dates: List[str]) -> List[float]:
         """DF from the market's valuation date to each ISO date (one remote call)."""
         self._remote()
@@ -248,25 +267,20 @@ class Client:
             raise ValueError(f"Meridian: unknown measure(s) {bad}; known: {MEASURES}")
         return [self._price_one(s, market, measures) for s in specs]
 
+    @staticmethod
+    def _end(s: TradeSpec, mk: MarketHandle) -> date:
+        if _TENOR.match(s.end.strip().upper()):  # vendor convention: tenor counts from THIS market's spot
+            return _following(_add_tenor(_spot(mk._d), s.end))
+        return date.fromisoformat(s.end)
+
     def _price_one(self, s: TradeSpec, mk: MarketHandle, measures) -> dict:
         if _CURVES[mk.curve] != s.currency:
             raise ValueError(f"Meridian: {s.currency} trade on {mk.curve} market")
-        start = date.fromisoformat(s.start)
-        if _TENOR.match(s.end.strip().upper()):  # vendor convention: tenor counts from THIS market's spot
-            end = _following(_add_tenor(_spot(mk._d), s.end))
-        else:
-            end = date.fromisoformat(s.end)
+        end = self._end(s, mk)
         n_pil = len(_PILLARS)
 
         # annual coupons from start; final (possibly stub) coupon at end; only those after as_of
-        cpns, prev, i = [], start, 1
-        while True:
-            c = min(start + relativedelta(years=i), end)
-            if c > mk._d:
-                cpns.append((c, (c - prev).days / 365.0, prev))
-            if c >= end:
-                break
-            prev, i = c, i + 1
+        cpns = [(c, (c - p).days / 365.0, p) for p, c in _periods(date.fromisoformat(s.start), end) if c > mk._d]
         ann, ann_g = 0.0, [0.0] * n_pil
         for c, acc, _p in cpns:
             df, g = mk._df_and_grad(c)
@@ -282,7 +296,7 @@ class Client:
             flt, flt_g = dfs - dfe, [a - b for a, b in zip(gs_, ge)]
         else:
             flt, flt_g = 0.0, [0.0] * n_pil
-        par = flt / ann if ann > 0 else float("nan")
+        par = flt / ann if ann > 0 else float("nan")   # NaN once nothing is left (a dead swap): no annuity
         k = par if s.fixed_rate_pct is None else s.fixed_rate_pct / 100.0
         sgn = 1.0 if s.direction == "PAY" else -1.0
         pv = sgn * s.notional * (flt - k * ann)

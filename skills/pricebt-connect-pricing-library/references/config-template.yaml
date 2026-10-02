@@ -96,7 +96,9 @@ code: |
       _todo("lib_shift(m, h)")
 
   def lib_shift_discount(m, h):
-      """Market m with ONLY the discount curve shifted by h (a single-curve library: the same as lib_shift)."""
+      """Market m with ONLY the discount curve shifted by h, every projection forward held. A single-curve
+      library is NOT lib_shift (that moves the float coupons too): return a market that discounts on the
+      shifted curve and projects on m's (an at-the-money swap then has a discount delta of about 0)."""
       _todo("lib_shift_discount(m, h)")
 
   def lib_translate(m, days):
@@ -253,7 +255,7 @@ code: |
   SIMM_TENORS = ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")
   CRIF_COLUMNS = ["RiskType", "Qualifier", "Bucket", "Label1", "Label2", "Amount", "AmountCurrency"]
   CRIF_BUCKET = "1"                          # TODO: the SIMM volatility group of your currency ("1": regular, e.g. USD, EUR)
-  CRIF_SUBCURVE = "OIS"                      # TODO: Label2, your projection sub-curve ("OIS", "SOFR", "Libor3m", ...)
+  CRIF_SUBCURVE = "OIS"                      # TODO: Label2, the ISDA SIMM sub-curve of your projection curve ("OIS" -- also for SOFR/ESTR --, "Libor3m", ...)
 
   def par_spread_bp(m, t, r):
       """ParSpread: K - par, in bp -- the floating-leg spread that makes PV 0 when both legs share one curve

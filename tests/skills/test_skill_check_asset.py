@@ -196,11 +196,11 @@ def test_meridian_example_and_mistakes(config, check):
 ])
 def test_meridian_cashflow_drop_tells_the_par_roll_from_a_wrong_drop(cashflows_expr, status):
     """Meridian's Price drops each coupon on its payment date, and its own par rate (IRFwdRate) jumps
-    there when the paid period leaves the remaining schedule: IRDelta x that roll is ~94% of the net
-    flow of the near-par probe. ir_cashflow_drop re-takes the delta term on the market part of the
-    IRFwdRate move (IRFwdRate on the step's end date minus the same on the start date's market, a
-    CloseMarket override): listing every flow twice, or the fixed leg only, FAILs; the honest config
-    PASSes and says why."""
+    there when the paid period leaves the remaining schedule. Theta holds the own par fixed across that
+    roll (DEV-I15, at the remaining annuity pv01), so ir_cashflow_drop splits the IRFwdRate move: the
+    market part (IRFwdRate on the step's end date minus the same on the start date's market, a
+    CloseMarket override) at IRDelta, the roll at Annuity(end) x 1e-4. Listing every flow twice, or the
+    fixed leg only, FAILs; the honest config PASSes and says why."""
     raw = yamlio.load_file(MERIDIAN / "meridian_usd_irs.yaml")
     if cashflows_expr:
         raw["functions"]["cashflows"]["expr"] = cashflows_expr

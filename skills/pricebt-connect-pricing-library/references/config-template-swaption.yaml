@@ -112,7 +112,8 @@ code: |
       _todo("lib_shift(m, h)")
 
   def lib_shift_discount(m, h):
-      """Market m with ONLY the discount curve shifted by h (single-curve: lib_shift)."""
+      """Market m with ONLY the discount curve shifted by h, the underlying's projection forwards (so F's
+      float leg) held. Single-curve: NOT lib_shift; discount on the shifted curve, project on m's."""
       _todo("lib_shift_discount(m, h)")
 
   def lib_vol_shift(m, h):

@@ -372,8 +372,8 @@ The contract (DEV-I15) is one calendar day of carry, total return, with the own 
 
 - **Delta ladder** (`IRDelta` bucketed): central key-rate bumps of each pillar
   (`key_rate_ladder`). Keys are plain tenors, with the scalar's sign and unit. It sums to the
-  **parallel** curve delta (about `IRDiscountDeltaParallel` on one curve), not to the own-rate
-  scalar. For a native bucketed delta, map its keys (pattern 8), flip and scale it like the scalar,
+  **parallel** whole-curve delta (forwards moving too; never `IRDiscountDeltaParallel`, which holds
+  the forwards and is about 0 at the money), not to the own-rate scalar. For a native bucketed delta, map its keys (pattern 8), flip and scale it like the scalar,
   and raise on an unknown pillar.
 - **Gamma ladder** (`IRGamma`, bucketed only): the diagonal (pattern 17).
 - **Vega cube** (`IRVega` bucketed): one row per (expiry, tail), `mkt_point = "<tail>;<expiry>"`
@@ -628,9 +628,14 @@ cumulative value -- PNL_EXPLAIN_PLAN.md section 2.5).
   a rolled curve for `theta` books real roll-down twice: once correctly in `PNL_delta` (a genuine
   `Δpar`), and again in `PNL_carry` (`T-SLOPE-2`).
 - **NaN on a dead trade.** A swap that matures between two marks has `dv01(t-1) != 0` but a naive
-  `par_rate(t) = NaN`; every function above must guard the dead case and return `0.0` (or, for the
-  market rate feeding `PNL_delta`, `fixed_rate * 1e4` so the maturity step's delta term correctly
-  equals `-PV(t-1)`), never let the `NaN` reach `pnl_explain()`.
+  `par_rate(t) = NaN`; never let the `NaN` reach `pnl_explain()`. Every sensitivity guards the dead
+  case and returns `0.0`; the levels stay **continuous** with the last live value (R2-7): the market
+  rate feeding `PNL_delta` (`IRFwdRate`) carries the **final accrual period's** par, i.e. that
+  period's simple forward `(DF(start)/DF(end) - 1)/acc` from its own two dates (the ARBS config's
+  `_final_period_par`, the Meridian example's `_par_pct`). With one period left it equals the live
+  par exactly, so the level does not jump at maturity, and a past date's DF (> 1) keeps it finite
+  after. The old `fixed_rate * 1e4` dead convention is superseded: it jumps the level by `K - par`
+  on the maturity step.
 
 ## 29. The rest of the strict contract: ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate, CRIFIRCurve
 

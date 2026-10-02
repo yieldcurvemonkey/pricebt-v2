@@ -246,8 +246,10 @@ def _sloped_session(tmp_path, suffix, theta_fn="theta"):
 # ============================================================================================ 5.1: toy definitions and plumbing
 
 
-# T-GAMMA-1 known answers (ATM payer, 2024-01-03, chain-rule gamma): owner B's values when tr.gamma
-# gained the chain term; the no-chain-term formula gave -0.03613 / -0.73785 / -4.13576
+# T-GAMMA-1 known answers (ATM payer, 2024-01-03, chain-rule gamma): REGRESSION PINS, not independent
+# known answers -- owner B's tr.gamma values recorded when it gained the chain term, which only freeze
+# today's toy output (the independent check is the second difference in the test body); the
+# no-chain-term formula gave -0.03613 / -0.73785 / -4.13576
 T_GAMMA_1_ATM_PAYER = {"2y": -0.05437, "10y": -0.81656, "30y": -4.30509}
 
 

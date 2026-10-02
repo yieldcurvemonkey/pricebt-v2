@@ -31,9 +31,11 @@ CONTRACT (docs/v2/IR_RISK_DESIGN.md section 2, docs/v2/IR_STRICT_CONTRACT.md R3-
   contract_declarations  strict: FAIL per declared contract measure or preset of one. Any class:
                       WARN per stale declaration (Bond: mapped AND declared, the mapping wins), a
                       declared preset name, a declared form outside the row, an unknown name.
-  ir_fake_constant    (strict) a contract measure mapped to a literal constant ('0.0', '{}') outside
-                      contracts.ZERO_BY_CONVENTION (vol measures on a swap, IRBasis, IRXccyDelta):
-                      a placeholder standing in for a measure the library was never asked for (FAIL).
+  ir_fake_constant    (strict) a contract measure mapped to a literal constant ('0.0', '{}',
+                      float('nan'), math.nan, math.inf) outside contracts.ZERO_BY_CONVENTION (vol
+                      measures on a swap, IRBasis, IRXccyDelta): a placeholder standing in for a
+                      measure the library was never asked for (FAIL); a zero-by-convention measure
+                      mapped to a constant other than 0 / {} (IRVega '5.0') (FAIL).
 
 IR SEMANTICS (every IR pack; library-agnostic, from evaluated values only)
   ir_expiry_in_years  ExpiryInYears not falling by exactly (d2-d1).days/365 (business-day or
@@ -73,27 +75,38 @@ IR SEMANTICS (every IR pack; library-agnostic, from evaluated values only)
                       seasoned swap's own par rate jumps when the paid period rolls off the remaining
                       schedule, so the delta term is re-taken on the MARKET part of the IRFwdRate
                       move (IRFwdRate on the payment step's end date, minus the same priced on the
-                      start date's market via a CloseMarket override) and the bands apply to that.
+                      start date's market via a CloseMarket override), the roll part at the
+                      remaining Annuity x 1e-4 (Theta holds the own par fixed across it, DEV-I15),
+                      and the bands apply to that.
 STRICT IDENTITIES (IRSwap, IRSwaption; IR_STRICT_CONTRACT R3-1; FAIL on a sign or identity break,
 WARN on a tolerance miss; each SKIPs when its measures are not mapped)
   ir_premium_cents    PremiumCents != Price / |notional_amount| x the unit factor (bp 1e4, pct 100,
-                      decimal/number 1): a percent-of-notional declared bp, a signed notional (FAIL).
-  ir_local_annuity    LocalAnnuityInCents != Annuity / |notional_amount| (same factors): an annuity
-                      per bp (x 1e-4), a signed notional (FAIL).
+                      decimal/number 1), checked on BOTH directions: a percent-of-notional declared
+                      bp, a signed notional, an unsigned abs(Price) (FAIL).
+  ir_local_annuity    LocalAnnuityInCents != Annuity / |notional_amount| (same factors), on both
+                      directions: an annuity per bp (x 1e-4), a signed notional, abs(Annuity) (FAIL).
   ir_forward_price    ForwardPrice / Price = 1 / DF(expiry): opposite sign (FAIL); the implied rate
-                      ln(ratio) / ExpiryInYears far from IRFwdRate (WARN beyond max(r/2, 1%), FAIL
-                      beyond max(r, 2%): Price x DF, the wrong date); == Price from expiry on.
-  ir_fair_premium     FairPremium / Price = 1 / DF(settlement): opposite sign (FAIL); more than ~10
-                      days of discounting (WARN to 1%: a far premium date; FAIL beyond: the expiry
-                      or final date used, which is ForwardPrice).
+                      z = ln(ratio) / ExpiryInYears of the opposite sign to IRFwdRate r once |r| >=
+                      10bp (FAIL: Price x DF, at any rate level); z far from r (WARN beyond
+                      max(r/2, 25bp), FAIL beyond max(r, 50bp): the wrong date); == Price from expiry on.
+  ir_fair_premium     FairPremium / Price = 1 / DF(settlement): opposite sign (FAIL); ln(ratio) of the
+                      opposite sign to IRFwdRate once |r| >= 10bp (FAIL: Price x DF(spot)); more than
+                      ~10 days of discounting (WARN to 1%: a far premium date; FAIL beyond: the
+                      expiry or final date used, which is ForwardPrice).
   ir_par_spread       ParSpread vs K - IRFwdRate in bp: changes with direction, reversed sign
                       (F - K), or off by a scale factor x2 (FAIL); more than max(0.5bp, 1%) apart
                       (WARN: legs on different schedules or curves).
-  ir_compounded_fixed_rate  outside [K, e^K - 1] (a de-compounded or continuous restatement),
-                      moving with the pricing date, or != K for an annual fixed_rate_frequency (FAIL).
+  ir_compounded_fixed_rate  outside [K, e^K - 1] (a de-compounded or continuous restatement) or
+                      moving with the pricing date (FAIL); when the fixed-leg frequency f is knowable
+                      (a fixed_rate_frequency kwarg or resolved term, else the spacing of the fixed
+                      leg's Cashflows dates), != (1 + K/f)^f - 1: a semiannual leg returned
+                      uncompounded as K (FAIL). f unknowable: the bounds only, and the row says so.
   ir_crif             CRIFIRCurve RiskType not 'Risk_IRCurve', Qualifier not the config currency,
-                      Label1 not a SIMM tenor ('10Y' upper case) (FAIL); sum(Amount) != sum of the
-                      IRDelta ladder (FAIL; WARN within 1%).
+                      Bucket not a SIMM volatility group string ('1'/'2'/'3'; an int 1 FAILs),
+                      Label1 not a SIMM tenor ('10Y' upper case), Label2 not a SIMM sub-curve
+                      (OIS, Libor1m/3m/6m/12m, Prime, Municipal; 'SOFR' FAILs), AmountCurrency not
+                      the Qualifier's currency (FAIL); sum(Amount) != sum of the IRDelta ladder
+                      (FAIL; WARN within 1%).
 
   fd_params / fd_params[M]  DEV-I10: a function not naming pricebt_bump_size must make
                       IRDelta(aggregation_level='Type', bump_size=1) raise NotSupportedError (PASS),
@@ -806,15 +819,20 @@ def row_cashflow_drop(env: _Env) -> List[CheckResult]:
         unit = TO_BP[env.spec("IRFwdRate").unit]
         r_b_on_a = float(env.svc.value(env.r1, tb, ca._scalar_form(ca._risk("IRFwdRate")), None, ta)) * unit
         dr_mkt = env.bp(env.r1, tb, "IRFwdRate") - r_b_on_a
-        if abs(dr_mkt - s["dr"]) > 1e-9:
-            terms2 = dict(terms, delta=s["delta"] * dr_mkt)
+        # Theta holds the own par fixed (DEV-I15), taking the roll out at the remaining swap's annuity pv01, so
+        # the roll part of the move is explained at that pv01 (Annuity on tb x 1e-4), the market part at IRDelta.
+        ann_b = env.get(env.r1, tb, "Annuity")
+        if abs(dr_mkt - s["dr"]) > 1e-9 and ann_b is not None:
+            roll = s["dr"] - dr_mkt
+            terms2 = dict(terms, delta=s["delta"] * dr_mkt, roll=ann_b * 1e-4 * roll)
             if "gamma" in terms2:
                 terms2["gamma"] = 0.5 * env.val(env.r1, ta, "IRGammaParallel") * dr_mkt * dr_mkt
             resid2 = s["economic"] - sum(terms2.values())
             ratio = abs(resid2) / abs(flow)
             status = PASS if ratio <= TAYLOR_WARN else WARN if ratio <= TAYLOR_FAIL else FAIL
             detail += (f"; IRFwdRate moved {s['dr']:.3f}bp, {dr_mkt:.3f}bp of it with the market (IRFwdRate on {tb} on the {ta} market: the rest is the paid"
-                       f" period rolling off the remaining schedule, not P&L): residual after delta {_fmt(terms2['delta'])} on the market move = {_fmt(resid2)} ({ratio:.1%} of the flow)")
+                       f" period rolling off the remaining schedule, not P&L; Theta holds the own par fixed across it): residual after delta"
+                       f" {_fmt(terms2['delta'])} on the market move + the roll {roll:.3f}bp x the remaining annuity pv01 {_fmt(ann_b * 1e-4)} = {_fmt(resid2)} ({ratio:.1%} of the flow)")
     if status != PASS:
         detail += ": Price must drop exactly the flows Cashflows lists, on their payment date (R2-6); a total-return Price lists none"
     return [CheckResult(name, status, detail)]
@@ -853,6 +871,7 @@ def row_swap_annuity_sign(env: _Env) -> List[CheckResult]:
 
 NOTIONAL_UNIT = {"bp": 1e4, "pct": 100.0, "decimal": 1.0, "number": 1.0}  # a per-unit-of-notional ratio in each unit
 IDENTITY_TOL, IDENTITY_WARN = 1e-6, 0.01
+SIGN_FLOOR = 0.001  # |own rate| (decimal) from which a discounting ratio must imply a rate of the same sign
 
 
 def _identity_status(got: float, want: float, floor: float) -> str:
@@ -891,23 +910,30 @@ def _per_notional_row(env: _Env, name: str, measure: str, source: str, why: str)
     if factor is None:
         return [CheckResult(name, FAIL, f"{measure} declared {unit!r}; a per-notional level is bp/pct/decimal/number")]
     d = _priced_date(env)
-    got, src = env.val(env.r1, d, measure), env.val(env.r1, d, source)
-    want = src / n * factor
-    status = _identity_status(got, want, 1e-9 * factor)
-    detail = f"on {d}: {measure} {_fmt(got)} {unit} vs {source} {_fmt(src)} / |{ca.SIZE_KWARG}| {_fmt(n)} x {factor:g} = {_fmt(want)}"
+    # both directions, as ir_par_spread does: an unsigned abs(Price) / |N| matches on whichever side has
+    # Price > 0 and only the other side shows it
+    kwarg, _cur, other = env.direction()
+    parts, statuses = [], []
+    for side, inst in (("", env.r1), (f"{kwarg}={other}: ", env.resolve(**{kwarg: other}))):
+        got, src = env.val(inst, d, measure), env.val(inst, d, source)
+        want = src / n * factor
+        statuses.append(_identity_status(got, want, 1e-9 * factor))
+        parts.append(f"{side}{measure} {_fmt(got)} {unit} vs {source} {_fmt(src)} / |{ca.SIZE_KWARG}| {_fmt(n)} x {factor:g} = {_fmt(want)}")
+    status = FAIL if FAIL in statuses else WARN if WARN in statuses else PASS
+    detail = f"on {d}: " + "; ".join(parts)
     return [CheckResult(name, status, detail + ("" if status == PASS else why))]
 
 
 def row_premium_cents(env: _Env) -> List[CheckResult]:
     return _per_notional_row(env, "ir_premium_cents", "PremiumCents", "Price",
                              ": PremiumCents is Price / |notional_amount| in the declared unit (bp: 1e4 x the ratio, gs's premium in cents);"
-                             " a percent-of-notional declared bp, the signed notional, or another notional breaks it")
+                             " a percent-of-notional declared bp, the signed notional, an unsigned abs(Price), or another notional breaks it")
 
 
 def row_local_annuity(env: _Env) -> List[CheckResult]:
     return _per_notional_row(env, "ir_local_annuity", "LocalAnnuityInCents", "Annuity",
                              ": LocalAnnuityInCents is Annuity / |notional_amount| (decimal: a 10y payer is about +8.5), holder-signed like Annuity;"
-                             " an annuity per bp (Annuity x 1e-4), the signed notional, or an unsigned annuity breaks it")
+                             " an annuity per bp (Annuity x 1e-4), the signed notional, or an unsigned abs(Annuity) breaks it")
 
 
 def _ratio_head(env: _Env, measure: str, d: date):
@@ -942,10 +968,13 @@ def row_forward_price(env: _Env) -> List[CheckResult]:
     if r is None:
         return [CheckResult(name, INFO, detail + f": implied rate {z:.4%} (no rate-unit IRFwdRate to compare)")]
     detail += f": implied rate ln(ratio)/T {z:.4%} vs own rate {r:.4%}"
+    if abs(r) >= SIGN_FLOOR and z * r < 0:
+        # Price x DF implies -r: at low rates it sits inside any relative band, so the sign decides
+        return [CheckResult(name, FAIL, detail + ": the implied rate has the opposite sign to the own rate -- ForwardPrice is Price / DF(expiry), never Price x DF")]
     gap = abs(z - r)
-    if gap <= max(0.5 * abs(r), 0.01):
+    if gap <= max(0.5 * abs(r), 0.0025):
         return [CheckResult(name, PASS, detail)]
-    if gap <= max(abs(r), 0.02):
+    if gap <= max(abs(r), 0.005):
         return [CheckResult(name, WARN, detail + ": the discounting implies a rate far from the own rate -- the right date (a swaption's expiry, a swap's final date)?")]
     return [CheckResult(name, FAIL, detail + ": ForwardPrice is Price / DF(expiry) -- Price x DF, a price in bp, or the wrong date gives this")]
 
@@ -965,6 +994,8 @@ def row_fair_premium(env: _Env) -> List[CheckResult]:
     detail = f"on {d}: FairPremium {_fmt(fp)} vs Price {_fmt(pv)} (ratio {ratio:.8g})"
     if ratio <= 0:
         return [CheckResult(name, FAIL, detail + ": opposite sign to Price -- FairPremium is Price / DF(settlement), holder-signed")]
+    if r is not None and abs(r) >= SIGN_FLOOR and math.log(ratio) * r < -1e-15:
+        return [CheckResult(name, FAIL, detail + f": the ratio discounts the wrong way for an own rate of {r:.4%} -- FairPremium is Price / DF(settlement), never Price x DF")]
     bound = max(abs(r or 0.0), 0.01) * 10.0 / 365.0
     if abs(math.log(ratio)) <= bound + 1e-12:
         return [CheckResult(name, PASS, detail + f" (|ln ratio| within {bound:.2e}: at most ~10 days of discounting)")]
@@ -1012,10 +1043,38 @@ def row_compounded_fixed_rate(env: _Env) -> List[CheckResult]:
         return [CheckResult(name, FAIL, detail + ": it moved with the pricing date -- a trade term (the fixed rate restated), not a market level")]
     if c1 < k - 1e-12 or c1 > hi + 1e-12:
         return [CheckResult(name, FAIL, detail + ": outside the bounds -- (1 + K/f)^f - 1 for a leg paying f times a year (annual: K); a de-compounded or continuous restatement is below K")]
-    freq = str(env.ctx.kwargs.get("fixed_rate_frequency") or "").strip().lower()
-    if freq in ("1y", "12m", "annual") and abs(c1 - k) > 1e-12:
-        return [CheckResult(name, FAIL, detail + f": fixed_rate_frequency {freq!r} is annual, so CompoundedFixedRate must equal K")]
-    return [CheckResult(name, PASS, detail + (": = K (an annual fixed leg)" if abs(c1 - k) <= 1e-12 else ""))]
+    f, source = _fixed_frequency(env)
+    if f is None:
+        return [CheckResult(name, PASS, detail + (": = K, right for an annual fixed leg; the leg frequency is not knowable here (no fixed_rate_frequency, no fixed-leg"
+                                                  " Cashflows) -- pass a fixed_rate_frequency kwarg (--kwargs) to check it" if abs(c1 - k) <= 1e-12 else ""))]
+    want = (1.0 + k / f) ** f - 1.0
+    detail += f"; fixed leg f = {f:g} a year ({source}): (1 + K/f)^f - 1 = {want:.8%}"
+    if abs(c1 - want) > 1e-10:
+        return [CheckResult(name, FAIL, detail + ": CompoundedFixedRate is the fixed rate compounded at the leg's own frequency -- K as-is is right only for an annual leg")]
+    return [CheckResult(name, PASS, detail)]
+
+
+_FREQ = {"1y": 1, "12m": 1, "annual": 1, "6m": 2, "semiannual": 2, "3m": 4, "quarterly": 4, "1m": 12, "monthly": 12}
+
+
+def _fixed_frequency(env: _Env) -> Tuple[Optional[float], str]:
+    """(fixed-leg payments a year, where it came from), or (None, why not): a fixed_rate_frequency
+    kwarg or resolved term, else the median spacing of the fixed leg's Cashflows payment dates."""
+    for where, src in (("kwarg", env.ctx.kwargs), ("resolved term", env.r1.resolved_terms)):
+        v = str(src.get("fixed_rate_frequency") or "").strip().lower()
+        if v in _FREQ:
+            return float(_FREQ[v]), f"{where} fixed_rate_frequency {v!r}"
+    if env.has("Cashflows", "frame"):
+        f = env.frame(env.r1, env.d1)
+        if len(f) and "payment_type" in f:
+            dates = sorted({_as_date(p) for p, t in zip(f["payment_date"], f["payment_type"]) if "fixed" in str(t).lower()})
+            gaps = sorted((b - a).days for a, b in zip(dates, dates[1:]))
+            if len(gaps) >= 2:
+                n = 365.25 / gaps[len(gaps) // 2]
+                for k in (1, 2, 4, 12):
+                    if abs(n - k) <= 0.15 * k:
+                        return float(k), f"fixed-leg Cashflows every {gaps[len(gaps) // 2]} days"
+    return None, "unknown"
 
 
 def row_crif(env: _Env) -> List[CheckResult]:
@@ -1036,6 +1095,15 @@ def row_crif(env: _Env) -> List[CheckResult]:
     labels = sorted({str(x) for x in df["Label1"]} - set(contracts.SIMM_IR_TENORS))
     if labels:
         bad.append(f"Label1 {labels} not SIMM tenors {list(contracts.SIMM_IR_TENORS)} (lower case: '10y', not '10Y')")
+    buckets = sorted({repr(x) for x in df["Bucket"] if not (isinstance(x, str) and x in contracts.SIMM_IR_BUCKETS)})
+    if buckets:
+        bad.append(f"Bucket {buckets} not a SIMM volatility group string {list(contracts.SIMM_IR_BUCKETS)} ('1' for USD, EUR)")
+    sub = sorted({repr(x) for x in df["Label2"] if x not in contracts.SIMM_IR_SUBCURVES})
+    if sub:
+        bad.append(f"Label2 {sub} not a SIMM sub-curve {list(contracts.SIMM_IR_SUBCURVES)} (a SOFR or ESTR curve is 'OIS')")
+    ccy = sorted({f"{a!r} for {q!r}" for a, q in zip(df["AmountCurrency"], df["Qualifier"]) if str(a) != str(q)})
+    if ccy:
+        bad.append(f"AmountCurrency {ccy} not the Qualifier's currency")
     total = float(pd.to_numeric(df["Amount"]).sum()) if len(df) else 0.0
     head = f"{len(df)} rows on {env.d1}, sum(Amount) {_fmt(total)}"
     if bad:
@@ -1061,9 +1129,9 @@ STRICT_ROWS = (
 
 
 def check_fake_constants(ctx, inst: str) -> List[CheckResult]:
-    """R3-0: a contract measure mapped to a literal constant ('0.0', '{}') is honest only where the
-    contract defines the value as 0 (contracts.ZERO_BY_CONVENTION); anything else is a placeholder."""
-    import ast
+    """R3-0: a contract measure mapped to a literal constant ('0.0', '{}', float('nan'), math.nan) is
+    honest only where the contract defines the value as 0 (contracts.ZERO_BY_CONVENTION), and there only
+    when the constant IS 0 (or {}); anything else is a placeholder."""
 
     from pricebt.risk import contracts
 
@@ -1079,15 +1147,43 @@ def check_fake_constants(ctx, inst: str) -> List[CheckResult]:
             continue
         for fname in filter(None, (mapping.scalar, mapping.bucketed)):
             expr = _spec(ctx.cfg, fname).expr.strip()
-            try:
-                ast.literal_eval(expr)
-            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            found, value = _constant(expr)
+            if not found:
                 continue
-            (fine if base in allowed else bad).append(f"{key} -> {fname} = {expr!r}")
+            zero = value == {} or (isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0)
+            (fine if base in allowed and zero else bad).append(f"{key} -> {fname} = {expr!r}")
     if bad:
-        return [CheckResult(name, FAIL, f"literal constant for {bad}: only {sorted(allowed)} may be a constant for {inst} (the contract defines them as 0);"
-                                        " every other contract measure must be computed -- a placeholder silently zeroes P&L and risk")]
+        return [CheckResult(name, FAIL, f"literal constant for {bad}: only {sorted(allowed)} may be a constant for {inst}, and only 0 (or {{}}: the contract defines"
+                                        " them as 0); every other contract measure must be computed -- a placeholder silently zeroes (or NaNs) P&L and risk")]
     return [CheckResult(name, PASS, f"no placeholder constants; zero by convention: {fine or 'none'}")]
+
+
+def _constant(expr: str) -> Tuple[bool, Any]:
+    """(True, value) when expr is a constant: a Python literal, float('nan'/'inf'/...), math/np/numpy
+    .nan/.inf/.pi/.e, optionally negated; else (False, None)."""
+    import ast
+
+    try:
+        return True, ast.literal_eval(expr)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        pass
+    try:
+        node = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return False, None
+    sign = 1.0
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        sign, node = (-sign if isinstance(node.op, ast.USub) else sign), node.operand
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "float" and len(node.args) == 1
+            and not node.keywords and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, (str, int, float))):
+        try:
+            return True, sign * float(node.args[0].value)
+        except ValueError:
+            return False, None
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in ("math", "np", "numpy")
+            and node.attr.lower() in ("nan", "inf", "pi", "e")):
+        return True, sign * getattr(math, node.attr.lower())
+    return False, None
 
 
 def check_ir_semantics(ctx, inst: str) -> List[CheckResult]:

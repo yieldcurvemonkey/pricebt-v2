@@ -23,10 +23,11 @@ python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:ca
 | Call | Returns | Notes |
 |---|---|---|
 | `meridian_sdk.connect(env="SIM", gaps=None, latency=0.0)` | `Client` | Only `"SIM"` exists. `gaps` = ISO dates with no data (default `DEFAULT_GAPS = ("2024-03-14",)`). |
-| `Client.calls` | `int` | Counts every remote-style call (`market`, `scenario`, `discount_factors`, `spot_date`, `maturity`, `price`). |
+| `Client.calls` | `int` | Counts every remote-style call (`market`, `scenario`, `discount_factors`, `spot_date`, `maturity`, `schedule`, `price`). |
 | `Client.market(as_of, curve)` | `MarketHandle` | `as_of` is an ISO **string**; `curve="USD.SOFR"`. Raises `MarketClosed` on weekends/`HOLIDAYS`, `NoData` before 2020-01-02, after 2026-06-30, or on a gap. |
 | `Client.scenario(market, shift_bp=0.0, pillar_shifts_bp=None, valuation_date=None, hold="ZEROS")` | `MarketHandle` | A what-if copy, one remote call. `shift_bp` moves every pillar zero rate (bp, + = up); `pillar_shifts_bp` moves single pillars, keyed like `BUCKET_DV01` (`"USD.SOFR:10Y"`). `valuation_date` (ISO, any calendar day) re-values the snapshot from that date: `hold="ZEROS"` (the **default**) keeps the zero rates, so the curve rolls; `hold="FORWARDS"` keeps every forward (`DF(x) / DF(valuation_date)`). `HOLD = ("ZEROS", "FORWARDS")`. |
 | `Client.discount_factors(market, dates)` | `list[float]` | DF from the market's valuation date to each ISO date, one remote call. |
+| `Client.schedule(spec, market)` | `list[(ISO, ISO)]` | Every accrual period, past ones included, as (accrual start, payment date), unadjusted; one remote call. |
 | `Client.spot_date(market)` | ISO str | as_of + 2 business days. |
 | `Client.maturity(market, start, tenor)` | ISO str | start + tenor, following business day. |
 | `Client.swap(currency, start, end, fixed_rate_pct=None, notional=1e6, direction="PAY")` | `TradeSpec` (frozen dataclass) | `end` is an ISO date **or a tenor**. `fixed_rate_pct=None` means "at par on whatever market prices it". `notional > 0` always; `direction` is `"PAY"`/`"RECEIVE"` of the fixed leg. |
@@ -57,7 +58,8 @@ the 10y par rate moves by about 200bp over a few months, which is enough for mea
 strategies to trade. Swaps have annual fixed coupons and float coupons on the same schedule, each
 float coupon valued `N*(DF(prev) - DF(c))` (so before the first coupon the float leg is
 `N*(DF(start) - DF(end))`; a period already running uses today's curve, there is no fixings
-history). `PV` drops each flow on its payment date. `DV01` and `BUCKET_DV01` are analytic
+history). `PV` drops each flow on its payment date; once every flow has dropped `PAR_PCT` is NaN (no
+annuity left). Coupon dates are unadjusted (only the end rolls), so a coupon can fall on a weekend. `DV01` and `BUCKET_DV01` are analytic
 first-order sensitivities to the pillar zeros, so the buckets sum to `DV01` exactly. A finite
 difference agrees to about 0.1% (convexity).
 
@@ -66,18 +68,25 @@ difference agrees to about 0.1% (convexity).
 **First-order codes, one call.** `_risk(market, trade, pricebt_date)` prices the trade, the same
 trade with its fixed rate ±1bp, and a spot-starting probe to the same end, with
 `PV, DV01, PAR_PCT, BUCKET_DV01, CASHFLOWS`, in ONE `price` call, memoised on the market by
-`(pricebt_date, trade)`. Under a `CloseMarket` override (the market is another date's), it values
-the trade from the pricing date on that market's curve (a `scenario(valuation_date=...)`, zero rates
-held), so no time passes, as `PnlExplain` does.
+`(pricebt_date, trade)`. Every function values on `_seen_from(market, pricebt_date)`: the market itself
+on its own date; under a `CloseMarket` override (the market is another date's) that market's curve seen
+from the pricing date (a `scenario(valuation_date=...)`, zero rates held), so no time passes, as
+`PnlExplain` does. Spot dates, discount factors and scenarios all come from it, so `FairPremium`,
+`ForwardPrice` and `IRSpotRate` under an override discount from the pricing date, as `Price` does.
+
+**Dead trades** (every flow dropped, R2-7): `PAR_PCT` is NaN, so `IRFwdRate` carries the **final
+period's** par, `(DF(prev)/DF(end) - 1)/acc` from `schedule()` and `discount_factors`. With one period
+left that is exactly `PAR_PCT`, so the level never jumps; `ParSpread = K - it`. `IRSpotRate` once the
+end is on or before spot is the overnight forward at spot (the zero-length limit). Every sensitivity
+is 0 (`Annuity` and `DV01` are 0 by themselves; gamma and Theta guard), the frames are empty.
 
 | Measure | From | Why it is exact |
 |---|---|---|
 | `Annuity` | `-[PV(K+1bp) - PV(K-1bp)] / 2e-4` | a swap's PV is linear in K; payer > 0, receiver < 0 |
 | `IRDelta` scalar | `dr/ds = [DV01(K) + (r - K) dDV01/dK] / (Annuity x 1e-4)`, then `DV01(K) / (dr/ds)` | DV01 is linear in K, and a swap struck at its par rate r moves only through r. dr/ds is about 1.03-1.05 here (continuous zeros against an annual par rate), so the raw DV01 would overstate the own-rate delta by 3-5% |
-| `IRDiscountDeltaParallel` | the zero-curve DV01 | one curve: discounting is the curve |
 | `IRFwdRate`, `IRSpotRate` | `PAR_PCT` of the trade and of the spot-starting probe | the contract's definitions |
 | `Cashflows` | `CASHFLOWS`, holder-signed | discounted with `discount_factors` they sum to `PV` exactly (tested) |
-| `CRIFIRCurve` | the trade's own `BUCKET_DV01`, flipped, one row per non-zero pillar (`Risk_IRCurve`, `USD`, Bucket `"1"`, `Label1` the pillar in lower case, `Label2` `"SOFR"`) | the same numbers as the `IRDelta` ladder, so `sum(Amount)` equals its sum |
+| `CRIFIRCurve` | the trade's own `BUCKET_DV01`, flipped, one row per non-zero pillar (`Risk_IRCurve`, `USD`, Bucket `"1"`, `Label1` the pillar in lower case, `Label2` `"OIS"`: the SIMM sub-curve name of a SOFR curve; `SOFR` is not one) | the same numbers as the `IRDelta` ladder, so `sum(Amount)` equals its sum |
 | `IRDelta` bucketed | `BUCKET_DV01` of the whole book in ONE call | zero-pillar ladder, payer-positive |
 | `ExpiryInYears`, vol/basis/xccy zeros | date arithmetic, `'0.0'` | R2-8; the zeros are exactly `contracts.ZERO_BY_CONVENTION` for `IRSwap` |
 
@@ -87,7 +96,8 @@ held), so no time passes, as `PnlExplain` does.
 |---|---|
 | `IRGammaParallel` | `scenario(shift_bp=±1)`: `PV` and `PAR_PCT` on both, the chain-rule second derivative in the own rate (never d(DV01)/dr) |
 | `IRGamma` bucketed | `scenario(pillar_shifts_bp={pillar: ±1})` per pillar: the diagonal `PV(+) + PV(-) - 2PV` |
-| `Theta` | `scenario(valuation_date=t+1d, hold="FORWARDS")`: `PV(t+1d) + flows paid in (t, t+1d] - PV(t)`, per calendar day |
+| `IRDiscountDeltaParallel` | `discount_factors` on `scenario(shift_bp=±1)` at the trade's `CASHFLOWS` dates: the projected flows held, rediscounted. Meridian has one curve, so the zero-curve `DV01` is **not** this (a parallel shift also moves the float coupons); about 0 at the money |
+| `Theta` | `scenario(valuation_date=t+1d, hold="FORWARDS")`: `PV(t+1d) + flows paid in (t, t+1d] - PV(t)`, per calendar day, own par held: across a coupon the remaining swap's par jumps by `Δpar` (the paid period leaves the schedule), so subtract `pv01_T x Δpar / n`, `pv01_T` the translated annuity pv01 (±1bp strike reprice) and `n` the calendar days to the next business day (DEV-I15: `Theta x n` removes the jump once; a Friday before a Saturday coupon has `n = 3`). Off coupon dates the translated par equals today's exactly |
 | `PnlExplain` | `market_to` seen from the pricing date (`scenario(valuation_date=...)`, zero rates held): row `IR` = the whole move, `CROSSES` = 0 |
 
 **The R3-1 measures** (identities on the above):

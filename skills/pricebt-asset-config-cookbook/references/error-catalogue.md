@@ -134,11 +134,11 @@ The loader checks units and shapes; these rows of
 
 | Row and status | Typical cause | Fix |
 |---|---|---|
-| `ir_fake_constant` FAIL | a contract measure mapped to a literal (`'0.0'`, `'{}'`) outside `contracts.ZERO_BY_CONVENTION`, e.g. `IRDiscountDeltaParallel: zero_per_bp` "because there is one curve" | compute it (pattern 14); only vol measures on a swap, `IRBasis` on one curve and `IRXccyDelta` in one currency may be 0 |
-| `ir_premium_cents` FAIL | `PremiumCents` in percent of notional under `bp`, or divided by the signed notional | `Price / abs(notional) * 1e4`, unit `bp` (pattern 29) |
-| `ir_local_annuity` FAIL | `LocalAnnuityInCents` from the pv01 (Annuity x 1e-4), or the signed notional | `Annuity / abs(notional)`, unit `decimal` |
-| `ir_forward_price` FAIL | `ForwardPrice` = Price x DF instead of Price / DF, or the wrong date | `Price / DF(expiry)`: a swaption's expiration date, a swap's termination date; Price from then on |
-| `ir_fair_premium` FAIL | `FairPremium` discounted to the expiry or final date (that is `ForwardPrice`) | `Price / DF(premium settlement)`: spot, or the premium payment date |
+| `ir_fake_constant` FAIL | a contract measure mapped to a literal (`'0.0'`, `'{}'`, `float('nan')`, `math.nan`) outside `contracts.ZERO_BY_CONVENTION`, e.g. `IRDiscountDeltaParallel: zero_per_bp` "because there is one curve"; or a zero-by-convention measure mapped to a non-zero constant (`IRVega: '5.0'`) | compute it (pattern 14); only vol measures on a swap, `IRBasis` on one curve and `IRXccyDelta` in one currency may be 0 |
+| `ir_premium_cents` FAIL | `PremiumCents` in percent of notional under `bp`, divided by the signed notional, or `abs(Price)` (unsigned: the row checks both directions) | `Price / abs(notional) * 1e4`, unit `bp` (pattern 29) |
+| `ir_local_annuity` FAIL | `LocalAnnuityInCents` from the pv01 (Annuity x 1e-4), the signed notional, or `abs(Annuity)` | `Annuity / abs(notional)`, unit `decimal` |
+| `ir_forward_price` FAIL | `ForwardPrice` = Price x DF instead of Price / DF (caught at any rate level by the sign of the implied rate), or the wrong date | `Price / DF(expiry)`: a swaption's expiration date, a swap's termination date; Price from then on |
+| `ir_fair_premium` FAIL | `FairPremium` discounted to the expiry or final date (that is `ForwardPrice`), or Price x DF(spot) instead of Price / DF(spot) | `Price / DF(premium settlement)`: spot, or the premium payment date |
 | `ir_par_spread` FAIL | forward - K instead of K - forward, a holder-signed spread (flips with direction), or a unit slip | K - `IRFwdRate` in bp when the legs share a curve and schedule, the same for both directions |
-| `ir_compounded_fixed_rate` FAIL | a de-compounded or continuous restatement (below K), or a market level that moves daily | `(1 + K/f)^f - 1` from the resolved fixed rate or strike; K itself for an annual leg |
-| `ir_crif` FAIL | `Label1` `'10Y'` (SIMM tenors are lower case), a wrong `RiskType` or `Qualifier`, or sum(`Amount`) != the `IRDelta` ladder (a sign or unit) | build the rows from the trade's own `IRDelta` ladder (pattern 29) |
+| `ir_compounded_fixed_rate` FAIL | a de-compounded or continuous restatement (below K), a market level that moves daily, or K as-is for a semiannual/quarterly fixed leg (when the leg frequency is knowable) | `(1 + K/f)^f - 1` from the resolved fixed rate or strike; K itself for an annual leg |
+| `ir_crif` FAIL | `Label1` `'10Y'` (SIMM tenors are lower case), `Label2` `'SOFR'` (the SIMM sub-curve is `'OIS'`), an int `Bucket` (`'1'`), an `AmountCurrency` other than the `Qualifier`, a wrong `RiskType` or `Qualifier`, or sum(`Amount`) != the `IRDelta` ladder (a sign or unit) | build the rows from the trade's own `IRDelta` ladder (pattern 29) |

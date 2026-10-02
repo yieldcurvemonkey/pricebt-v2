@@ -48,8 +48,10 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    business-day schedule, so `GenericDataSource` never has to fill gaps.
 4. **Instruments need asset configs.** Each instrument class and currency must match exactly one
    registered asset (`match:` in the config). `IRSwap`, `IRSwaption` and `Bond` configs also carry
-   the **measure contract**: every gs IR measure is mapped (IRSwap, IRSwaption: always; a Bond may
-   declare one unsupported with a reason). No
+   the **measure contract**: every contract measure is mapped (IRSwap, IRSwaption: always; a Bond may
+   declare one unsupported with a reason). The contract is not every gs IR measure: the ones left out
+   on purpose, each with its reason, are `pricebt.risk.contracts.EXCLUDED` (FX quoting, inflation,
+   live-market and server-metadata measures, ...). No
    config yet? Go to [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md);
    its three templates cover these classes. 040303 trades an EUR swaption, so it needs an EUR
    swaption config.

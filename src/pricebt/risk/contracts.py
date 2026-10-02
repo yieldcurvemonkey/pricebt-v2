@@ -79,6 +79,8 @@ ZERO_BY_CONVENTION: Dict[str, frozenset] = {
 
 # ISDA SIMM IR tenors: the allowed CRIFIRCurve Label1 values (lower case)
 SIMM_IR_TENORS = ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")
+SIMM_IR_BUCKETS = ("1", "2", "3")  # SIMM Risk_IRCurve currency volatility groups (CRIF Bucket): regular, low, high
+SIMM_IR_SUBCURVES = ("OIS", "Libor1m", "Libor3m", "Libor6m", "Libor12m", "Prime", "Municipal")  # ISDA SIMM IR sub-curves (CRIF Label2)
 
 
 def _req(measure: str, kind: str, forms: str, doc: str) -> MeasureRequirement:
