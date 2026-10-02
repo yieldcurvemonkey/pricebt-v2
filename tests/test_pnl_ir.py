@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 import pricebt.backtests.actions as _actions
 import toylib.bond as tb
@@ -34,7 +35,7 @@ from pricebt.backtests.generic_engine import GenericEngine
 from pricebt.backtests.strategy import Strategy
 from pricebt.backtests.triggers import DateTrigger, DateTriggerRequirements, PeriodicTrigger, PeriodicTriggerRequirements
 from pricebt.common import AggregationLevel
-from pricebt.errors import ConfigError, UnsupportedMeasureError
+from pricebt.errors import ConfigError
 from pricebt.instrument import Bond, IRSwap, IRSwaption
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import (
@@ -710,18 +711,20 @@ def test_f_decimal_levels_under_the_bp_definition_raise_naming_the_measure(base,
         assert table[col].to_numpy() == pytest.approx(ref[col].to_numpy(), rel=1e-7, abs=1e-7), col
 
 
-# =============================================================================== (g) declaration-only book
+# =============================================================================== (g) a swap config without the explain measures
 
 
-def test_g_swaption_definition_on_a_declaration_only_swap_raises_unsupported_measure_error():
-    swap = IRSwap("Pay", "10y", "EUR", N, name="eur")
-    with pytest.raises(UnsupportedMeasureError) as err:
-        add = _on(D0, AddTradeAction(swap, name="Add"))
-        _run(["toy_eur_irs.yaml"], [add], date(2024, 1, 5), pnl_explain=swaption_pnl_definition())
-    assert isinstance(err.value, ConfigError)
-    declared = {"IRGammaParallel", "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "Theta", "ExpiryInYears"}
-    assert err.value.measure in declared
-    assert err.value.measure in str(err.value)
+def test_g_an_irswap_config_without_the_explain_measures_fails_to_load_naming_them():
+    """IR_STRICT_CONTRACT R3-0: an IRSwap config cannot declare its way out of a contract measure,
+    so a swap book without gamma/vega/theta can no longer reach the explain at all -- the config
+    (toy_eur_irs cut down to Price/IRDelta/IRFwdRate, no unsupported_measures:) fails to load,
+    naming every measure the swaption definition would have asked for."""
+    cfg = yaml.safe_load((ASSETS / "toy_eur_irs.yaml").read_text(encoding="utf8"))
+    cfg["risk_measures"] = {k: cfg["risk_measures"][k] for k in ("Price", "IRDelta", "IRFwdRate")}
+    with pytest.raises(ConfigError) as err:
+        PricebtSession.use(assets=[cfg])
+    for measure in ("IRGammaParallel", "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "Theta", "ExpiryInYears"):
+        assert measure in str(err.value), measure
 
 
 # =============================================================================== (h) DEV-R11 views

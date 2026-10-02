@@ -14,8 +14,9 @@ Transcription rules (DESIGN.md section 1):
   - 030002 strikes `'ATMF'`/`'ATMF+50'` -> `'ATM'`/`'ATM+50'`: the strike grammar is the config's job
     (DEV-I6) and the toy's is `ATM[+-bp]`;
   - IRSwap uses `toy_usd_irs_full` (USD) and the same config re-denominated in EUR (`_toy_eur_irs_full`),
-    because 030009 asks every swap for `IRVegaParallel`, which `toy_eur_irs` declares unsupported
-    (R2-20) and `toy_usd_irs_full` maps to 0.0 (R2-8); the two USD swap assets cannot be registered
+    so both currencies price on the same functions (030009 asks every swap for `IRVegaParallel`,
+    0.0 by convention, R2-8; written when `toy_eur_irs` still declared it unsupported, before the
+    strict contract, IR_STRICT_CONTRACT R3-0); the two USD swap assets cannot be registered
     together (same `match:`);
   - 030007: the swap `'EUR'` -> `'USD'`: `PnlExplain` has no currency parameter, so pricebt reports it in
     each asset function's own currency (DEV-I5), and `aggregate()` refuses to add EUR and USD rows (gs's unit

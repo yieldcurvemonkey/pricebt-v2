@@ -1,6 +1,6 @@
 """Known-answer tests for the toy IR measure-contract libraries and configs (docs/v2/IR_RISK_DESIGN.md
-section 6.5, section 00 R2-1..R2-8): toylib.irrisk (swap), toylib.swaption, toylib.bond and the
-three full-contract configs. Every expected value is computed here independently (finite
+section 6.5, section 00 R2-1..R2-8; docs/v2/IR_STRICT_CONTRACT.md R3-1): toylib.irrisk (swap),
+toylib.swaption, toylib.bond, the chain-rule toylib.rates.gamma, and every toy IR config. Every expected value is computed here independently (finite
 differences with other step sizes, closed forms, hand-built schedules), never read back from the
 function under test. Frozen-world tests monkeypatch the toy parameter tables to constants."""
 from __future__ import annotations
@@ -22,12 +22,16 @@ import toylib.rates as tr
 import toylib.swaption as ts
 from pricebt.assets import load_asset
 from pricebt.instrument import Bond, IRSwap, IRSwaption
+from pricebt.markets import CloseMarket, PricingContext
 from pricebt.risk import contracts
 from pricebt.session import PricebtSession
 
 ASSETS = Path(__file__).parent / "assets"
 CONFIGS = {"IRSwap": "toy_usd_irs_full.yaml", "IRSwaption": "toy_usd_swaption.yaml", "Bond": "toy_usd_bond.yaml"}
+# every toy config of a strict class (R3-0): each maps the whole contract on its own
+STRICT_CONFIGS = {"toy_usd_irs.yaml": "IRSwap", "toy_eur_irs.yaml": "IRSwap", "toy_usd_irs_full.yaml": "IRSwap", "toy_usd_swaption.yaml": "IRSwaption"}
 D = date(2024, 3, 4)  # a Monday
+D2 = date(2024, 7, 15)
 N = 1e6
 H = 1e-4
 
@@ -77,7 +81,7 @@ def frozen(monkeypatch):
 # ------------------------------------------------------------------------------------ configs
 
 
-@pytest.mark.parametrize("instrument, fname", CONFIGS.items())
+@pytest.mark.parametrize("instrument, fname", list(CONFIGS.items()) + [(i, f) for f, i in STRICT_CONFIGS.items() if f not in CONFIGS.values()])
 def test_config_maps_the_whole_contract_without_declarations_or_warnings(instrument, fname):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -86,30 +90,48 @@ def test_config_maps_the_whole_contract_without_declarations_or_warnings(instrum
     assert cfg.unsupported_measures == {}
 
 
-def _contract_requests(instrument):
-    """Every contract row as a request: FD measures in their scalar (Type) and bucketed forms."""
+def _contract_requests(instrument, d=D):
+    """Every contract row as a request: FD measures in their scalar (Type) and bucketed forms;
+    PnlExplain towards the close a week after `d`."""
     for req in contracts.contract_for(instrument):
         m = getattr(risk, req.measure)
-        if isinstance(m, risk.RiskMeasureWithFiniteDifferenceParameter):
+        if m is risk.PnlExplain:
+            yield m(CloseMarket(date=d + timedelta(days=7)))
+        elif isinstance(m, risk.RiskMeasureWithFiniteDifferenceParameter):
             yield from ([m(aggregation_level="Type")] if "scalar" in req.forms else []) + ([m] if "bucketed" in req.forms else [])
         else:
             yield m
 
 
-@pytest.mark.parametrize("inst", [
-    IRSwap("Pay", "10y", "USD", N, fixed_rate=0.035, name="s"),
-    IRSwaption("Straddle", "10y", "USD", notional_amount=N, expiration_date="1y", name="o"),
-    Bond(identifier="TOY 4.5 2054-02-15", size=N, name="b"),
-], ids=["swap", "swaption", "bond"])
-def test_every_contract_measure_prices_through_pricebt(inst):
-    session = PricebtSession.use(assets=[ASSETS / CONFIGS[type(inst).__name__]])
-    for m in _contract_requests(type(inst).__name__):
-        v = session.pricing.value(inst, D, m, None)
-        v = v.result() if hasattr(v, "result") else v
-        if isinstance(v, pd.DataFrame):
-            assert "value" in v.columns or set(contracts.FRAME_COLUMNS["Cashflows"]) <= set(v.columns), m
-        else:
-            assert math.isfinite(float(v)), m
+_INSTS = {
+    "toy_usd_irs.yaml": IRSwap("Pay", "10y", "USD", N, fixed_rate=0.035, name="s"),
+    "toy_eur_irs.yaml": IRSwap("Receive", "10y", "EUR", N, fixed_rate=0.025, name="s"),
+    "toy_usd_irs_full.yaml": IRSwap("Pay", "10y", "USD", N, fixed_rate=0.035, name="s"),
+    "toy_usd_swaption.yaml": IRSwaption("Straddle", "10y", "USD", notional_amount=N, expiration_date="1y", strike="ATM+25", name="o"),
+    "toy_usd_bond.yaml": Bond(identifier="TOY 4.5 2054-02-15", size=N, name="b"),
+}
+
+
+@pytest.mark.parametrize("fname", _INSTS)
+def test_every_contract_measure_prices_through_pricebt(fname):
+    """Every row of the contract (R3-1's included) prices finite on two dates; frames have their
+    required columns, buckets a value column."""
+    inst = _INSTS[fname]
+    session = PricebtSession.use(assets=[ASSETS / fname])
+    for d in (D, D2):
+        for m in _contract_requests(type(inst).__name__, d):
+            v = session.pricing.value(inst, d, m, None)
+            v = v.result() if hasattr(v, "result") else v
+            if isinstance(v, pd.DataFrame):
+                if "value" in v.columns:
+                    assert v["value"].map(lambda x: math.isfinite(float(x))).all(), (d, m)
+                else:
+                    required = contracts.FRAME_COLUMNS[m.name]
+                    assert set(required) <= set(v.columns), (d, m)
+                    if "Amount" in v.columns:
+                        assert len(v) == len(contracts.SIMM_IR_TENORS) and v["Amount"].map(math.isfinite).all(), (d, m)
+            else:
+                assert math.isfinite(float(v)), (d, m)
 
 
 # ------------------------------------------------------------------------------------ own-rate delta and gamma (R2-1)
@@ -277,8 +299,8 @@ def test_swap_levels_and_ladders():
 
 def test_swap_after_its_final_date_is_dead_with_finite_levels():
     """IR_RISK_DESIGN section 2.2: every sensitivity 0.0 on and after the final date (a 1y swap
-    traded 2023-03-01), levels finite. The total-return toy Price itself lives in toylib.rates,
-    which this branch never edits (decision 0.12)."""
+    traded 2023-03-01), levels finite. The total-return toy Price itself (toylib.rates.npv) does
+    not go to 0: it never drops a paid flow (R2-6)."""
     _, s = _swap(term="1y", d=date(2023, 3, 1))
     for d in (s.termination_date, date(2024, 6, 3)):
         m = tr.market(d, "USD")
@@ -430,3 +452,224 @@ def test_swaption_one_step_taylor_residual(pay_or_receive, strike):
     explained = (ts.delta(m0, o) * dF + 0.5 * ts.gamma(m0, o) * dF ** 2 + ts.vega(m0, o) * ds + ts.vanna(m0, o) * dF * ds
                  + 0.5 * ts.volga(m0, o) * ds ** 2 + ts.theta_1d(m0, o) * 1)
     assert abs(dpv - explained) * 10 <= abs(delta_only)
+
+
+# ------------------------------------------------------------------------------------ chain-rule toylib.rates.gamma (MERGE_NOTES section 4)
+
+
+def test_rates_gamma_is_the_chain_rule_second_derivative():
+    """tr.gamma (toy_usd_irs / toy_eur_irs IRGammaParallel) is the contract's chain-rule gamma: the
+    MERGE_NOTES section 4 number (-0.817 per bp^2, the uncorrected recipe gave -0.738), the
+    derivative of the own-rate delta in the par rate, and toylib.irrisk.ir_gamma's value."""
+    m, s = _swap(d=date(2024, 1, 3))
+    assert tr.gamma(m, s) == pytest.approx(-0.8166, abs=1e-4)
+    for fixed_rate, term, pay_or_receive in (("ATM", "10y", "Pay"), (0.02, "2y", "Receive"), (0.05, "30y", "Pay")):
+        m, s = _swap(fixed_rate=fixed_rate, term=term, pay_or_receive=pay_or_receive)
+        h = 0.5e-4  # another step than the 1bp inside tr.gamma
+        dd = (tri.delta(_bump(m, h), s) - tri.delta(_bump(m, -h), s)) / (tr.par_rate(_bump(m, h), s) - tr.par_rate(_bump(m, -h), s))
+        assert tr.gamma(m, s) == pytest.approx(dd, rel=1e-4), (fixed_rate, term)
+        assert tr.gamma(m, s) == pytest.approx(tri.ir_gamma(m, s), rel=1e-12), (fixed_rate, term)
+    m, s = _swap()
+    dpv01 = (tr.pv01(_bump(m, H), s) - tr.pv01(_bump(m, -H), s)) / (tr.par_rate(_bump(m, H), s) - tr.par_rate(_bump(m, -H), s))
+    assert dpv01 / tr.gamma(m, s) == pytest.approx(0.5, abs=1e-6)  # T-GAMMA-2's half-gamma ratio, exact at the money
+
+
+# ------------------------------------------------------------------------------------ R3-1 measures (IR_STRICT_CONTRACT.md, DEV-I19)
+
+
+R3_SIGNED = ("fair_premium", "forward_price", "premium_cents", "local_annuity_in_cents")
+R3_DIRECTIONLESS = ("par_spread", "compounded_fixed_rate")
+
+
+def _df(curve, d):
+    """The toy's flat continuously-compounded DF, written out (ACT/365)."""
+    return math.exp(-curve.zero_rate * (d - curve.ref_date).days / 365.0)
+
+
+def _hand_par_and_annuity(curve, eff, mat):
+    """Par rate and annuity of annual coupons eff -> mat, the schedule spelt out (whole years)."""
+    pays = [date(eff.year + k, eff.month, eff.day) for k in range(1, mat.year - eff.year + 1)]
+    ann = sum(_df(curve, p) * (p - q).days / 365.0 for q, p in zip([eff] + pays[:-1], pays))
+    return (_df(curve, eff) - _df(curve, mat)) / ann, ann
+
+
+def _crif_ok(frame, ccy):
+    assert list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"])
+    assert list(frame["Label1"]) == list(contracts.SIMM_IR_TENORS)
+    assert set(frame["RiskType"]) == {"Risk_IRCurve"} and set(frame["Bucket"]) == {"1"} and set(frame["Label2"]) == {"OIS"}
+    assert set(frame["Qualifier"]) == {ccy} == set(frame["AmountCurrency"])
+
+
+@pytest.mark.parametrize("pay_or_receive", ["Pay", "Receive"])
+@pytest.mark.parametrize("fixed_rate", [0.02, 0.045])
+def test_swap_r3_measures_known_answers(pay_or_receive, fixed_rate):
+    m, s = _swap(fixed_rate=fixed_rate, pay_or_receive=pay_or_receive)
+    par, ann = _hand_par_and_annuity(m, s.effective_date, s.termination_date)
+    sign = 1.0 if pay_or_receive == "Pay" else -1.0
+    price = sign * N * (_df(m, s.effective_date) - _df(m, s.termination_date) - fixed_rate * ann)
+    assert tr.npv(m, s) == pytest.approx(price, rel=1e-12)  # the hand schedule is the toy's
+    assert tri.par_spread(m, s) == pytest.approx((fixed_rate - par) * 1e4, rel=1e-10)  # K - par
+    assert tri.fair_premium(m, s) == pytest.approx(price, rel=1e-12)  # no spot lag: Price
+    assert tri.forward_price(m, s) * _df(m, s.termination_date) == pytest.approx(price, rel=1e-12)
+    assert tri.premium_cents(m, s) == pytest.approx(price / N * 1e4, rel=1e-12)
+    assert tri.local_annuity_in_cents(m, s) == pytest.approx(sign * ann, rel=1e-12)
+    assert 7.5 < sign * tri.local_annuity_in_cents(m, s) < 9.0  # a 10y annuity per unit notional
+    assert tri.compounded_fixed_rate(m, s) == pytest.approx(fixed_rate * 1e4, rel=1e-14)  # annual leg: K
+
+
+def test_swap_r3_payer_receiver_symmetry():
+    m, payer = _swap(fixed_rate=0.03, pay_or_receive="Pay")
+    _, receiver = _swap(fixed_rate=0.03, pay_or_receive="Receive")
+    for name in R3_DIRECTIONLESS:
+        fn = getattr(tri, name)
+        assert fn(m, receiver) == fn(m, payer) != 0.0, name
+    for name in R3_SIGNED:
+        fn = getattr(tri, name)
+        assert fn(m, receiver) == pytest.approx(-fn(m, payer), rel=1e-12) and fn(m, payer) != 0.0, name
+    for crif in (tri.crif_ir_curve, tri.crif_ir_curve_pv01):
+        assert list(crif(m, receiver)["Amount"]) == pytest.approx([-a for a in crif(m, payer)["Amount"]], rel=1e-12)
+
+
+def test_swap_crif_rows_and_sum_identity():
+    """Each CRIF is built from the ladder its configs map as IRDelta bucketed: sum(Amount) is that
+    ladder's sum, on the config's own pillars. Off the money the two ladders differ (R2-1)."""
+    m, s = _swap(fixed_rate=0.02)
+    _, s2 = _swap(term="2y", pay_or_receive="Receive")
+    pillars = ("2Y", "5Y", "10Y", "30Y")
+    for crif, ladder in ((tri.crif_ir_curve, tri.delta_ladder), (tri.crif_ir_curve_pv01, tr.delta_ladder)):
+        for trade in (s, s2):
+            frame = crif(m, trade)
+            _crif_ok(frame, "USD")
+            assert frame["Amount"].sum() == pytest.approx(sum(ladder(m, [trade], [1.0], pillars).values()), rel=1e-12), crif.__name__
+    own, pv01 = tri.crif_ir_curve(m, s).set_index("Label1")["Amount"], tri.crif_ir_curve_pv01(m, s).set_index("Label1")["Amount"]
+    assert own["10y"] == pytest.approx(tri.delta(m, s), rel=1e-12) and pv01["10y"] == pytest.approx(tr.pv01(m, s), rel=1e-12)
+    assert abs(own["10y"] / pv01["10y"] - 1) > 1e-2 and (own.drop("10y") == 0.0).all()
+    me = tr.market(D, "EUR")
+    _crif_ok(tri.crif_ir_curve(me, s), "EUR")
+
+
+def test_swap_r3_measures_on_and_after_the_final_date():
+    """Dead (R2-7): the CRIF is an empty frame with its columns; ForwardPrice is Price; the levels
+    and trade terms stay finite."""
+    _, s = _swap(term="1y", d=date(2023, 3, 1))
+    for d in (s.termination_date, date(2024, 6, 3)):
+        m = tr.market(d, "USD")
+        for crif in (tri.crif_ir_curve, tri.crif_ir_curve_pv01):
+            frame = crif(m, s)
+            assert frame.empty and list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"]), (d, crif.__name__)
+        assert tri.forward_price(m, s) == tr.npv(m, s) != 0.0
+        assert tri.local_annuity_in_cents(m, s) == 0.0  # Annuity / |N|, and Annuity is dead
+        assert math.isfinite(tri.par_spread(m, s)) and tri.compounded_fixed_rate(m, s) == pytest.approx(s.fixed_rate * 1e4)
+    live = tr.market(s.termination_date - timedelta(days=1), "USD")
+    assert len(tri.crif_ir_curve(live, s)) == len(contracts.SIMM_IR_TENORS)
+
+
+@pytest.mark.parametrize("pay_or_receive", ["Pay", "Receive", "Straddle"])
+def test_swaption_r3_measures_known_answers(pay_or_receive):
+    m, o = _swaption(pay_or_receive, strike="ATM+30")
+    c, exp, K = m.curve, o["expiration_date"], o["strike"]
+    par, ann = _hand_par_and_annuity(c, exp, o["termination_date"])
+    price = ts.npv(m, o)
+    assert ts.par_spread(m, o) == pytest.approx((K - par) * 1e4, rel=1e-9)
+    assert ts.par_spread(m, o) == pytest.approx(30.0, rel=1e-9)  # struck ATM+30 on this market
+    assert ts.fair_premium(m, o) == pytest.approx(price, rel=1e-12)
+    assert ts.forward_price(m, o) * _df(c, exp) == pytest.approx(price, rel=1e-12)  # to expiration_date
+    assert ts.premium_cents(m, o) == pytest.approx(price / N * 1e4, rel=1e-12)
+    assert ts.local_annuity_in_cents(m, o) == pytest.approx(ann, rel=1e-12)  # bought: + for any leg
+    assert ts.compounded_fixed_rate(m, o) == pytest.approx(K * 1e4, rel=1e-14)
+    frame = ts.crif_ir_curve(m, o)
+    _crif_ok(frame, "USD")
+    assert frame["Amount"].sum() == pytest.approx(sum(ts.delta_ladder(m, [o], [1.0], ("2Y", "5Y", "10Y", "30Y")).values()), rel=1e-12)
+    assert frame.set_index("Label1")["Amount"]["10y"] == pytest.approx(ts.delta(m, o), rel=1e-12)
+
+
+def test_swaption_r3_parity_and_buy_sell_symmetry():
+    m, payer = _swaption("Pay", strike="ATM+30")
+    _, receiver = _swaption("Receive", strike="ATM+30")
+    c, exp, K = m.curve, payer["expiration_date"], payer["strike"]
+    par, ann = _hand_par_and_annuity(c, exp, payer["termination_date"])
+    # put-call parity forward-valued to expiry: N A (F - K) / DF(expiry)
+    assert ts.forward_price(m, payer) - ts.forward_price(m, receiver) == pytest.approx(N * ann * (par - K) / _df(c, exp), rel=1e-9)
+    for name in R3_DIRECTIONLESS:
+        assert getattr(ts, name)(m, payer) == getattr(ts, name)(m, receiver), name
+    sold = ts.resolve_swaption(m, dict(pay_or_receive="Pay", buy_sell="Sell", expiration_date="1y", termination_date="10y", notional_amount=N, strike=K))
+    for name in R3_DIRECTIONLESS:
+        assert getattr(ts, name)(m, sold) == getattr(ts, name)(m, payer), name
+    for name in R3_SIGNED:
+        fn = getattr(ts, name)
+        assert fn(m, sold) == pytest.approx(-fn(m, payer), rel=1e-12) and fn(m, payer) != 0.0, name
+    assert list(ts.crif_ir_curve(m, sold)["Amount"]) == pytest.approx([-a for a in ts.crif_ir_curve(m, payer)["Amount"]], rel=1e-12)
+
+
+def test_swaption_r3_measures_after_expiry():
+    """Physical settlement (R2-7): the exercised leg's ForwardPrice is its Price and its CRIF the
+    underlying swap's delta; the unexercised leg is dead (empty CRIF); levels continue."""
+    _, probe = _swaption(expiration_date="2m")
+    exp, term = probe["expiration_date"], probe["termination_date"]
+    later = exp + timedelta(days=21)
+    f_exp = tr._par_rate(tr.ToyCurve(exp, "USD", tr._zero_rate(exp, "USD")), exp, term)
+    m = ts.market(later, "USD")
+    f_now = tr._par_rate(m.curve, exp, term)
+    K = (f_exp + f_now) / 2
+    payer, receiver = dict(probe, strike=K, pay_or_receive="Pay"), dict(probe, strike=K, pay_or_receive="Receive")
+    exercised, dead = (payer, receiver) if f_exp > K else (receiver, payer)
+    swap = tr.ToySwap(exp, term, K, (1.0 if exercised is payer else -1.0) * N)
+    assert ts.forward_price(m, exercised) == ts.npv(m, exercised) != 0.0
+    assert ts.premium_cents(m, exercised) == pytest.approx(tr.npv(m.curve, swap) / N * 1e4, rel=1e-12)
+    assert ts.crif_ir_curve(m, exercised)["Amount"].sum() == pytest.approx(tri.delta(m.curve, swap), rel=1e-9)
+    frame = ts.crif_ir_curve(m, dead)
+    assert frame.empty and list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"])
+    assert ts.forward_price(m, dead) == 0.0 and ts.premium_cents(m, dead) == 0.0
+    for trade in (exercised, dead):
+        assert ts.par_spread(m, trade) == pytest.approx((K - f_now) * 1e4, rel=1e-9)
+        assert ts.compounded_fixed_rate(m, trade) == pytest.approx(K * 1e4, rel=1e-14)
+
+
+# ------------------------------------------------------------------------------------ R3-1 through pricebt: scaling and identities
+
+
+_R3_EXTENSIVE = (risk.Price, risk.FairPremium, risk.ForwardPrice)
+_R3_INTENSIVE = (risk.ParSpread, risk.PremiumCents, risk.LocalAnnuityInCents, risk.CompoundedFixedRate)
+
+
+def _calc(inst, measures, market=None):
+    with PricingContext(pricing_date=D, market=market):
+        futures = {m: inst.calc(m) for m in measures}
+    return {m: f.result() for m, f in futures.items()}
+
+
+@pytest.mark.parametrize("fname", STRICT_CONFIGS)
+def test_r3_measures_scale_with_quantity_as_declared(fname):
+    """quantity 2.5: Price, FairPremium, ForwardPrice and the CRIF Amount scale, the levels per unit
+    notional and the trade terms do not (each config's unit / scale_with_quantity declarations)."""
+    PricebtSession.use(assets=[ASSETS / fname])
+    inst = _INSTS[fname]
+    measures = _R3_EXTENSIVE + _R3_INTENSIVE + (risk.CRIFIRCurve,)
+    one, big = _calc(inst, measures), _calc(inst.clone(quantity_=2.5), measures)
+    for m in _R3_EXTENSIVE:
+        assert float(big[m]) == pytest.approx(2.5 * float(one[m]), rel=1e-12) and float(one[m]) != 0.0, m
+    for m in _R3_INTENSIVE:
+        assert float(big[m]) == pytest.approx(float(one[m]), rel=1e-12) and float(one[m]) != 0.0, m
+    a, b = one[risk.CRIFIRCurve], big[risk.CRIFIRCurve]
+    assert list(b["Amount"]) == pytest.approx([2.5 * x for x in a["Amount"]], rel=1e-12) and a["Amount"].abs().sum() > 0
+    assert list(b["Label1"]) == list(a["Label1"]) == list(contracts.SIMM_IR_TENORS)
+
+
+@pytest.mark.parametrize("fname", STRICT_CONFIGS)
+@pytest.mark.parametrize("override", [None, D + timedelta(days=7)], ids=["own", "close_override"])
+def test_r3_identities_hold_on_each_config_including_a_close_market_override(fname, override):
+    """FairPremium == Price and PremiumCents == Price / |N| * 1e4 as each config prices them, also
+    under a CloseMarket override (both must value on the same date as its Price, DEV-M1)."""
+    PricebtSession.use(assets=[ASSETS / fname])
+    v = _calc(_INSTS[fname], (risk.Price, risk.FairPremium, risk.PremiumCents), CloseMarket(date=override) if override else None)
+    price = float(v[risk.Price])
+    assert float(v[risk.FairPremium]) == pytest.approx(price, rel=1e-12)
+    assert float(v[risk.PremiumCents]) == pytest.approx(price / N * 1e4, rel=1e-12)
+
+
+def test_toylib_crif_constants_match_the_contract():
+    """toylib never imports pricebt (it stands in for an external library); its CRIF constants are copies."""
+    from pricebt.risk import contracts
+    from toylib import irrisk
+    assert irrisk.CRIF_COLUMNS == contracts.FRAME_COLUMNS["CRIFIRCurve"]
+    assert irrisk.SIMM_IR_TENORS == contracts.SIMM_IR_TENORS

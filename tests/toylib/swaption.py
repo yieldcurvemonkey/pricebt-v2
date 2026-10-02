@@ -253,6 +253,55 @@ def cashflows(market, trade: dict):
     return ir.empty_cashflows()
 
 
+# IR_STRICT_CONTRACT R3-1 (DEV-I19); `value_date` as `npv`.
+
+
+def par_spread(market, trade: dict) -> float:
+    """ParSpread of the underlying, bp: strike - live forward (any leg, before and after expiry)."""
+    return (trade["strike"] - _fwd(market.curve, trade)) * 1e4
+
+
+def fair_premium(market, trade: dict, value_date: Optional[date] = None) -> float:
+    """npv / DF(premium settlement): no premium_payment_date and no spot lag in the toy, so npv."""
+    return npv(market, trade, value_date)
+
+
+def forward_price(market, trade: dict, value_date: Optional[date] = None) -> float:
+    """npv / DF(expiration_date); npv on or after expiry."""
+    curve, exp = ir.at(market.curve, value_date), trade["expiration_date"]
+    pv = npv(market, trade, value_date)
+    return pv if curve.ref_date >= exp else pv / curve.discount_factor(exp)
+
+
+def premium_cents(market, trade: dict, value_date: Optional[date] = None) -> float:
+    """npv / |N| * 1e4, bp of the swaption's notional. Intensive."""
+    return npv(market, trade, value_date) / abs(trade["notional"]) * 1e4
+
+
+def local_annuity_in_cents(market, trade: dict) -> float:
+    """Annuity / |N|, decimal: the underlying's annuity, + for a bought swaption. Intensive."""
+    return annuity(market, trade) / abs(trade["notional"])
+
+
+def compounded_fixed_rate(market, trade: dict) -> float:
+    """The strike, bp: the underlying's fixed leg is annual, so annual compounding is K itself."""
+    return trade["strike"] * 1e4
+
+
+def _dead(curve, trade: dict) -> bool:
+    """Past the underlying's final date, or past expiry with no leg exercised: nothing left."""
+    t = curve.ref_date
+    if t >= trade["termination_date"]:
+        return True
+    return t >= trade["expiration_date"] and not any(_exercised(curve, trade, leg) for leg in _legs(trade["pay_or_receive"]))
+
+
+def crif_ir_curve(market, trade: dict):
+    """CRIFIRCurve from this trade's delta ladder on the SIMM pillars; empty once dead."""
+    dead = _dead(market.curve, trade)
+    return ir.crif_frame(market.curve.ccy, {} if dead else delta_ladder(market, [trade], [1.0], ir.SIMM_IR_TENORS))
+
+
 def pnl_explain(market, market_to, trades, weights, value_date: Optional[date] = None) -> list:
     """PnlExplain by full revaluation, weighted, every value on `value_date` (the pricing date, as
     `npv`) so no time passes: IR = the curve moved with sigma held, IR VOL = sigma moved with the

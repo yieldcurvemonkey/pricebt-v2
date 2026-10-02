@@ -213,15 +213,19 @@ class TranslatedCurve:
 
 
 def gamma(market: ToyCurve, trade: ToySwap) -> float:
-    """PNL_EXPLAIN_PLAN.md 2.1, EXACTLY: second derivative of npv (never the derivative of dv01 --
-    that gives half the gamma, see T-GAMMA-2's half-gamma trap), denominated by this trade's own
-    MEASURED par move under the same +/-1bp shift. Payer < 0; receiver = -payer."""
+    """PNL_EXPLAIN_PLAN.md 2.1: second derivative of npv in this trade's own par rate (never the
+    derivative of dv01 -- that gives half the gamma, see T-GAMMA-2's half-gamma trap), on the same
+    +/-1bp zero shift, by the CHAIN RULE (contracts IRGammaParallel, MERGE_NOTES_pnl_explain.md
+    section 4; the same formula as toylib.irrisk.own_rate_greeks): the par rate's own convexity
+    in the shift is taken out, else the result is ~10% low at 10y ATM. Payer < 0; receiver = -payer."""
     EVAL_COUNTS["gamma"] += 1
     up = dataclasses.replace(market, zero_rate=market.zero_rate + 1e-4)
     down = dataclasses.replace(market, zero_rate=market.zero_rate - 1e-4)
     npv_up, npv_down, npv_mid = npv(up, trade), npv(down, trade), npv(market, trade)
-    par_up, par_down = par_rate(up, trade), par_rate(down, trade)
-    return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+    par_up, par_down, par_mid = par_rate(up, trade), par_rate(down, trade), par_rate(market, trade)
+    dpar = par_up - par_down
+    delta = (npv_up - npv_down) / dpar
+    return (npv_up + npv_down - 2.0 * npv_mid - delta * (par_up + par_down - 2.0 * par_mid)) / (dpar / 2.0) ** 2
 
 
 def theta(market: ToyCurve, trade: ToySwap) -> float:
