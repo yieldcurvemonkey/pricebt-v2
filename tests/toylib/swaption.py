@@ -109,8 +109,13 @@ def _unit_price(F: float, K: float, sigma: float, T: float, is_call: bool) -> fl
     return (K - F) * _big_phi(-d) + sigma * math.sqrt(T) * _phi(-d)
 
 
-def _fwd(curve, trade) -> float:
-    return tr._par_rate(curve, trade["expiration_date"], trade["termination_date"])
+def _fwd(curve, trade, fwd=None) -> float:
+    """F of the underlying; with `fwd` (a projection curve) its float leg's forwards come from `fwd`
+    and only the discounting from `curve` (the discount-only delta)."""
+    exp, term = trade["expiration_date"], trade["termination_date"]
+    if fwd is None:
+        return tr._par_rate(curve, exp, term)
+    return ir.float_leg(curve, fwd, exp, term) / tr._annuity(curve, exp, term)
 
 
 def _expiry_fwd(curve, trade) -> float:
@@ -125,12 +130,12 @@ def _exercised(curve, trade, is_call: bool) -> bool:
     return F > K if is_call else F < K
 
 
-def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False) -> float:
+def _value(curve, sigma: float, trade: dict, exercise_on_curve: bool = False, fwd=None) -> float:
     """`exercise_on_curve`: at T == 0 decide exercise on this curve's F (intrinsic value) rather
     than the toy world's expiry F -- theta's frozen-F step onto expiry (R2-4). Time to expiry is
-    measured from the curve's own date."""
+    measured from the curve's own date. `fwd`: discount on `curve`, project on `fwd` (`_fwd`)."""
     exp, term, K = trade["expiration_date"], trade["termination_date"], trade["strike"]
-    ann, F = tr._annuity(curve, exp, term), _fwd(curve, trade)
+    ann, F = tr._annuity(curve, exp, term), _fwd(curve, trade, fwd)
     T = (exp - curve.ref_date).days / 365.0
     total = 0.0
     for is_call in _legs(trade["pay_or_receive"]):
@@ -171,28 +176,45 @@ def _greeks(curve, sigma: float, trade: dict):
     return ir.greeks_on(curve, lambda c: _value(c, sigma, trade), lambda c: _fwd(c, trade) * 1e4)
 
 
+def _dead(curve, trade: dict) -> bool:
+    """Past the underlying's final date, or past expiry with no leg exercised: nothing left. Every
+    sensitivity (and Annuity, the ladders, the CRIF) is then 0 / empty; levels continue (R2-7)."""
+    t = curve.ref_date
+    if t >= trade["termination_date"]:
+        return True
+    return t >= trade["expiration_date"] and not any(_exercised(curve, trade, leg) for leg in _legs(trade["pay_or_receive"]))
+
+
 def delta(market, trade: dict) -> float:
     """IRDelta scalar: total derivative w.r.t. F, sigma fixed, ccy per bp (pricebt DEV-I12)."""
-    return _greeks(market.curve, market.sigma, trade)[0]
+    return 0.0 if _dead(market.curve, trade) else _greeks(market.curve, market.sigma, trade)[0]
 
 
 def gamma(market, trade: dict) -> float:
-    return _greeks(market.curve, market.sigma, trade)[1]
+    return 0.0 if _dead(market.curve, trade) else _greeks(market.curve, market.sigma, trade)[1]
 
 
 def discount_delta(market, trade: dict) -> float:
-    return ir.discount_delta_on(market.curve, lambda c: _value(c, market.sigma, trade))
+    """Discount curve bumped, the underlying's forwards held (R2-3): the annuity and F's weights
+    move, the forwards do not."""
+    if _dead(market.curve, trade):
+        return 0.0
+    return ir.discount_delta_on(market.curve, lambda d, f: _value(d, market.sigma, trade, fwd=f))
 
 
 def vanna(market, trade: dict) -> float:
     """d(IRDelta scalar)/d sigma per bp x bp, on +-1bp sigma bumps (exactly 0 after expiry)."""
     c, s = market.curve, market.sigma
+    if _dead(c, trade):
+        return 0.0
     return (_greeks(c, s + H_VOL, trade)[0] - _greeks(c, s - H_VOL, trade)[0]) / 2.0
 
 
 def volga(market, trade: dict) -> float:
     """d2 PV / d sigma^2 per bp^2 of normal vol (exactly 0 after expiry)."""
     c, s = market.curve, market.sigma
+    if _dead(c, trade):
+        return 0.0
     return _value(c, s + H_VOL, trade) + _value(c, s - H_VOL, trade) - 2.0 * _value(c, s, trade)
 
 
@@ -201,6 +223,8 @@ def theta_1d(market, trade: dict) -> float:
     ccy per day; premium 0 and nothing dropped, so no cash term. A step landing on expiry exercises
     on the frozen F; after expiry the decision already made stands."""
     c = market.curve
+    if _dead(c, trade):
+        return 0.0
     return _value(ir._TranslatedCurve(c, 1), market.sigma, trade, exercise_on_curve=True) - _value(c, market.sigma, trade)
 
 
@@ -245,7 +269,9 @@ def prob_exercise(market, trade: dict) -> float:
 
 
 def annuity(market, trade: dict) -> float:
-    """N * A of the underlying swap, holder-signed."""
+    """N * A of the underlying swap, holder-signed; 0 once dead (as the swap's)."""
+    if _dead(market.curve, trade):
+        return 0.0
     return trade["notional"] * tr._annuity(market.curve, trade["expiration_date"], trade["termination_date"])
 
 
@@ -288,16 +314,9 @@ def compounded_fixed_rate(market, trade: dict) -> float:
     return trade["strike"] * 1e4
 
 
-def _dead(curve, trade: dict) -> bool:
-    """Past the underlying's final date, or past expiry with no leg exercised: nothing left."""
-    t = curve.ref_date
-    if t >= trade["termination_date"]:
-        return True
-    return t >= trade["expiration_date"] and not any(_exercised(curve, trade, leg) for leg in _legs(trade["pay_or_receive"]))
-
-
 def crif_ir_curve(market, trade: dict):
-    """CRIFIRCurve from this trade's delta ladder on the SIMM pillars; empty once dead."""
+    """CRIFIRCurve from this trade's delta ladder on the SIMM pillars; empty once dead (when the
+    ladder is all 0)."""
     dead = _dead(market.curve, trade)
     return ir.crif_frame(market.curve.ccy, {} if dead else delta_ladder(market, [trade], [1.0], ir.SIMM_IR_TENORS))
 

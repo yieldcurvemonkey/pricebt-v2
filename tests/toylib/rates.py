@@ -217,8 +217,12 @@ def gamma(market: ToyCurve, trade: ToySwap) -> float:
     derivative of dv01 -- that gives half the gamma, see T-GAMMA-2's half-gamma trap), on the same
     +/-1bp zero shift, by the CHAIN RULE (contracts IRGammaParallel, MERGE_NOTES_pnl_explain.md
     section 4; the same formula as toylib.irrisk.own_rate_greeks): the par rate's own convexity
-    in the shift is taken out, else the result is ~10% low at 10y ATM. Payer < 0; receiver = -payer."""
+    in the shift is taken out, else the result is ~10% low at 10y ATM. Payer < 0; receiver = -payer.
+    0.0 on and after the final date, as toylib.irrisk.ir_gamma (toy_usd_irs's IRGamma ladder), so
+    the scalar and the ladder agree on a matured swap."""
     EVAL_COUNTS["gamma"] += 1
+    if market.ref_date >= trade.termination_date:
+        return 0.0
     up = dataclasses.replace(market, zero_rate=market.zero_rate + 1e-4)
     down = dataclasses.replace(market, zero_rate=market.zero_rate - 1e-4)
     npv_up, npv_down, npv_mid = npv(up, trade), npv(down, trade), npv(market, trade)

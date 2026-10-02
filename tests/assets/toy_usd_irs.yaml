@@ -7,7 +7,11 @@ description: >
   tests/toylib/irrisk.py, plus the swap P&L recipe's IRTheta / YearFraction / CashPaidToDate.
   Units: npv USD (total return); dv01 USD per +1bp (payer > 0) -- the IRDelta scalar is the
   annuity pv01, exact only at the money (R2-1), and the IRDelta ladder and CRIFIRCurve are built
-  from it; rates in bp; Theta USD per calendar day, IRTheta USD per year.
+  from it; rates in bp; Theta USD per calendar day, IRTheta USD per year. The total-return pv01
+  never goes to 0, so CRIFIRCurve is NOT emptied after the final date (an exception to the
+  contract's dead-frame rule): sum(Amount) == sum(IRDelta ladder) on every date. IRGammaParallel
+  (tr.gamma) is 0 after the final date, as the IRGamma ladder. IRDiscountDeltaParallel bumps the
+  discount curve only (forwards held), ~0 at the money.
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD

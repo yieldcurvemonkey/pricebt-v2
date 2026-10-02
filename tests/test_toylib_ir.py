@@ -174,7 +174,74 @@ def test_swap_off_market_delta_is_not_the_annuity_pv01():
     fd = (tr.npv(_bump(m, 0.5e-4), s) - tr.npv(_bump(m, -0.5e-4), s)) / (tr.par_rate(_bump(m, 0.5e-4), s) - tr.par_rate(_bump(m, -0.5e-4), s))
     assert tri.delta(m, s) == pytest.approx(fd, rel=1e-6)
     assert abs(tri.delta(m, s) / tr.pv01(m, s) - 1) > 1e-2  # the N (F-K) dA/dF term (R2-1)
-    assert tri.discount_delta(m, s) == pytest.approx((tr.npv(_bump(m, H), s) - tr.npv(_bump(m, -H), s)) / 2, rel=1e-12)
+
+
+# ------------------------------------------------------------------------------------ discount-only delta (R2-3)
+
+
+def _hand_legs(curve, dz, eff, mat):
+    """(float leg, annuity) per unit notional on a hand-built annual schedule (whole years): every
+    period's forward from `curve` (held), every flow discounted at `curve`'s zero rate + dz."""
+    pays = [date(eff.year + k, eff.month, eff.day) for k in range(1, mat.year - eff.year + 1)]
+    df_disc = lambda d: math.exp(-(curve.zero_rate + dz) * (d - curve.ref_date).days / 365.0)  # noqa: E731
+    periods = list(zip([eff] + pays[:-1], pays))
+    flt = sum(df_disc(p) * (_df(curve, q) / _df(curve, p) - 1.0) for q, p in periods)
+    return flt, sum(df_disc(p) * (p - q).days / 365.0 for q, p in periods)
+
+
+@pytest.mark.parametrize("fixed_rate", ["ATM", 0.02, 0.045])
+def test_swap_discount_delta_bumps_the_discount_curve_only(fixed_rate):
+    """IRDiscountDeltaParallel holds the projection forwards and bumps only the discounting: ~0 at
+    the money (a whole-curve bump gives ~+844 there), -sign(Price) off the money (K = 2%: -83.66),
+    receiver = -payer. Mutation: bump the whole curve in toylib.irrisk.discount_delta_on -> fails."""
+    m, payer = _swap(fixed_rate=fixed_rate)
+    _, receiver = _swap(fixed_rate=fixed_rate, pay_or_receive="Receive")
+    K, eff, mat, h = payer.fixed_rate, payer.effective_date, payer.termination_date, 0.5e-4
+    pv = lambda dz: N * (_hand_legs(m, dz, eff, mat)[0] - K * _hand_legs(m, dz, eff, mat)[1])  # noqa: E731
+    assert pv(0.0) == pytest.approx(tr.npv(m, payer), rel=1e-9, abs=1e-6)  # the hand legs are the toy's
+    dd = tri.discount_delta(m, payer)
+    assert dd == pytest.approx((pv(h) - pv(-h)) / (2 * h * 1e4), rel=1e-5, abs=1e-6)
+    assert tri.discount_delta(m, receiver) == pytest.approx(-dd, rel=1e-12, abs=1e-12)
+    if fixed_rate == "ATM":
+        assert abs(dd) < 0.01
+    else:
+        assert abs(dd) > 10.0 and dd * tr.npv(m, payer) < 0  # discounting a PV harder shrinks it
+    if fixed_rate == 0.02:
+        assert dd == pytest.approx(-83.66, abs=0.01)
+
+
+def test_two_curve_float_leg_telescopes_on_one_curve():
+    """A seasoned swap (effective in the past): with disc == fwd the float leg is DF(eff) - DF(mat),
+    so the two-curve npv is toylib.rates.npv exactly."""
+    m = tr.market(D, "USD")
+    s = tr.ToySwap(date(2022, 6, 15), date(2029, 6, 15), 0.031, -N)
+    assert tri.float_leg(m, m, s.effective_date, s.termination_date) == pytest.approx(_df(m, s.effective_date) - _df(m, s.termination_date), rel=1e-12)
+    assert tri.npv_two_curve(m, m, s) == pytest.approx(tr.npv(m, s), rel=1e-10)
+
+
+@pytest.mark.parametrize("strike", ["ATM", "ATM+50"])
+def test_swaption_discount_delta_bumps_the_discount_curve_only(strike):
+    """Bachelier on the underlying with its forwards held and its discounting (annuity, F's weights)
+    bumped, written out here; payer - receiver = the forward swap's discount-only delta (parity).
+    Mutation: drop `fwd` in toylib.swaption._value (whole-curve F) -> fails."""
+    m, payer = _swaption("Pay", strike=strike)
+    _, receiver = _swaption("Receive", strike=strike)
+    c, exp, term, K = m.curve, payer["expiration_date"], payer["termination_date"], payer["strike"]
+    sd = m.sigma * math.sqrt((exp - c.ref_date).days / 365.0)
+
+    def pv(dz, call):
+        flt, ann = _hand_legs(c, dz, exp, term)
+        x = (flt / ann - K) * (1.0 if call else -1.0)
+        return N * ann * (x * 0.5 * (1.0 + math.erf(x / sd / math.sqrt(2.0))) + sd * math.exp(-0.5 * (x / sd) ** 2) / math.sqrt(2 * math.pi))
+
+    h = 0.5e-4
+    for trade, call in ((payer, True), (receiver, False)):
+        assert pv(0.0, call) == pytest.approx(ts.npv(m, trade), rel=1e-9)
+        dd = ts.discount_delta(m, trade)
+        assert dd == pytest.approx((pv(h, call) - pv(-h, call)) / (2 * h * 1e4), rel=1e-5)
+        assert dd < 0  # a bought option is worth > 0: discounting it harder lowers it
+    parity = ts.discount_delta(m, payer) - ts.discount_delta(m, receiver)
+    assert parity == pytest.approx(tri.discount_delta(c, tr.ToySwap(exp, term, K, N)), rel=1e-6, abs=1e-6)
 
 
 # ------------------------------------------------------------------------------------ swaption structure
@@ -258,14 +325,40 @@ def test_after_expiry_physical_settlement():
     assert ts.gamma(m, exercised) == pytest.approx(tri.ir_gamma(m.curve, swap), rel=1e-6)
     assert ts.theta_1d(m, exercised) == pytest.approx(tri.theta_1d(m.curve, swap), rel=1e-9)
     assert ts.prob_exercise(m, exercised) == 1.0 and ts.prob_exercise(m, dead) == 0.0
-    for fn in (ts.npv, ts.delta, ts.gamma, ts.theta_1d, ts.discount_delta, ts.vega, ts.vanna, ts.volga):
+    for fn in (ts.npv, ts.delta, ts.gamma, ts.theta_1d, ts.discount_delta, ts.vega, ts.vanna, ts.volga, ts.annuity, ts.local_annuity_in_cents):
         assert fn(m, dead) == 0.0, fn.__name__
+    assert ts.annuity(m, exercised) != 0.0  # the exercised leg is the live underlying swap
     for fn in (ts.vega, ts.vanna, ts.volga):
         assert fn(m, exercised) == 0.0, fn.__name__
     for trade in (exercised, dead):  # levels continue: the live forward, the vol at expiry
         assert ts.fwd_rate(m, trade) == pytest.approx(f_now * 1e4, rel=1e-12)
         assert ts.annual_vol(m, trade) == pytest.approx(ts._sigma(exp, "USD") * 1e4, rel=1e-12)
         assert ts.expiry_in_years(m, trade) == 0.0
+
+
+def test_exercised_swaption_past_its_underlyings_end_is_dead_with_finite_levels():
+    """A payer exercised into a 1y underlying, seen on and after the underlying's final date: every
+    sensitivity, Annuity and each ladder is 0 and the CRIF empty (so sum(CRIF) == sum(IRDelta
+    ladder) == 0); the levels stay finite and Price continuous with the day before, when it is still
+    live. Mutation: drop the `_dead` guard in toylib.swaption.delta -> fails (ladder ~ -100)."""
+    m0 = ts.market(D, "USD")
+    o = ts.resolve_swaption(m0, dict(pay_or_receive="Pay", expiration_date="2m", termination_date="1y", notional_amount=N, strike=0.0))
+    term = o["termination_date"]
+    assert ts._exercised(m0.curve, o, True)  # struck at 0: in the money at expiry
+    live = ts.market(term - timedelta(days=1), "USD")
+    assert ts.delta(live, o) != 0.0 and ts.annuity(live, o) != 0.0
+    for d in (term, term + timedelta(days=30)):
+        m = ts.market(d, "USD")
+        for fn in (ts.delta, ts.gamma, ts.discount_delta, ts.theta_1d, ts.vega, ts.vanna, ts.volga, ts.annuity, ts.local_annuity_in_cents):
+            assert fn(m, o) == 0.0, (d, fn.__name__)
+        for ladder_fn in (ts.delta_ladder, ts.gamma_ladder):
+            assert set(ladder_fn(m, [o], [1.0], ("2Y", "5Y", "10Y", "30Y")).values()) == {0.0}, (d, ladder_fn.__name__)
+        assert ts.vega_cube(m, [o], [1.0], ("1M", "1Y"), ("1Y", "10Y")) == {"1Y;1M": 0.0}
+        frame = ts.crif_ir_curve(m, o)
+        assert frame.empty and list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"]), d
+        for fn in (ts.npv, ts.fair_premium, ts.forward_price, ts.premium_cents, ts.fwd_rate, ts.spot_rate, ts.par_spread, ts.annual_vol):
+            assert math.isfinite(fn(m, o)), (d, fn.__name__)
+    assert ts.npv(ts.market(term, "USD"), o) == pytest.approx(ts.npv(live, o), rel=1e-3) != 0.0
 
 
 def test_expiry_in_years_for_all_three_classes():
@@ -304,13 +397,13 @@ def test_swap_after_its_final_date_is_dead_with_finite_levels():
     _, s = _swap(term="1y", d=date(2023, 3, 1))
     for d in (s.termination_date, date(2024, 6, 3)):
         m = tr.market(d, "USD")
-        for fn in (tri.delta, tri.ir_gamma, tri.discount_delta, tri.theta_1d, tri.annuity):
-            assert fn(m, s) == 0.0, (d, fn.__name__)
+        for fn in (tri.delta, tri.ir_gamma, tr.gamma, tri.discount_delta, tri.theta_1d, tri.annuity):
+            assert fn(m, s) == 0.0, (d, fn.__name__)  # tr.gamma: toy_usd_irs's IRGammaParallel = its IRGamma ladder sum
         for ladder_fn in (tri.delta_ladder, tri.gamma_ladder):
             assert set(ladder_fn(m, [s], [1.0], ("2Y", "5Y")).values()) == {0.0}
         assert math.isfinite(tri.spot_rate(m, s)) and tri.expiry_in_years(m, s) == 0.0
     live = tr.market(s.termination_date - timedelta(days=1), "USD")
-    assert tri.delta(live, s) != 0.0 and tri.annuity(live, s) != 0.0
+    assert tri.delta(live, s) != 0.0 and tri.annuity(live, s) != 0.0 and tr.gamma(live, s) != 0.0
 
 
 # ------------------------------------------------------------------------------------ the bond
@@ -549,14 +642,19 @@ def test_swap_crif_rows_and_sum_identity():
 
 
 def test_swap_r3_measures_on_and_after_the_final_date():
-    """Dead (R2-7): the CRIF is an empty frame with its columns; ForwardPrice is Price; the levels
-    and trade terms stay finite."""
+    """Dead (R2-7): the own-rate CRIF is an empty frame with its columns; the pv01 CRIF follows the
+    never-dead total-return pv01 ladder, so sum(CRIF) == sum(IRDelta ladder) still holds for
+    toy_usd_irs / toy_eur_irs (mutation: empty it once dead -> fails); ForwardPrice is Price; the
+    levels and trade terms stay finite."""
     _, s = _swap(term="1y", d=date(2023, 3, 1))
     for d in (s.termination_date, date(2024, 6, 3)):
         m = tr.market(d, "USD")
-        for crif in (tri.crif_ir_curve, tri.crif_ir_curve_pv01):
-            frame = crif(m, s)
-            assert frame.empty and list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"]), (d, crif.__name__)
+        frame = tri.crif_ir_curve(m, s)
+        assert frame.empty and list(frame.columns) == list(contracts.FRAME_COLUMNS["CRIFIRCurve"]), d
+        frame = tri.crif_ir_curve_pv01(m, s)
+        _crif_ok(frame, "USD")
+        ladder = sum(tr.delta_ladder(m, [s], [1.0], ("2Y", "5Y", "10Y", "30Y")).values())
+        assert frame["Amount"].sum() == pytest.approx(ladder, rel=1e-12) and ladder == pytest.approx(tr.pv01(m, s), rel=1e-12) != 0.0, d
         assert tri.forward_price(m, s) == tr.npv(m, s) != 0.0
         assert tri.local_annuity_in_cents(m, s) == 0.0  # Annuity / |N|, and Annuity is dead
         assert math.isfinite(tri.par_spread(m, s)) and tri.compounded_fixed_rate(m, s) == pytest.approx(s.fixed_rate * 1e4)
@@ -665,6 +763,17 @@ def test_r3_identities_hold_on_each_config_including_a_close_market_override(fna
     price = float(v[risk.Price])
     assert float(v[risk.FairPremium]) == pytest.approx(price, rel=1e-12)
     assert float(v[risk.PremiumCents]) == pytest.approx(price / N * 1e4, rel=1e-12)
+
+
+@pytest.mark.parametrize("fname, ccy", [("toy_usd_irs.yaml", "USD"), ("toy_eur_irs.yaml", "EUR")])
+def test_pv01_configs_crif_sums_to_the_delta_ladder_on_a_dead_date(fname, ccy):
+    """toy_usd_irs / toy_eur_irs (IRDelta = the never-dead annuity pv01): on a date past the
+    swap's final date sum(CRIFIRCurve Amount) == sum(IRDelta ladder) != 0, as pricebt prices them."""
+    session = PricebtSession.use(assets=[ASSETS / fname])
+    inst = IRSwap("Pay", date(2024, 3, 1), ccy, N, effective_date=date(2023, 3, 1), fixed_rate=0.03, name="dead")
+    ladder, crif = (session.pricing.value(inst, D, m, None) for m in (risk.IRDelta, risk.CRIFIRCurve))
+    ladder, crif = (v.result() if hasattr(v, "result") else v for v in (ladder, crif))
+    assert crif["Amount"].sum() == pytest.approx(ladder["value"].sum(), rel=1e-12) and crif["Amount"].sum() != 0.0
 
 
 def test_toylib_crif_constants_match_the_contract():

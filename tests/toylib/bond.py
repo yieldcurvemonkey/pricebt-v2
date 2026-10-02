@@ -135,7 +135,8 @@ def gamma(market, trade) -> float:
 
 
 def discount_delta(market, trade) -> float:
-    return ir.discount_delta_on(market.curve, lambda c: _pv(c, market.spread, trade))
+    # fixed coupons project nothing, so the discount-only bump is the whole-curve bump: `fwd` unused
+    return ir.discount_delta_on(market.curve, lambda c, _fwd: _pv(c, market.spread, trade))
 
 
 def yield_dv01(market, trade) -> float:
