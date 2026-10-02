@@ -1,6 +1,6 @@
 ---
 name: pricebt-connect-pricing-library
-description: Fast path from "I have a pricing/data library" (a bank platform such as a Citi Datapoint/DP-style or JPM Athena-style service, an in-house library, a QuantLib- or rateslib-style object library, a REST analytics service, a bond-analytics package) to a checked pricebt asset config for an IRSwap, IRSwaption or Bond that answers the whole IR measure contract, and a running backtest. Use it to connect a library, add a swap, swaption or bond asset, work out which of your library's calls give each measure pricebt needs (delta, gamma, vega, vanna, volga, theta, rates, vols, annuity, cashflows, ladders) in which unit and sign, derive the ones it lacks by bumping, or declare them unsupported with a reason.
+description: Fast path from "I have a pricing/data library" (a bank platform such as a Citi Datapoint/DP-style or JPM Athena-style service, an in-house library, a QuantLib- or rateslib-style object library, a REST analytics service, a bond-analytics package) to a checked pricebt asset config for an IRSwap, IRSwaption or Bond that answers the whole IR measure contract, and a running backtest. Use it to connect a library, add a swap, swaption or bond asset, work out which of your library's calls give each measure pricebt needs (delta, gamma, vega, vanna, volga, theta, rates, vols, annuity, cashflows, ladders, par spread, forward price, CRIF) in which unit and sign, and derive the ones it lacks by bump-and-reprice (swap and swaption configs must map every measure; only a Bond may declare one unsupported).
 ---
 
 # Connect a pricing library to pricebt
@@ -9,12 +9,16 @@ pricebt has no pricing and no market data of its own. Every number comes from on
 config** per asset, whose Python strings call *your* library
 ([`docs/v2/ASSET_CONFIG_GUIDE.md`](../../docs/v2/ASSET_CONFIG_GUIDE.md)). For `IRSwap`, `IRSwaption`
 and `Bond` the config must also satisfy a **measure contract** (`src/pricebt/risk/contracts.py`,
-DEV-I11). For every gs IR measure the class supports (about 20: `Price`, the own-rate `IRDelta` and
-`IRGammaParallel`, `IRVega`/`IRVanna`/`IRVolga`, rate and vol levels, `Theta`, `Annuity`,
-`Cashflows`, ladders), the config either maps a function with the contract's unit, or declares the
-measure under `unsupported_measures:` with an honest reason. Anything else fails at load, and the
-error prints a paste-ready declaration block. This skill assumes you know your own library well. It
-tells you what pricebt needs for each measure, in your library's terms.
+DEV-I11 amended, DEV-I19). It lists every gs IR measure the class supports (`Price`, the own-rate
+`IRDelta` and `IRGammaParallel`, `IRVega`/`IRVanna`/`IRVolga`, rate and vol levels, `Theta`,
+`Annuity`, `Cashflows`, ladders; for swaps and swaptions also `ParSpread`, `FairPremium`,
+`ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve` and
+`PnlExplain`). An **`IRSwap` or `IRSwaption` config must map every one** with the contract's unit
+([`docs/v2/IR_STRICT_CONTRACT.md`](../../docs/v2/IR_STRICT_CONTRACT.md)): a gap or a declaration fails
+at load, and the error lists every gap and ends with a paste-ready **mapping skeleton**. A `Bond`
+config may still declare a measure under `unsupported_measures:` with an honest reason. This skill
+assumes you know your own library well. It tells you what pricebt needs for each measure, in your
+library's terms.
 
 ## When to use / not use
 
@@ -29,7 +33,8 @@ tells you what pricebt needs for each measure, in your library's terms.
 - **Inputs:** your library, importable in the same Python process, and one business date it has
   data for. The commands use 2024-01-02 and 2024-04-02; change them if your history differs.
 - **Outputs:** a config under `configs/assets/` that loads with no warning, a filled capability
-  worksheet (one line per contract measure: mapped, zero by convention, or declared with a reason),
+  worksheet (one line per contract measure: native, recipe, zero by convention, or -- Bond only --
+  declared with a reason),
   a passing checker run, a 3-month smoke backtest, and a test.
 
 ## Procedure
@@ -87,6 +92,7 @@ library and checks every measure against the toy config, so the recipes are test
 | `lib_vol_shift(m, h)` (swaption) | every **normal** vol shifted by `h` (1bp = 1e-4) | a normal surface: add `h`; a lognormal surface: see cookbook pattern 18 |
 | `lib_annuity`, `lib_cashflows`, `lib_spot_rate` | N·A in ccy, **payer-positive** (receive-fixed < 0); the flows the PV will still drop; the spot-starting par rate | `−1e4 × fixedLegBPS` (QuantLib-style BPS is negative for a payer); the leg schedule; a probe swap |
 | `lib_bond_static`, `lib_pv_at_yield` (bond) | plain static data; the dirty PV at a given yield and date | the security master; price-from-yield |
+| `lib_discount_factor`, `lib_fixed_frequency`, `lib_at` (+ swaption `lib_premium_date`, `lib_with_vols`) | DF to a date; fixed payments per year; the market seen from another date with no time passing (and a market with another's vols) | the curve's DF call; the trade's schedule; a valuation-date override that keeps the zero rates |
 
 Convert every unit and sign **once, inside the primitive**, with a `# vendor: X -> pricebt: Y`
 comment. The table is in [`references/convention-conversions.md`](references/convention-conversions.md).
@@ -102,18 +108,27 @@ pv01 per bp is half the gamma. A theta per year, per business day, or on a rolle
 `Theta`. A lognormal vega is not a rescaled normal vega. The recipes behind each of these are in
 [`pricebt-asset-config-cookbook`](../pricebt-asset-config-cookbook/SKILL.md) patterns 14-27.
 
-### 5. Declare what your library cannot compute
+### 5. Map every measure (swap, swaption); declare only on a Bond
 
-Delete the measure's `risk_measures:` line and load the config. The `ConfigError` lists every gap
-and ends with a paste-ready `unsupported_measures:` block. Paste it, and replace each
-`"TODO: ..."` with a specific, true reason ("yourlib's swaption has no vol-surface bump"). A
-request for a declared measure raises `UnsupportedMeasureError` with that reason. Never map a fake
-`0.0` or a NaN instead. The **zero-by-convention** rows are not declarations: map them to `0.0`.
-These are a swap's or a bond's `IRVega`, `IRVanna`, `IRVolga` and vol levels, and `IRBasis` and
-`IRXccyDelta` on a single-curve, single-currency library (R2-8). Mixed books with vol attribution
-need these zeros. `python skills/pricebt-risk-measures/scripts/measures.py matrix $cfg` audits the
-result row by row without running your library, and exits 1 while any row is missing or `TODO`
-(with `--strict`, also while a declaration has a hint: one every library can avoid).
+**`IRSwap` and `IRSwaption`:** there is no escape hatch. A measure your library has no call for is
+still computable from the primitives: a bump-and-reprice recipe, date arithmetic, or an identity
+(`PremiumCents` = Price / |notional| x 1e4, `ForwardPrice` = Price / DF(expiry), ...). Leave one out
+and the `ConfigError` lists every gap and ends with a paste-ready mapping skeleton
+(`contracts.mapping_skeleton`): `functions:` / `portfolio_functions:` / `risk_measures:` stubs whose
+expression `... TODO` deliberately does not compile, so a skeleton pasted unchanged never loads.
+Declaring a contract measure (or a preset of one) is itself a load error. A literal constant is
+honest only for the **zero-by-convention** rows (`contracts.ZERO_BY_CONVENTION`): a swap's
+`IRVega`, `IRVanna`, `IRVolga` and vol levels, and `IRBasis` / `IRXccyDelta` on a single-curve,
+single-currency library (R2-8); the checker's `ir_fake_constant` FAILs any other constant.
+
+**`Bond`:** delete the measure's `risk_measures:` line; the load error ends with a paste-ready
+`unsupported_measures:` block. Replace each `"TODO: ..."` with a specific, true reason. A request
+for a declared measure raises `UnsupportedMeasureError` with it. Never map a fake `0.0` or a NaN.
+
+`python skills/pricebt-risk-measures/scripts/measures.py matrix $cfg` audits the result row by row
+without running your library and exits 1 while any row is missing or `TODO` (with `--strict`, also
+while a Bond declaration has a hint: one every library can avoid); `measures.py block $cfg` prints
+the skeleton (swap, swaption) or the declaration block (Bond).
 
 ### 6. Load, then verify every measure on one trade
 
@@ -135,12 +150,13 @@ with PricingContext(date(2024, 1, 2)):
         req = m(aggregation_level="Type") if isinstance(m, risk.RiskMeasureWithFiniteDifferenceParameter) and "scalar" in r.forms else m
         try:
             print(r.measure, inst.calc(req).result())
-        except Exception as exc:           # a declared measure prints its reason
+        except Exception as exc:           # a broken recipe (or a Bond's declared measure) prints why
             print(r.measure, type(exc).__name__, exc)
 '@ | python -
 ```
 
-`-W error` makes a stale declaration (a measure both mapped and declared) fail. Then check every
+For `PnlExplain` the loop prints a `NotSupportedError` (it needs `PnlExplain(CloseMarket(date=...))`).
+`-W error` makes a Bond's stale declaration (a measure both mapped and declared) fail. Then check every
 number against its "Verify with" column (questionnaire §9) and the sign self-tests in the
 conversions reference. ATM payer above: `|npv| < 1e-4 x notional` (as `swap_atm_npv`), delta > 0
 (about 900 per 1mm for a 10y) and equal to `Annuity x 1e-4`, `IRFwdRate` in bp = strike x 1e4, a
@@ -199,10 +215,12 @@ your library is absent.
 
 [`example/`](example/README.md) wires a **fictional** bank-style SDK, Meridian, whose conventions all
 differ from pricebt's on purpose (ISO-string dates, percent rates, a receiver-positive DV01, a
-floating tenor). It is the PV-only service with no scenario request: from PV, DV01 and the par rate
-in one batched call it derives the own-rate `IRDelta`, `Annuity` and `IRSpotRate`, maps the zeros,
-and declares only gamma, the gamma ladder, `Theta` and `Cashflows` (`measures.py matrix --strict`
-passes). The README shows each conversion and three one-error variants the checker catches. Run it:
+floating tenor, positive cashflow amounts with a direction). It maps the **whole** `IRSwap` contract:
+one batched call of first-order codes gives `Price`, the own-rate `IRDelta`, `Annuity`, `IRFwdRate`,
+`IRSpotRate`, the zero-curve DV01, `Cashflows` and the CRIF rows; `scenario()` markets give gamma, the
+gamma ladder, `Theta` (`hold="FORWARDS"`) and `PnlExplain` (a `valuation_date` with the zero rates
+held); `discount_factors()` gives `ForwardPrice` and `FairPremium`. The README shows each conversion
+and three one-error variants the checker catches. Run it:
 
 ```powershell
 $env:PYTHONPATH = "src;tests;skills/pricebt-connect-pricing-library/example"
@@ -239,8 +257,9 @@ python -m pytest tests/skills/test_skill_connect_example.py -o addopts= -p no:ca
 ## Checks (definition of done)
 
 - [ ] `python -W error` loads the config: no contract problem, no stale declaration.
-- [ ] Every contract measure has a worksheet line: mapped (native or recipe), zero by convention, or
-      declared with a specific reason. No reason still starts with `TODO`.
+- [ ] Every contract measure has a worksheet line: native, recipe or zero by convention (swap,
+      swaption: no declarations, no constant outside `ZERO_BY_CONVENTION`); a Bond's declarations
+      have specific reasons, none still starting with `TODO`.
 - [ ] Every conversion line has a `# vendor -> pricebt` comment.
 - [ ] `lib_market` / `load_market` returns `None` (it does not raise) on a weekend, a holiday and a
       data gap.

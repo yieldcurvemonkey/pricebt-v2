@@ -43,7 +43,7 @@ In a toy or trending market, several attributes drift together, so more than one
 
 ### 2. Half gamma
 - **Symptom.** `residual / PNL_gamma` ≈ +1. The residual has gamma's sign on every step and is proportional to Δr².
-- **Cause.** Either `IRGammaParallel` = `d(pv01)/dr` of an annuity pv01 (half the second derivative at the money), or a finite-difference gamma missing the chain-rule term `−Δ·(r₊ + r₋ − 2r₀)`. The second is the in-flight branch's finding (research note R14): it biases gamma by −4% to −34%, depending on tenor.
+- **Cause.** Either `IRGammaParallel` = `d(pv01)/dr` of an annuity pv01 (half the second derivative at the money), or a finite-difference gamma missing the chain-rule term `−Δ·(r₊ + r₋ − 2r₀)`. The second was the swap P&L-explain branch's finding (research note R14, merged; the toy `tr.gamma` has used the chain rule since): it biases gamma by −4% to −34%, depending on tenor.
 - **Probe.** At the money, Γ ≈ 2·Δpv01/Δr. Recompute Γ from three bumps with the chain rule (`own_rate_greeks` in `tests/toylib/irrisk.py`).
 
 ### 3. Gamma or vega in the wrong unit
@@ -78,7 +78,7 @@ In a toy or trending market, several attributes drift together, so more than one
 ### 8. NaN poisoning
 - **Symptom.** `stats["finite"]` is False. The spot check FAILs and names the columns. `pnl_explain()` is NaN from the first bad step to the end.
 - **Cause.** A level or greek that is NaN on some held date. Usually a dead instrument: a matured swap's par rate, a swaption after expiry, a bond past maturity. Sometimes a calc that failed on a holiday.
-- **Fix.** Sensitivities of a dead instrument are 0.0, and **levels continue past death** (R2-7): the last live value, or the underlying's forward. The shipped ARBS swap config's par rate is NaN after maturity; this is known and recorded in `docs/v2/MERGE_NOTES_pnl_explain.md`.
+- **Fix.** Sensitivities of a dead instrument are 0.0, and **levels continue past death** (R2-7): the last live value, or the underlying's forward. For the shipped ARBS swap config's dead-trade levels, see the ARBS config (`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`) and `docs/v2/LIVE_ARBS_REPORT.md`.
 
 ### 9. Non-parallel curve moves (ladder vs own rate)
 - **What own-rate attribution captures.** Any curve move, through the instrument's own rate r. A bond's price is a function of its yield alone, so a twist is fully captured.

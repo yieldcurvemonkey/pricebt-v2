@@ -35,9 +35,11 @@ COMMON_PASS = [
     "ir_vega_cube_keys", "ir_cashflows", "fd_params", "risk_measures[PnlExplain]",
     "quantity_scaling[IRDelta bucketed]", "quantity_scaling[IRGamma bucketed]", "quantity_scaling[Cashflows frame]",
 ]
+# IR_STRICT_CONTRACT R3-1: the identity rows of the new strict-contract measures, and R3-0's constant scan
+STRICT_PASS = ["ir_premium_cents", "ir_local_annuity", "ir_forward_price", "ir_fair_premium", "ir_par_spread", "ir_compounded_fixed_rate", "ir_crif", "ir_fake_constant"]
 PACK_PASS = {
-    "toy_usd_irs_full.yaml": ["swap_dv01_sign", "swap_bucket_sum", "swap_par_rate_atm", "swap_pnl_explain", "swap_annuity_sign", "measure_series"],
-    "toy_usd_swaption.yaml": [
+    "toy_usd_irs_full.yaml": ["swap_dv01_sign", "swap_bucket_sum", "swap_par_rate_atm", "swap_pnl_explain", "swap_annuity_sign", "measure_series", *STRICT_PASS],
+    "toy_usd_swaption.yaml": [*STRICT_PASS, 
         "swaption_buy_sell_fold", "swaption_straddle", "swaption_strike_pinned", "swaption_parity", "swaption_fwd_unit", "swaption_vol_unit", "swaption_vega_sign",
         "swaption_delta_sign", "swaption_gamma_sign", "swaption_prob_exercise", "swaption_expiry", "quantity_scaling[IRVega bucketed]",
     ],
@@ -81,7 +83,16 @@ BROKEN_IR = [
     ("bad_swaption_theta_per_year", "ir_theta", "FAIL", "looks per year"),
     ("bad_bond_dv01_positive", "bond_dv01_sign", "FAIL", "IRDelta"),
     ("bad_half_gamma_swaption", "ir_gamma_ratio", "FAIL", "half-gamma"),
-    ("bad_todo_reason", "contract[Theta]", "WARN", "declaration reason is a TODO"),
+    ("bad_todo_reason", "contract[Theta]", "WARN", "declaration reason is a TODO"),  # a Bond: only a Bond may declare
+    # one per strict-contract identity row (R3-1) and the constant scan (R3-0)
+    ("bad_premium_cents_pct", "ir_premium_cents", "FAIL", "Price / |notional_amount|"),
+    ("bad_local_annuity_per_bp", "ir_local_annuity", "FAIL", "Annuity / |notional_amount|"),
+    ("bad_forward_price_times_df", "ir_forward_price", "FAIL", "Price x DF"),
+    ("bad_fair_premium_final_date", "ir_fair_premium", "FAIL", "that is ForwardPrice"),
+    ("bad_par_spread_reversed", "ir_par_spread", "FAIL", "sign is reversed"),
+    ("bad_compounded_rate_decompounded", "ir_compounded_fixed_rate", "FAIL", "outside the bounds"),
+    ("bad_crif_upper_tenors", "ir_crif", "FAIL", "not SIMM tenors"),
+    ("bad_fake_constant", "ir_fake_constant", "FAIL", "IRDiscountDeltaParallel -> zero_per_bp"),
     # the loader refuses an extensive time level, so the row never runs: the load error names it
     ("bad_expiry_in_years_extensive", "config_loads", "FAIL", "ExpiryInYears"),
 ]
@@ -89,8 +100,11 @@ BROKEN_IR = [
 
 @pytest.mark.parametrize("fixture,row,status,text", BROKEN_IR, ids=[b[0] for b in BROKEN_IR])
 def test_broken_ir_fixture_fails_its_row(fixture, row, status, text):
-    rows = _rows(check_asset.run_checks(FIXTURES / f"{fixture}.yaml", dates=DATES, sys_path=[FIXTURES], backtest=False))
+    results = check_asset.run_checks(FIXTURES / f"{fixture}.yaml", dates=DATES, sys_path=[FIXTURES], backtest=False)
+    rows = _rows(results)
     assert rows[row].status == status and text in rows[row].detail, rows[row]
+    if row in STRICT_PASS:  # a one-error copy of a full toy: exactly its own row fails
+        assert [r.name for r in results if r.status == check_asset.FAIL] == [row]
 
 
 def test_theta_per_year_also_breaks_the_taylor_row():
@@ -125,7 +139,30 @@ def test_pack_override_reports_a_missing_contract_measure():
     del raw["risk_measures"]["IRVolga"]  # ConfigInstrument has no contract, so this loads
     rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False, pack="IRSwaption"))
     assert rows["contract[IRVolga]"].status == check_asset.FAIL
-    assert "neither mapped nor declared" in rows["contract[IRVolga]"].detail
+    detail = rows["contract[IRVolga]"].detail
+    assert "not mapped" in detail and "require a mapping for every contract measure" in detail and "declare" not in detail
+
+
+def test_pack_override_fails_a_declaration_of_a_strict_contract_measure():
+    """R3-0: for IRSwaption a declaration never satisfies a row -- declared AND mapped is a FAIL (no
+    R2-9 'mapping wins'), declared and unmapped too; a declared preset counts as its base."""
+    raw = _config_instrument_swaption()
+    del raw["risk_measures"]["IRVolga"]
+    raw["unsupported_measures"] = {"IRVolga": "no vol bump", "IRVanna": "mapped, yet declared", "IRDeltaParallel": "a preset of IRDelta"}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # ConfigInstrument: the loader's own R2-9 warning
+        rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False, pack="IRSwaption"))
+    for m in ("IRVolga", "IRVanna", "IRDelta"):
+        assert rows[f"contract[{m}]"].status == check_asset.FAIL and "a declaration cannot satisfy it" in rows[f"contract[{m}]"].detail, rows[f"contract[{m}]"]
+    declarations = [r for r in check_asset.run_checks(raw, dates=DATES, backtest=False, pack="IRSwaption") if r.name == "contract_declarations"]
+    assert {r.status for r in declarations} >= {check_asset.FAIL}
+    # the same declaration on a Bond pack is only a WARN (Bond keeps map-or-declare)
+    bond = _load("toy_usd_bond.yaml")
+    bond.update(asset="ci_bond", instrument="ConfigInstrument")
+    bond.pop("match")
+    del bond["risk_measures"]["Theta"]
+    bond["unsupported_measures"] = {"Theta": "no carry call"}
+    assert _rows(check_asset.run_checks(bond, dates=DATES, backtest=False, pack="Bond"))["contract[Theta]"].status == check_asset.WARN
 
 
 def test_pack_none_and_unknown():
@@ -197,6 +234,33 @@ MUTATIONS = [
     ("toy_usd_bond.yaml", ("functions", "cashflows", "scale_columns"), ["payment_amount", "notional", "rate"], "quantity_scaling[Cashflows frame]", "FAIL"),
     ("toy_usd_bond.yaml", ("functions", "cashflows", "scale_columns"), ["payment_amount"], "quantity_scaling[Cashflows frame]", "FAIL"),
     ("toy_usd_bond.yaml", ("portfolio_functions", "delta_ladder", "scale_with_quantity"), False, "quantity_scaling[IRDelta bucketed]", "FAIL"),
+    # strict-contract rows (R3-0/R3-1): one realistic slip each, beyond the fixtures
+    ("toy_usd_irs_full.yaml", ("functions", "par_spread", "expr"), "tri.par_spread(market, trade) * (-1.0 if trade.notional > 0 else 1.0)", "ir_par_spread", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "par_spread", "expr"), "tri.par_spread(market, trade) / 100.0", "ir_par_spread", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "compounded_rate", "expr"), "tr.par_rate(market, trade)", "ir_compounded_fixed_rate", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Amount=lambda f: -f.Amount)", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Qualifier='EUR')", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "premium_cents", "expr"), "tri.npv(market, trade) / trade.notional * 1e4", "ir_premium_cents", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "forward_price", "expr"), "-tri.forward_price(market, trade)", "ir_forward_price", "FAIL"),
+    ("toy_usd_swaption.yaml", ("functions", "fair_premium", "expr"), "ts.fair_premium(market, trade) / 0.995", "ir_fair_premium", "WARN"),
+    ("toy_usd_swaption.yaml", ("functions", "local_annuity", "expr"), "ts.annuity(market, trade) / abs(trade['notional']) * 1.002", "ir_local_annuity", "WARN"),
+    ("toy_usd_swaption.yaml", ("risk_measures", "IRVega"), {"scalar": "zero_per_bp", "bucketed": "vega_cube"}, "ir_fake_constant", "FAIL"),
+    # fix round F4: slips the earlier rows let through (each PASSed on the previous check_asset_ir.py)
+    # an unsigned premium / annuity: right on the Buy side (Price > 0), wrong only on the Sell side
+    ("toy_usd_swaption.yaml", ("functions", "premium_cents", "expr"), "abs(ts.premium_cents(market, trade, pricebt_date))", "ir_premium_cents", "FAIL"),
+    ("toy_usd_swaption.yaml", ("functions", "local_annuity", "expr"), "abs(ts.local_annuity_in_cents(market, trade))", "ir_local_annuity", "FAIL"),
+    # a semiannual fixed leg (as the kwarg says) restated as K itself, uncompounded; the annual kwarg passes
+    ("toy_usd_irs_full.yaml", ("defaults", "fixed_rate_frequency"), "6m", "ir_compounded_fixed_rate", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("defaults", "fixed_rate_frequency"), "1y", "ir_compounded_fixed_rate", "PASS"),
+    # CRIF labels: an int Bucket, a non-SIMM sub-curve, an AmountCurrency that is not the Qualifier's
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Bucket=1)", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(Label2='SOFR')", "ir_crif", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "crif_ir_curve", "expr"), "tri.crif_ir_curve(market, trade).assign(AmountCurrency='EUR')", "ir_crif", "FAIL"),
+    # constants: a non-zero zero-by-convention value, and NaN / inf placeholders
+    ("toy_usd_irs_full.yaml", ("functions", "zero_per_bp", "expr"), "5.0", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "float('nan')", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "math.nan", "ir_fake_constant", "FAIL"),
+    ("toy_usd_irs_full.yaml", ("functions", "zero_per_bp", "expr"), "-math.inf", "ir_fake_constant", "FAIL"),
 ]
 
 
@@ -206,14 +270,54 @@ def test_each_ir_row_catches_a_mistake(config, path, value, row, expected):
     assert rows[row].status == expected, rows[row]
 
 
-def test_stale_declaration_warns():
-    raw = _set(_load("toy_usd_irs_full.yaml"), ("unsupported_measures",), {"Theta": "carry is not wired"})
+# the toy USD curve moved down to ~0.25%: below 0.5% a Price x DF slip sat inside the old relative band
+_LOW_RATES = [(("market", "expr"), '(lambda m: None if m is None else tri.bumped(m, -0.0375))(tr.market(pricebt_date, "USD", pricebt_csa))'),
+              (("market", "key"), "toy_usd_ois_low_rates")]
+
+
+@pytest.mark.parametrize("forward_price,expected", [
+    (None, "PASS"),                                                                                              # honest: no false FAIL at 0.25%
+    ("tri.npv(market, trade, pricebt_date) * market.discount_factor(trade.termination_date)", "FAIL"),           # Price x DF
+])
+def test_forward_price_times_df_is_caught_at_low_rates(forward_price, expected):
+    cfg = copy.deepcopy(_load("toy_usd_irs_full.yaml"))
+    for path, value in _LOW_RATES + ([(("functions", "forward_price", "expr"), forward_price)] if forward_price else []):
+        _set(cfg, path, value)
+    rows = _rows(check_asset.run_checks(cfg, dates=DATES, backtest=False))
+    assert rows["ir_forward_price"].status == expected, rows["ir_forward_price"]
+    assert "own rate 0.2" in rows["ir_forward_price"].detail                                                    # really at ~0.25%
+
+
+MERIDIAN = REPO / "skills" / "pricebt-connect-pricing-library" / "example"
+
+
+@pytest.mark.parametrize("fair_premium,expected", [
+    (None, "PASS"),
+    ('_risk(market, trade, pricebt_date)["PV"] * _dfs(market, trade, pricebt_date)[0]', "FAIL"),   # Price x DF(spot)
+])
+def test_fair_premium_times_df_spot_is_caught(fair_premium, expected):
+    """The toys have no spot lag (FairPremium == Price), so the direction of the ratio is proven on the
+    Meridian example, which settles at spot: Price x DF(spot) is within the old ~10-day band."""
+    raw = yamlio.load_file(MERIDIAN / "meridian_usd_irs.yaml")
+    if fair_premium:
+        raw["functions"]["fair_premium"]["expr"] = fair_premium
+    rows = _rows(check_asset.run_checks(raw, dates=[date(2024, 1, 2), date(2024, 4, 2)], sys_path=[MERIDIAN], backtest=False))
+    assert rows["ir_fair_premium"].status == expected, rows["ir_fair_premium"]
+
+
+def test_stale_declaration_warns_on_a_bond_and_fails_to_load_on_a_swap():
+    """R2-9 (a mapping wins over a stale declaration, with a warning) is Bond-only now: on an IRSwap
+    the same declaration is a load error naming it (R3-0), so config_loads FAILs."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("unsupported_measures",), {"Theta": "carry is not wired"})
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)  # the loader's own R2-9 warning
         rows = check_asset.run_checks(raw, dates=DATES, backtest=False)
     stale = [r for r in rows if r.name == "contract_declarations"]
     assert [r.status for r in stale] == ["WARN"] and "stale declaration" in stale[0].detail
     assert _rows(rows)["contract[Theta]"].status == check_asset.PASS  # the mapping wins
+    swap = _set(_load("toy_usd_irs_full.yaml"), ("unsupported_measures",), {"Theta": "carry is not wired"})
+    loads = _rows(check_asset.run_checks(swap, dates=DATES, backtest=False))["config_loads"]
+    assert loads.status == check_asset.FAIL and "unsupported_measures declares Theta" in loads.detail and "cannot satisfy them" in loads.detail
 
 
 def _swap_pv01_half_gamma():
@@ -232,13 +336,17 @@ def test_fixed_annuity_half_gamma_is_caught_whatever_the_annuity_sign():
 
 
 def test_swap_gamma_without_annuity_is_unverifiable_not_pass():
-    """With Annuity declared, a fixed-annuity delta and a half gamma read ~1: WARN, never PASS."""
+    """Without Annuity, a fixed-annuity delta and a half gamma read ~1: WARN, never PASS. An IRSwap
+    config cannot leave Annuity out any more (R3-0), so this runs as a ConfigInstrument checked with
+    --pack IRSwap -- where the missing Annuity is also a contract FAIL."""
     raw = _swap_pv01_half_gamma()
     del raw["functions"]["annuity"], raw["risk_measures"]["Annuity"]
-    raw["unsupported_measures"] = {"Annuity": "test: no annuity call"}
-    rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))
+    raw.update(asset="ci_swap", instrument="ConfigInstrument")
+    raw.pop("match")
+    rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False, pack="IRSwap"))
     assert rows["ir_gamma_ratio"].status == check_asset.WARN and "unverifiable: map Annuity" in rows["ir_gamma_ratio"].detail
     assert rows["swap_annuity_sign"].status == check_asset.SKIP
+    assert rows["contract[Annuity]"].status == check_asset.FAIL
 
 
 def test_theta_warn_also_points_at_the_delta():

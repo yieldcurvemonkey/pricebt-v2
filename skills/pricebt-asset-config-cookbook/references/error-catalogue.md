@@ -24,23 +24,33 @@ checks the text still matches.
 | `market key K: ... differs between assets` | two assets share `market.key` but their imports, code or market expression differ | give each asset its own key (a swaption never shares a swap's key) |
 | `is not a class exported by pricebt.instrument` | `instrument:` is misspelt, or names a class pricebt does not generate | use the suggested class (`IRSwap`, `IRSwaption`, `Bond`, ...) or `ConfigInstrument` |
 
-### The measure contract (IRSwap, IRSwaption, Bond; DEV-I11)
+### The measure contract (IRSwap, IRSwaption, Bond; DEV-I11, amended by `docs/v2/IR_STRICT_CONTRACT.md`)
+
+`IRSwap` and `IRSwaption` are the **strict** classes: only a mapping satisfies a contract row, and
+declaring a contract measure is itself an error. `Bond` keeps map-or-declare.
 
 | Message contains | Cause | Fix |
 |---|---|---|
-| `measure-contract problem(s) for instrument` | one `ConfigError` listing every contract problem of the config | fix each listed line; the message ends with a paste-ready block for the missing measures |
-| `neither mapped nor declared under unsupported_measures` | a contract measure (or one form: `scalar`, `bucketed`, `frame`) has no mapping and no declaration | map it (cookbook patterns 14-27, or the connect skill's template), or paste its line from the block |
-| `Map each missing measure, or declare what the library cannot compute` | the header of the paste-ready `unsupported_measures:` block | paste the block and replace every `"TODO: ..."` with a specific, true reason |
+| `measure-contract problem(s) for instrument` | one `ConfigError` listing every contract problem of the config | fix each listed line; the message ends with a paste-ready mapping skeleton (IRSwap, IRSwaption) or declaration block (Bond) for the missing measures |
+| `not mapped (IRSwap/IRSwaption require a mapping for every contract measure)` | a strict-class contract measure (or one form) has no mapping | map it (cookbook patterns 14-29, or the connect skill's templates); there is no declaration route. A literal constant is honest only for `contracts.ZERO_BY_CONVENTION` (the checker FAILs `ir_fake_constant` otherwise) |
+| `IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them` | an IRSwap/IRSwaption config declares a contract measure (mapped or not) under `unsupported_measures:` | map it and delete the declaration |
+| `(a preset or fallback of IRDelta)` | the same, for a declared preset of a contract measure (`IRDeltaParallel`, `IRGammaParallelLocalCcy`, `PnlExplainClose`, ...) | map the base measure, delete the declaration |
+| `Map each missing measure (merge into functions:, portfolio_functions: and risk_measures:` | the header of the strict classes' paste-ready **mapping skeleton** (`contracts.mapping_skeleton`): a stub per missing form with an allowed unit | merge each section into the config's own one, write every `expr`, and pick the unit you return |
+| `neither mapped nor declared under unsupported_measures` | a Bond contract measure (or one form: `scalar`, `bucketed`, `frame`) has no mapping and no declaration | map it, or paste its line from the block |
+| `Map each missing measure, or declare what the library cannot compute` | the header of a Bond's paste-ready `unsupported_measures:` block | paste the block and replace every `"TODO: ..."` with a specific, true reason |
 | `has unit 'X'; allowed [...]` | a mapped function's unit is outside the measure kind's units (e.g. a vega in `bp`) | convert to the allowed unit: `ccy_per_bp` for first-order, `ccy_per_bp2` for second-order, `ccy` for Price/Theta/Annuity, `bp`/`pct`/`decimal` for levels |
 | `level must be intensive (set scale_with_quantity: false)` | a rate, vol, time or probability function scales with quantity (e.g. `unit: number` for `ExpiryInYears`) | use `bp`/`pct`/`decimal` (intensive by default), or set `scale_with_quantity: false` |
 | `this measure is a table: map a functions: entry with` | `Cashflows` is mapped to a scalar function | a `functions:` entry with `returns: frame` (pattern 23) |
 | `returns a frame; this measure needs a number` | a scalar measure is mapped to a `returns: frame` function | map a scalar function |
 | `must include ['payment_amount']` | the `Cashflows` function's `scale_columns` leave out `payment_amount` | `scale_columns: [payment_amount]` (plus any other amount columns) |
 | `its amounts must scale with the position` | the `Cashflows` function has `scale_with_quantity: false` | remove it: cash amounts scale with the position |
+| `syntax error at line 1: invalid syntax (in '... TODO')` | a mapping-skeleton stub pasted unchanged: its expression (`contracts.SKELETON_EXPR`) is a syntax error on purpose, so a skeleton never loads unfinished | write the computation in place of `... TODO` |
 | `must be a non-empty reason string (why the library cannot compute it)` | an `unsupported_measures:` value is empty | give a specific, true reason |
 | `must give a reason, or at least one of` | an `unsupported_measures:` value is an empty mapping | a reason string (the whole measure), or `{scalar: ..., bucketed: ...}` |
 
-Warnings (`UserWarning`; the config still loads, and `python -W error` turns them into failures):
+Warnings (`UserWarning`; the config still loads, and `python -W error` turns them into failures). On
+an IRSwap/IRSwaption config the first two are load errors instead (a declared contract measure or
+preset, above); the last two (names outside the contract) stay warnings there too:
 
 | Message contains | Cause | Fix |
 |---|---|---|
@@ -83,7 +93,7 @@ Warnings (`UserWarning`; the config still loads, and `python -W error` turns the
 | `ambiguous: IRSwap matches [...]` | two configs match | tighten `match:` or pass `pricebt_asset=` |
 | `unknown asset 'x'; registered: [...]` | `pricebt_asset=` names an unregistered config | add it to `PricebtSession.use(assets=[...])` |
 | `has no mapping for risk measure X` | the strategy requests a measure the config does not map (on a class without a contract, or a measure outside it) | add `X:` under `risk_measures` (presets such as `IRDeltaParallel` fall back to `IRDelta`) |
-| `is declared unsupported (every form)` (or `(scalar)`, `(bucketed)`, `(frame)`) | `UnsupportedMeasureError` (a `ConfigError` and a `NotSupportedError`): the config declares the measure, and the message quotes its reason | map it once your library can compute it; otherwise the strategy must not ask for it (e.g. use `ir_pnl_definition(vega=False, ...)`) |
+| `is declared unsupported (every form)` (or `(scalar)`, `(bucketed)`, `(frame)`) | `UnsupportedMeasureError` (a `ConfigError` and a `NotSupportedError`): the config (a Bond, or a class without a contract: an IRSwap/IRSwaption cannot declare) declares the measure, and the message quotes its reason | map it once your library can compute it; otherwise the strategy must not ask for it (e.g. use `ir_pnl_definition(vega=False, ...)`) |
 | `has no bucketed mapping; request` | a bare finite-difference measure (`IRVanna`, `IRDelta`, ...) asks for the bucketed form, and only the scalar is mapped | request `X(aggregation_level='Type')` for the scalar, or map a ladder |
 | `has no scalar mapping` | the measure has no scalar function to answer a scalar request | map a scalar function |
 | `does not reference pricebt_bump_size` | `bump_size` (or `finite_difference_method`, `scale_factor`, `local_curve`) was requested, and the chosen function's expression does not name `pricebt_<parameter>` (DEV-I10) | name the variable in the expression and honour it (pattern 24), or drop the parameter from the request |
@@ -110,8 +120,25 @@ Warnings (`UserWarning`; the config still loads, and `python -W error` turns the
 | `explains to the live market, which is GS server-side` | `PnlExplainLive()` (or `PnlPredictLive`) | `PnlExplain(CloseMarket(date=...))` |
 | `is GS server-side (portfolio persistence)` | a server-only `Portfolio` method (`save`, `get`, `from_portfolio_id`, `from_book`, ...) | build the `Portfolio` in memory (`Portfolio([...])`, `from_frame`, `from_csv`) |
 | `the definition expects` | `pnl_explain` with an `ir_pnl_definition(rate_unit=..., vol_unit=...)` whose units differ from a held asset's `IRFwdRate` / vol unit (DEV-E21) | pass the units your configs declare (`'bp'`, `'pct'`, `'decimal'`), and give every asset in the book the same units |
-| `every held asset must map every measure the definition reads` | `attribution.definition_for` (`skills/pricebt-pnl-attribution/scripts/attribution.py`): an asset declares, or does not map, a measure the chosen definition prices, e.g. gamma or `Theta` on a PV-only config, or a vol measure on a swap without the R2-8 zeros | map it (the `'0.0'` zeros for a swap or bond), drop the attribute (`kind='bond'`, `vanna=False`, ...), or pass `assets=[...]` to leave out configs the book never trades |
+| `every held asset must map every measure the definition reads` | `attribution.definition_for` (`skills/pricebt-pnl-attribution/scripts/attribution.py`): an asset does not map a measure the chosen definition prices -- a Bond that declares it (`a Bond's declaration does not count`), or a class without a contract. An IRSwap/IRSwaption config with a gap does not load at all | map it (the `'0.0'` zeros for a bond's vol measures), drop the attribute (`kind='bond'`, `vanna=False`, ...), or pass `assets=[...]` to leave out configs the book never trades |
 | `Cannot aggregate results with different units on` | `BackTest.pnl_explain_table()` on a step whose held book mixes `Price` currencies, or pays `Cashflows` in another currency (the `result_summary` rule; `Portfolio(...).calc(...).aggregate()` says `... different units for`) | attribute each currency's book in its own run |
 | `PnlAttribute names must be unique` | two attributes share an `attribute_name`, or one is named like a fixed column (`actual_pnl`, `cashflow_pnl`, `economic_pnl`, `explained_pnl`, `residual_pnl`) | rename the attribute |
 | `rate_unit must be one of` | `ir_pnl_definition(rate_unit=...)` (or `vol_unit=`) given anything but `'bp'`, `'pct'` or `'decimal'` | pass the unit your configs declare; `attribution.definition_for` reads it for you |
 | `second_order cannot be combined with cross_market_data_metric` | a `PnlAttribute` with `second_order=True` and a cross level | a cross term is `k·R·Δm₁·Δm₂`, first order in each: drop `second_order` |
+
+## Checker rows of the strict contract (`check_asset.py`, IRSwap / IRSwaption)
+
+The loader checks units and shapes; these rows of
+[`check_asset_ir.py`](../../pricebt-verify-asset-config/scripts/check_asset_ir.py) check the values
+(each one has a broken fixture in `tests/skills/fixtures/check_asset/`).
+
+| Row and status | Typical cause | Fix |
+|---|---|---|
+| `ir_fake_constant` FAIL | a contract measure mapped to a literal (`'0.0'`, `'{}'`, `float('nan')`, `math.nan`) outside `contracts.ZERO_BY_CONVENTION`, e.g. `IRDiscountDeltaParallel: zero_per_bp` "because there is one curve"; or a zero-by-convention measure mapped to a non-zero constant (`IRVega: '5.0'`) | compute it (pattern 14); only vol measures on a swap, `IRBasis` on one curve and `IRXccyDelta` in one currency may be 0 |
+| `ir_premium_cents` FAIL | `PremiumCents` in percent of notional under `bp`, divided by the signed notional, or `abs(Price)` (unsigned: the row checks both directions) | `Price / abs(notional) * 1e4`, unit `bp` (pattern 29) |
+| `ir_local_annuity` FAIL | `LocalAnnuityInCents` from the pv01 (Annuity x 1e-4), the signed notional, or `abs(Annuity)` | `Annuity / abs(notional)`, unit `decimal` |
+| `ir_forward_price` FAIL | `ForwardPrice` = Price x DF instead of Price / DF (caught at any rate level by the sign of the implied rate), or the wrong date | `Price / DF(expiry)`: a swaption's expiration date, a swap's termination date; Price from then on |
+| `ir_fair_premium` FAIL | `FairPremium` discounted to the expiry or final date (that is `ForwardPrice`), or Price x DF(spot) instead of Price / DF(spot) | `Price / DF(premium settlement)`: spot, or the premium payment date |
+| `ir_par_spread` FAIL | forward - K instead of K - forward, a holder-signed spread (flips with direction), or a unit slip | K - `IRFwdRate` in bp when the legs share a curve and schedule, the same for both directions |
+| `ir_compounded_fixed_rate` FAIL | a de-compounded or continuous restatement (below K), a market level that moves daily, or K as-is for a semiannual/quarterly fixed leg (when the leg frequency is knowable) | `(1 + K/f)^f - 1` from the resolved fixed rate or strike; K itself for an annual leg |
+| `ir_crif` FAIL | `Label1` `'10Y'` (SIMM tenors are lower case), `Label2` `'SOFR'` (the SIMM sub-curve is `'OIS'`), an int `Bucket` (`'1'`), an `AmountCurrency` other than the `Qualifier`, a wrong `RiskType` or `Qualifier`, or sum(`Amount`) != the `IRDelta` ladder (a sign or unit) | build the rows from the trade's own `IRDelta` ladder (pattern 29) |

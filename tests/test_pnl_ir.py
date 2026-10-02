@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 import pricebt.backtests.actions as _actions
 import toylib.bond as tb
@@ -81,7 +82,7 @@ def _module_globals():
 
 
 def _run(assets, triggers, end, start=D0, frequency="1b", risks=None, pnl_explain=None):
-    PricebtSession.use(assets=[a if isinstance(a, Path) else ASSETS / a for a in assets])
+    PricebtSession.use(assets=[a if isinstance(a, (Path, dict)) else ASSETS / a for a in assets])
     strategy = Strategy(initial_portfolio=None, triggers=triggers)
     return GenericEngine().run_backtest(
         strategy, start=start, end=end, frequency=frequency, risks=risks, pnl_explain=pnl_explain, show_progress=False
@@ -710,18 +711,35 @@ def test_f_decimal_levels_under_the_bp_definition_raise_naming_the_measure(base,
         assert table[col].to_numpy() == pytest.approx(ref[col].to_numpy(), rel=1e-7, abs=1e-7), col
 
 
-# =============================================================================== (g) declaration-only book
+# =============================================================================== (g) a swap config without the explain measures
 
 
-def test_g_swaption_definition_on_a_declaration_only_swap_raises_unsupported_measure_error():
-    swap = IRSwap("Pay", "10y", "EUR", N, name="eur")
+def test_g_an_irswap_config_without_the_explain_measures_fails_to_load_naming_them():
+    """IR_STRICT_CONTRACT R3-0: an IRSwap config cannot declare its way out of a contract measure,
+    so a swap book without gamma/vega/theta can no longer reach the explain at all -- the config
+    (toy_eur_irs cut down to Price/IRDelta/IRFwdRate, no unsupported_measures:) fails to load,
+    naming every measure the swaption definition would have asked for."""
+    cfg = yaml.safe_load((ASSETS / "toy_eur_irs.yaml").read_text(encoding="utf8"))
+    cfg["risk_measures"] = {k: cfg["risk_measures"][k] for k in ("Price", "IRDelta", "IRFwdRate")}
+    with pytest.raises(ConfigError) as err:
+        PricebtSession.use(assets=[cfg])
+    for measure in ("IRGammaParallel", "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "Theta", "ExpiryInYears"):
+        assert measure in str(err.value), measure
+
+
+def test_g_a_bond_config_that_declares_theta_raises_naming_it_in_the_explain():
+    """Bond keeps map-or-declare (R3-0), so the declared path still reaches the explain: the toy
+    bond with Theta declared under unsupported_measures: (instead of mapped) loads, and a backtest
+    with bond_pnl_definition() raises UnsupportedMeasureError naming Theta. The `bond` fixture is
+    the control (the same bond, Theta mapped, explains)."""
+    cfg = yaml.safe_load((ASSETS / "toy_usd_bond.yaml").read_text(encoding="utf8"))
+    del cfg["risk_measures"]["Theta"]
+    cfg["unsupported_measures"] = {**(cfg.get("unsupported_measures") or {}), "Theta": "test: no carry model"}
+    b = Bond(identifier=BOND_ID, size=N, buy_sell="Buy", settlement_currency="USD", name="bond")
     with pytest.raises(UnsupportedMeasureError) as err:
-        add = _on(D0, AddTradeAction(swap, name="Add"))
-        _run(["toy_eur_irs.yaml"], [add], date(2024, 1, 5), pnl_explain=swaption_pnl_definition())
-    assert isinstance(err.value, ConfigError)
-    declared = {"IRGammaParallel", "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "Theta", "ExpiryInYears"}
-    assert err.value.measure in declared
-    assert err.value.measure in str(err.value)
+        bt = _run([cfg], [_on(BOND_START, AddTradeAction(b, name="Add"))], date(2024, 6, 3), start=BOND_START, pnl_explain=bond_pnl_definition())
+        bt.pnl_explain_table()
+    assert err.value.measure == "Theta" and "Theta" in str(err.value)
 
 
 # =============================================================================== (h) DEV-R11 views

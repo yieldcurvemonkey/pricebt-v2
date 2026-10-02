@@ -51,6 +51,21 @@ def test_apply_defaults_records_every_default_and_only_those():
     assert again == [] and s2["assumptions"] == assumptions
 
 
+def test_apply_defaults_fills_pnl_explain_when_missing():
+    s, assumptions = specmod.apply_defaults({"name": "no-pnl-section"})
+    assert s["pnl_explain"] == {"enabled": False, "gamma": True, "carry": True, "cash": "auto"}
+    assert "pnl_explain = {enabled: false, gamma: true, carry: true, cash: auto} (template default)" in assumptions
+
+
+def test_apply_defaults_fills_partial_pnl_explain():
+    s, assumptions = specmod.apply_defaults({"name": "partial-pnl", "pnl_explain": {"enabled": True}})
+    assert s["pnl_explain"] == {"enabled": True, "gamma": True, "carry": True, "cash": "auto"}
+    assert "pnl_explain.gamma = true (template default)" in assumptions
+    assert "pnl_explain.carry = true (template default)" in assumptions
+    assert "pnl_explain.cash = auto (template default)" in assumptions
+    assert "pnl_explain.enabled" not in "\n".join(assumptions)
+
+
 def test_existing_assumptions_are_kept():
     s, new = specmod.apply_defaults({"name": "x", "assumptions": ["user said: ignore holidays"]})
     assert s["assumptions"][0] == "user said: ignore holidays" and s["assumptions"][1:] == new
@@ -90,6 +105,10 @@ def _mutate(path: str, value):
     (_mutate("risks_to_report", ["Pricee"]), "risks_to_report"),
     (_mutate("benchmark", "sp500"), "benchmark"),
     (_mutate("instruments", {"main": {"class": "IRSwap", "kwargs": {}}}), "'primary' instrument is required"),
+    (_mutate("pnl_explain.enabled", "yes"), "pnl_explain.enabled"),
+    (_mutate("pnl_explain.cash", "sometimes"), "pnl_explain.cash"),
+    (_mutate("pnl_explain.cash", 1), "pnl_explain.cash"),  # int 1 == True in Python; must not slip past the bool check
+    (_mutate("pnl_explain", True), "pnl_explain: missing or not a mapping"),
 ])
 def test_validation_errors(mutation, message):
     s = filled()
@@ -193,6 +212,12 @@ def test_instrument_terms_cli(capsys):
     assert "unit IRDelta sign: -1" in out and "'buy_sell': Buy" in out and "'pay_or_receive': Pay" in out
     assert instrument_terms.main(["Bond", "buy_sell=Buy", "expiry=3m"]) == 1
     assert "'expiry' is not a Bond field" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("cash", [True, False, "auto"])
+def test_pnl_explain_cash_accepts_all_valid_forms(cash):
+    s = filled(pnl_explain={"cash": cash})
+    assert specmod.validate_spec(s) == []
 
 
 def test_missing_sections_are_reported_not_crashed():

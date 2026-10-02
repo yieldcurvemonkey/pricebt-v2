@@ -3,16 +3,22 @@
 Three jobs, all without touching your pricing library:
 
   contract <IRSwap|IRSwaption|Bond>   the contract table (pricebt.risk.contracts): every measure and
-                                      form an asset of that class must map or declare, its kind,
-                                      allowed units and one-line semantics
+                                      form an asset of that class must map (IRSwap, IRSwaption: the
+                                      strict classes, docs/v2/IR_STRICT_CONTRACT.md) or map or
+                                      declare (Bond), its kind, allowed units and one-line semantics
   matrix <config.yaml>                audit a config against its class's contract, row by row:
-                                      MAPPED (function, unit) / DECLARED (reason) / TODO (declared,
-                                      reason still starts with TODO) / MISSING, plus the load-time
-                                      problems and warnings; exit 1 if anything is MISSING, TODO or
-                                      a problem (--strict: also a declared row with a hint, i.e. a
-                                      declaration every library can avoid)
-  block <config.yaml> [--reason R]    the paste-ready `unsupported_measures:` block for what is
-                                      MISSING (merge it under an existing key if the config has one)
+                                      MAPPED (function, unit) / DECLARED (reason; Bond only) / TODO
+                                      (declared, reason still starts with TODO) / MISSING, plus the
+                                      load-time problems and warnings; exit 1 if anything is MISSING,
+                                      TODO or a problem (--strict: also a declared row with a hint,
+                                      i.e. a declaration every library can avoid). On a strict class
+                                      a declaration never satisfies a row: the row stays MISSING and
+                                      the declaration itself is a problem.
+  block <config.yaml> [--reason R]    what to paste for what is MISSING: for IRSwap/IRSwaption the
+                                      mapping skeleton (contracts.mapping_skeleton: functions: /
+                                      portfolio_functions: / risk_measures: stubs whose expressions
+                                      you write -- they do not compile until you do); for a Bond the
+                                      `unsupported_measures:` block (merge it under an existing key)
 
     python skills/pricebt-risk-measures/scripts/measures.py contract IRSwaption
     python skills/pricebt-risk-measures/scripts/measures.py matrix tests/assets/toy_usd_irs.yaml
@@ -57,8 +63,11 @@ def contract_rows(instrument: str) -> List[Dict[str, Any]]:
 
 
 def contract_markdown(instrument: str) -> str:
+    rule = ("every row must be MAPPED: an IRSwap/IRSwaption config cannot declare a contract measure (docs/v2/IR_STRICT_CONTRACT.md)"
+            if contracts.is_strict(instrument) else "map each row, or declare it under unsupported_measures: with a reason")
     lines = [
         f"contract: {instrument} ({len(contracts.contract_for(instrument))} measures; holder-signed, per unit trade, pricebt applies quantity)",
+        f"rule: {rule}",
         "",
         "| measure | kind | forms | allowed units | intensive | semantics |",
         "|---|---|---|---|---|---|",
@@ -121,8 +130,23 @@ def _declared(raw: Mapping[str, Any]) -> Dict[str, Dict[str, str]]:
     return out
 
 
+# how any library computes the strict-contract additions (docs/v2/IR_STRICT_CONTRACT.md R3-1)
+_STRICT_HINTS = {
+    "ParSpread": "K - IRFwdRate in bp when both legs share one curve and schedule; else the floating-leg spread solving PV = 0",
+    "FairPremium": "Price / DF(premium settlement date: spot, or the premium payment date); no spot lag: Price",
+    "ForwardPrice": "Price / DF(the date ExpiryInYears counts to); Price on or after it",
+    "PremiumCents": "Price / |notional_amount| x 1e4, unit bp, intensive",
+    "LocalAnnuityInCents": "Annuity / |notional_amount|, unit decimal, intensive",
+    "CompoundedFixedRate": "(1 + K/f)^f - 1 from the resolved fixed rate/strike (annual leg: K), intensive",
+    "CRIFIRCurve": "the trade's IRDelta ladder (weights [1.0]) as CRIF rows: Risk_IRCurve, currency, Bucket '1', SIMM tenor, sub-curve, Amount",
+    "PnlExplain": "a buckets portfolio function reading market_to: Price(market_to) - Price(market) on the pricing date, row mkt_type IR",
+}
+
+
 def _hint(instrument: str, measure: str, provided: Mapping[Tuple[str, str], str]) -> str:
     """A nudge for a measure that is declared or missing but that every library can supply."""
+    if contracts.is_strict(instrument) and measure in _STRICT_HINTS:
+        return _STRICT_HINTS[measure]
     if measure in _ZERO_FOR_NO_VOL and instrument in ("IRSwap", "Bond"):
         return "0.0 by convention for a swap/bond (R2-8): map a '0.0' function; declaring it breaks mixed books with vol attribution"
     if measure == "ExpiryInYears":
@@ -143,7 +167,8 @@ def capability_matrix(config: Union[str, Path, Mapping[str, Any]]) -> Dict[str, 
 
     Returns {asset, instrument, rows, problems, warnings, outside, missing}: `rows` has one dict per
     contract (measure, form) with status MAPPED / DECLARED / TODO / MISSING and its function, unit,
-    `via` (the risk_measures key when it is a preset, e.g. IRDeltaParallel), reason and hint;
+    `via` (the risk_measures key when it is a preset, e.g. IRDeltaParallel), reason and hint (on a strict class a declared
+    row stays MISSING, its reason shown, and the declaration is one of the `problems`);
     `problems` would stop load_asset (wrong unit, non-intensive level, unknown function, ...);
     `warnings` are load warnings (stale declarations, ...); `outside` lists risk_measures keys the
     contract does not restrict (PnlExplain, custom names); `missing` feeds contracts.unsupported_block.
@@ -155,7 +180,9 @@ def capability_matrix(config: Union[str, Path, Mapping[str, Any]]) -> Dict[str, 
     check = contracts.check(instrument, mapped, declared)
     provided = contracts.provided_forms(instrument, mapped)
     missing_measures = {m for m, _f in check.missing}
-    problems += [p for p in check.problems if not (p.split(" (", 1)[0] in missing_measures and "neither mapped nor declared" in p)]
+    gap_texts = ("neither mapped nor declared", "require a mapping for every contract measure")
+    problems += [p for p in check.problems if not (p.split(" (", 1)[0] in missing_measures and any(g in p for g in gap_texts))]
+    strict = contracts.is_strict(instrument)
     rows = []
     for req in contracts.contract_for(instrument):
         units, _intensive = contracts.KINDS[req.kind]
@@ -166,6 +193,8 @@ def capability_matrix(config: Union[str, Path, Mapping[str, Any]]) -> Dict[str, 
             if key is not None:
                 fn = mapped[key]["bucketed" if form == "bucketed" else "scalar"]
                 row.update(status=MAPPED, function=fn.function, unit=fn.unit, via=None if key == req.measure else key)
+            elif reason is not None and strict:
+                row.update(reason=f"declared, which cannot satisfy an {instrument} row: {reason}")   # stays MISSING
             elif reason is not None:
                 row.update(status=TODO if str(reason).strip().upper().startswith("TODO") else DECLARED, reason=str(reason))
             if row["status"] != MAPPED:
@@ -202,16 +231,24 @@ def matrix_markdown(matrix: Mapping[str, Any]) -> str:
     if matrix["outside"]:
         lines.append(f"outside the contract (loaded as-is, no unit checks): {', '.join(matrix['outside'])}")
     if any(r["status"] == MISSING for r in matrix["rows"]):
-        lines.append("next: map each MISSING row, or run `measures.py block <config>` and replace every TODO with an honest reason")
+        if contracts.is_strict(matrix["instrument"]):
+            lines.append("next: map each MISSING row (no declarations for IRSwap/IRSwaption): `measures.py block <config>` prints the paste-ready mapping skeleton")
+        else:
+            lines.append("next: map each MISSING row, or run `measures.py block <config>` and replace every TODO with an honest reason")
     return "\n".join(lines) + "\n"
 
 
 def missing_block(config: Union[str, Path, Mapping[str, Any]], reason: Optional[str] = None) -> str:
-    """The paste-ready `unsupported_measures:` block for every MISSING (measure, form), or "" if
-    nothing is missing. Each reason defaults to contracts' TODO text: replace it before shipping."""
+    """What to paste for every MISSING (measure, form), or "" if nothing is missing. IRSwap/IRSwaption:
+    `contracts.mapping_skeleton` (stubs to merge into functions: / portfolio_functions: /
+    risk_measures:, each expression contracts.SKELETON_EXPR, which does not compile until written;
+    `reason` is ignored). Bond: the `unsupported_measures:` block, each reason defaulting to contracts'
+    TODO text: replace it before shipping."""
     matrix = capability_matrix(config)
     if not matrix["missing"]:
         return ""
+    if contracts.is_strict(matrix["instrument"]):
+        return contracts.mapping_skeleton(matrix["instrument"], matrix["missing"])
     kwargs = {} if reason is None else {"reason": reason}
     return contracts.unsupported_block(matrix["instrument"], matrix["missing"], **kwargs)
 
@@ -226,9 +263,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     mx = sub.add_parser("matrix", help="audit an asset config against its contract (exit 1 on MISSING/TODO/problems)")
     mx.add_argument("config")
     mx.add_argument("--strict", action="store_true", help="also exit 1 on a declared row with a hint (a declaration every library can avoid)")
-    b = sub.add_parser("block", help="print the unsupported_measures block for what the config is missing")
+    b = sub.add_parser("block", help="print what to paste for what the config is missing: the mapping skeleton (IRSwap, IRSwaption) or the unsupported_measures block (Bond)")
     b.add_argument("config")
-    b.add_argument("--reason", default=None, help="reason text for every line (default: a TODO to replace)")
+    b.add_argument("--reason", default=None, help="Bond: reason text for every line (default: a TODO to replace); ignored for IRSwap/IRSwaption")
     args = ap.parse_args(argv)
 
     if args.cmd == "contract":
@@ -244,9 +281,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0 if matrix_ok(m, strict=args.strict) else 1
     block = missing_block(args.config, args.reason)
     if not block:
-        print("# nothing missing: every contract measure and form is mapped or declared")
+        print("# nothing missing: every contract measure and form is mapped" + ("" if contracts.is_strict(_raw(args.config)["instrument"]) else " or declared"))
         return 0
-    if "unsupported_measures" in _raw(args.config):
+    if contracts.is_strict(_raw(args.config)["instrument"]):
+        print("note: merge each section into the config's own functions: / portfolio_functions: / risk_measures: (a second key is a duplicate-key error),"
+              " then write every expr (the stubs do not compile) and pick the unit", file=sys.stderr)
+    elif "unsupported_measures" in _raw(args.config):
         print("note: the config already has unsupported_measures: -- merge these lines under it (a second key is a duplicate-key error)", file=sys.stderr)
     print(block, end="")
     return 0

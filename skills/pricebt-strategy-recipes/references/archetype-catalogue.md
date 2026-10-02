@@ -340,7 +340,7 @@ table = bt.pnl_explain_table()     # actual, cashflow, economic, one column per 
 
 Reading and diagnosing that table (units, residuals, mixed books) is
 [`pricebt-pnl-attribution`](../../pricebt-pnl-attribution/SKILL.md). How your library produces each measure
-named below (bump recipes, units, signs, dead instruments, honest `unsupported_measures:`) is
+named below (bump recipes, units, signs, dead instruments; `unsupported_measures:` for a Bond only) is
 [`pricebt-risk-measures`](../../pricebt-risk-measures/SKILL.md).
 
 ### Swaption bought and held to expiry, rolled monthly

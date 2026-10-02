@@ -28,7 +28,11 @@ def ns():
 
 
 def test_contract_and_paste_ready_block(ns):
-    assert list(ns["contract"].measure)[-1] == "ProbabilityOfExercise" and len(ns["contract"]) == 20
+    # 19 base rows + IR_STRICT_CONTRACT R3-1's 8 + ProbabilityOfExercise
+    assert list(ns["contract"].measure)[-1] == "ProbabilityOfExercise" and len(ns["contract"]) == 28
+    skeleton = ns["skeleton"]
+    assert "unsupported_measures" not in skeleton and "risk_measures:" in skeleton
+    assert all(m in skeleton for m in ("IRVanna", "IRVega"))
 
 
 def test_portfolio_pricing_paths_and_aggregates(ns):

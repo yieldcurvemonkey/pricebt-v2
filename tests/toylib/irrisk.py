@@ -1,7 +1,7 @@
 """IR measure-contract functions for the toy swap, plus the kernel toylib.swaption and toylib.bond
 share (docs/v2/IR_RISK_DESIGN.md section 00 R2-1..R2-8, section 6.1). Test-only fixture, never
-shipped. Built on toylib.rates, which is never edited here (decision 0.12: the in-flight
-v2-pnl-explain branch owns it).
+shipped. Built on toylib.rates (whose npv, pv01 and delta_ladder the swap P&L recipe's
+toy_usd_irs config keeps using; decision 0.12), plus IR_STRICT_CONTRACT R3-1's measures.
 
 Conventions (every toy IR asset): rates and normal vols in bp; the own rate r is the instrument's
 IRFwdRate; IRDelta scalar = the TOTAL derivative [PV(+h) - PV(-h)] / [r(+h) - r(-h)] along a
@@ -22,6 +22,10 @@ from toylib import rates as tr
 
 H = 1e-4  # the +-1bp zero-rate bump behind every own-rate delta/gamma
 CASHFLOW_COLUMNS = ("payment_date", "payment_amount", "currency", "payment_type")
+# The toy stands in for an external library, so it never imports pricebt; tests/test_toylib_ir.py
+# asserts these equal pricebt.risk.contracts.FRAME_COLUMNS["CRIFIRCurve"] and SIMM_IR_TENORS.
+CRIF_COLUMNS = ("RiskType", "Qualifier", "Bucket", "Label1", "Label2", "Amount", "AmountCurrency")
+SIMM_IR_TENORS = ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")  # CRIF pillars, lower case
 
 
 # --------------------------------------------------------------------- shared kernel
@@ -84,8 +88,23 @@ def greeks_on(curve, pv, rate_bp):
 
 
 def discount_delta_on(curve, pv) -> float:
-    """PV change per +1bp parallel shift of the (only) discount curve (R2-3)."""
-    return (pv(bumped(curve, H)) - pv(bumped(curve, -H))) / 2.0
+    """IRDiscountDeltaParallel (R2-3): PV change per +1bp parallel shift of the DISCOUNT curve only,
+    centred on +-1bp. `pv(disc, fwd)` values on discount curve `disc` with projection forwards from
+    `fwd`, which stays `curve`: the forwards are held, so an at-the-money swap's is ~0. A pv with
+    fixed flows (the bond) just ignores `fwd`."""
+    return (pv(bumped(curve, H), curve) - pv(bumped(curve, -H), curve)) / 2.0
+
+
+def float_leg(disc, fwd, eff: date, mat: date) -> float:
+    """Floating-leg PV per unit notional: each period's forward DF_fwd(q)/DF_fwd(p) - 1 from `fwd`,
+    paid at p and discounted on `disc`, on the fixed leg's annual schedule from `eff` plus a final
+    period to `mat`. With disc == fwd it telescopes to DF(eff) - DF(mat), toylib.rates' float leg."""
+    dates, i = [eff], 1
+    while eff + relativedelta(years=i) < mat:
+        dates.append(eff + relativedelta(years=i))
+        i += 1
+    dates.append(mat)
+    return sum(disc.discount_factor(p) * (fwd.discount_factor(q) / fwd.discount_factor(p) - 1.0) for q, p in zip(dates, dates[1:]))
 
 
 def years(start: date, end: date) -> float:
@@ -133,6 +152,14 @@ def empty_cashflows() -> pd.DataFrame:
     return pd.DataFrame(columns=list(CASHFLOW_COLUMNS))
 
 
+def crif_frame(ccy: str, buckets: dict) -> pd.DataFrame:
+    """CRIFIRCurve rows (IR_STRICT_CONTRACT R3-1) from a single-trade delta ladder `{pillar: ccy per
+    +1bp}`, one row per pillar, so sum(Amount) == sum(ladder). `{}` (a dead instrument) gives an
+    empty frame with the columns. The toy has one curve, a regular-vol currency: Bucket "1", OIS."""
+    rows = [("Risk_IRCurve", ccy, "1", p, "OIS", float(a), ccy) for p, a in buckets.items()]
+    return pd.DataFrame(rows, columns=list(CRIF_COLUMNS))
+
+
 # --------------------------------------------------------------------- the toy swap (toylib.rates.ToySwap)
 
 
@@ -162,8 +189,16 @@ def ir_gamma(market, trade) -> float:
     return 0.0 if _dead(market, trade) else greeks_on(market, lambda c: tr.npv(c, trade), lambda c: _par_bp(c, trade))[1]
 
 
+def npv_two_curve(disc, fwd, trade) -> float:
+    """tr.npv with discounting on `disc` and the floating leg's forwards from `fwd` (== tr.npv when
+    disc is fwd)."""
+    eff, mat = trade.effective_date, trade.termination_date
+    return trade.notional * (float_leg(disc, fwd, eff, mat) - trade.fixed_rate * tr._annuity(disc, eff, mat))
+
+
 def discount_delta(market, trade) -> float:
-    return 0.0 if _dead(market, trade) else discount_delta_on(market, lambda c: tr.npv(c, trade))
+    """Discount curve bumped, forwards held: ~0 at the money (R2-3)."""
+    return 0.0 if _dead(market, trade) else discount_delta_on(market, lambda d, f: npv_two_curve(d, f, trade))
 
 
 def theta_1d(market, trade) -> float:
@@ -183,6 +218,61 @@ def spot_rate(market, trade) -> float:
 def annuity(market, trade) -> float:
     """N * A: PV of the fixed leg paying 1.0 p.a. (1e4 x tr.pv01), holder-signed."""
     return 0.0 if _dead(market, trade) else trade.notional * tr._annuity(market, trade.effective_date, trade.termination_date)
+
+
+# IR_STRICT_CONTRACT R3-1 (DEV-I19). `value_date` as `npv`: a config passes the same argument to these
+# as to its Price function, so FairPremium/ForwardPrice/PremiumCents stay identities of its Price.
+
+
+def par_spread(market, trade) -> float:
+    """ParSpread, bp: the floating-leg spread making npv 0. The toy floating leg is DF(eff) -
+    DF(mat) on the fixed leg's annual schedule, so it is K - par. Same for payer and receiver;
+    continues after the final date (the total-return par rate does)."""
+    return trade.fixed_rate * 1e4 - _par_bp(market, trade)
+
+
+def fair_premium(market, trade, value_date: Optional[date] = None) -> float:
+    """FairPremium = npv / DF(premium settlement); the toy has no spot lag (settles on the pricing
+    date, DF 1), so it is npv."""
+    return npv(market, trade, value_date)
+
+
+def forward_price(market, trade, value_date: Optional[date] = None) -> float:
+    """ForwardPrice = npv / DF(final date), the date ExpiryInYears counts to; npv on or after it
+    (a toy DF of a past date is > 1)."""
+    curve = at(market, value_date)
+    pv = tr.npv(curve, trade)
+    return pv if curve.ref_date >= trade.termination_date else pv / curve.discount_factor(trade.termination_date)
+
+
+def premium_cents(market, trade, value_date: Optional[date] = None) -> float:
+    """PremiumCents, bp of |notional|: npv / |N| * 1e4. Intensive."""
+    return npv(market, trade, value_date) / abs(trade.notional) * 1e4
+
+
+def local_annuity_in_cents(market, trade) -> float:
+    """LocalAnnuityInCents, decimal: Annuity / |N| (holder-signed, a 10y payer ~ +8.5). Intensive."""
+    return annuity(market, trade) / abs(trade.notional)
+
+
+def compounded_fixed_rate(market, trade) -> float:
+    """CompoundedFixedRate, bp: the toy fixed leg is annual, so (1 + K)^1 - 1 = K."""
+    return trade.fixed_rate * 1e4
+
+
+def crif_ir_curve(market, trade) -> pd.DataFrame:
+    """CRIFIRCurve from this trade's own-rate delta ladder on the SIMM pillars (the full configs'
+    IRDelta bucketed); empty once dead."""
+    return crif_frame(market.ccy, {} if _dead(market, trade) else delta_ladder(market, [trade], [1.0], SIMM_IR_TENORS))
+
+
+def crif_ir_curve_pv01(market, trade) -> pd.DataFrame:
+    """CRIFIRCurve from the annuity-pv01 ladder (`tr.delta_ladder`), for the configs whose IRDelta is
+    the annuity dv01 (toy_usd_irs, toy_eur_irs), so sum(Amount) is their ladder's sum ON EVERY DATE.
+    Deliberately NOT emptied once dead (an exception to the contract's dead-frame rule): the legacy
+    total-return `tr.pv01` ladder never goes to 0 (engine golden tests pin it), so an empty frame
+    would break the R3-1 identity sum(CRIF Amount) == sum(IRDelta ladder) on dead dates."""
+    return crif_frame(market.ccy, tr.delta_ladder(market, [trade], [1.0], SIMM_IR_TENORS))
 
 
 def pnl_explain(market, market_to, trades, weights, value_date: Optional[date] = None) -> list:

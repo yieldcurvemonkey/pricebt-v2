@@ -22,17 +22,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "skills" / "pricebt-spot-checks" / "scripts"))
 import spot_check  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "skills" / "pricebt-strategy-recipes" / "scripts"))
+import swap_pnl  # noqa: E402
+
 START, END = date(2024, 1, 2), date(2024, 6, 28)
 CORE = ["ledger identity", "closed-trade PnL", "trade repricing", "book repricing", "cash roll-forward", "missing market"]
 
 
-def _run(costs=False, notional=1e7):
+def _run(costs=False, notional=1e7, pnl_explain=None):
     swap = IRSwap(pay_or_receive="Pay", termination_date="10y", notional_currency="USD", notional_amount=notional, name="swap")
     tc = ScaledTransactionModel(IRDeltaParallel, 0.25) if costs else None
     action = AddTradeAction(swap, "1m", transaction_cost=tc) if costs else AddTradeAction(swap, "1m")
     trig = PeriodicTrigger(PeriodicTriggerRequirements(frequency="1m", end_date=END), [action])
+    risks = [Price, IRDeltaParallel, swap_pnl.CashPaidToDate] if pnl_explain is not None else [Price, IRDeltaParallel]
     return GenericEngine().run_backtest(Strategy(None, trig), start=START, end=END, frequency="1b",
-                                        risks=[Price, IRDeltaParallel], show_progress=False)
+                                        risks=risks, pnl_explain=pnl_explain, show_progress=False)
 
 
 @pytest.fixture
@@ -100,6 +104,50 @@ def test_pnl_explain_high_correlation_and_warn_on_a_flipped_rate(session):
     corr = float(good.detail.split("= ")[1].split(",")[0])
     assert corr > 0.9
     assert spot_check.check_pnl_explain(bt, IRDeltaParallel, -rate).status == "WARN"  # directional payer book
+
+
+def test_pnl_attribution_info_when_explain_not_enabled():
+    assert spot_check.check_pnl_attribution(None).status == "INFO"
+
+
+@pytest.mark.parametrize(
+    "share,expected",
+    [(1e-6, "PASS"), (5e-3, "WARN"), (2e-2, "FAIL")],
+    ids=["inside-target", "5x-target-inside-10x", "20x-target"],
+)
+def test_pnl_attribution_status_thresholds(share, expected):
+    result = spot_check.check_pnl_attribution({"residual_share": share}, target=1e-3)
+    assert result.status == expected, result
+
+
+def test_pnl_attribution_wired_into_run_spot_checks_with_real_stats(session):
+    bt = _run(pnl_explain=swap_pnl.swap_pnl_definition())
+    stats = swap_pnl.explain_stats(swap_pnl.explain_table(bt))
+    expected_status = spot_check.check_pnl_attribution(stats).status
+    # this is the T-ROLL shape (near-ATM monthly roll): plan section 5.6 says this book lands
+    # residual_share <= RS_TARGET (observed ~1.8e-4 against a 1e-3 target), so the default-target
+    # path (target=None -> swap_pnl.RS_TARGET) must reach PASS here, not just "some real status".
+    assert expected_status == "PASS", stats
+
+    results = spot_check.run_spot_checks(bt, session=session, sample=10, pnl_stats=stats)
+    res = _by_name(results)
+    assert res["P&L attribution"].status == expected_status
+    assert "residual_share" in res["P&L attribution"].detail
+
+    # regression: every pre-existing check still runs, unchanged shape
+    for name in CORE + ["determinism", "P&L explain", "open at end"]:
+        assert name in res
+    assert sum(r.name == "known limitation" for r in results) == 2
+
+
+def test_run_spot_checks_without_pnl_stats_is_backward_compatible(session):
+    """Today's callers don't know about `pnl_stats` and never pass it -- the new check must not
+    break or change behaviour for them."""
+    bt = _run()
+    results = spot_check.run_spot_checks(bt, session=session, sample=10)
+    res = _by_name(results)
+    assert res["P&L attribution"].status == "INFO"
+    assert "not enabled" in res["P&L attribution"].detail
 
 
 def test_missing_market_warns_above_two_percent(session):

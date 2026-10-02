@@ -202,33 +202,45 @@ code: |
 
 # Measure recipes (the IR contract)
 
-## 14. The measure contract: map or declare
+## 14. The measure contract: map (IRSwap, IRSwaption) or map or declare (Bond)
 
-An `IRSwap`, `IRSwaption` or `Bond` config loads only if every (measure, form) of its class's
-contract is either mapped with an allowed unit or declared (DEV-I11). Print the contract with
-`python -c "from pricebt.risk import contracts; print(*contracts.contract_for('Bond'), sep='\n')"`.
+An `IRSwap` or `IRSwaption` config loads only if **every** (measure, form) of its class's contract
+is **mapped** with an allowed unit: these are the strict classes (`contracts.STRICT_CLASSES`,
+`docs/v2/IR_STRICT_CONTRACT.md`), and declaring a contract measure, one of its forms, or a preset of
+one is itself a load error. A `Bond` config maps each row or declares it (DEV-I11). Print a contract
+with `python skills/pricebt-risk-measures/scripts/measures.py contract IRSwap`.
 
 ```yaml
 risk_measures:
   IRVega: {scalar: vega, bucketed: vega_cube}                    # mapped: the unit must be ccy_per_bp
+# a Bond only -- on an IRSwap/IRSwaption this block is a load error:
 unsupported_measures:
-  IRAnnualATMImpliedVol: "yourlib's surface is quoted by strike only; no ATM-forward lookup"   # every form
+  LightningOAS: "yourlib has no OAS model for this bond"                                         # every form
   IRDelta: {bucketed: "yourlib has no key-rate bump"}                                            # one form
 ```
+
+- **No escape hatch for swaps and swaptions.** A measure your library has no call for is still
+  computable from PV, a curve shift and a valuation date (patterns 16-29; the connect skill's
+  templates derive every row from a handful of primitives). A literal constant (`'0.0'`, `'{}'`) is
+  honest only where the contract defines the value as 0, `contracts.ZERO_BY_CONVENTION` (pattern
+  15); the checker FAILs any other one (`ir_fake_constant`).
 
 - **Units by kind.** `ccy` for Price, Theta and Annuity; `ccy_per_bp` for first-order sensitivities;
   `ccy_per_bp2` for second-order ones. Rates and vols are `bp`, `pct` or `decimal` and must be
   intensive (the default for those units). `ExpiryInYears` and `ProbabilityOfExercise` take
   `decimal`: `number` is extensive by default, so it fails "must be intensive". Cashflows is
   `returns: frame` (pattern 23).
-- **One error lists every gap**, and ends with a paste-ready block. Paste it and replace each
-  `TODO` reason. Any non-empty reason loads, so a leftover `TODO` loads too: the checker skill
-  flags it.
+- **One error lists every gap.** For an IRSwap/IRSwaption it ends with a paste-ready **mapping
+  skeleton** (`contracts.mapping_skeleton`): a `functions:` / `portfolio_functions:` stub per missing
+  form with an allowed unit, and the `risk_measures:` lines. Merge each section into yours and write
+  every `expr`: the stub `... TODO` is a syntax error on purpose, so an unfinished skeleton never
+  loads. For a Bond it ends with an `unsupported_measures:` block: paste it and replace each `TODO`
+  reason (any non-empty reason loads, so a leftover `TODO` loads too: the checker flags it).
 - **Preset keys count.** `IRDeltaParallel: dv01` counts as the `IRDelta` scalar and also prices
-  `IRDelta(aggregation_level='Type')`. Declare the **base** measure, never a preset: a declared
-  preset loads with a warning and declares nothing.
-- **A mapping wins over a declaration** of the same form, with a `UserWarning` about a stale
-  declaration. Remove the declaration.
+  `IRDelta(aggregation_level='Type')`. On a Bond, declare the **base** measure, never a preset: a
+  declared preset loads with a warning and declares nothing.
+- **A mapping wins over a declaration** of the same form on a Bond, with a `UserWarning` about a
+  stale declaration. On an IRSwap/IRSwaption the same declaration is a load error. Remove it.
 - Measure names outside the contract (a custom `IRTheta`, say) are unrestricted. Classes without a
   contract (`FXOption`, `EqOption`, `InflationSwap`, `Cash`, `FXForward`, `ConfigInstrument`)
   need only `Price`.
@@ -236,7 +248,8 @@ unsupported_measures:
 ## 15. Zero by convention (swaps and bonds)
 
 gs answers every IR measure on every IR instrument, and a swap's vega really is 0. On swaps and
-bonds, **map** these (do not declare them):
+bonds, **map** these (a swap cannot declare them; a bond should not). For an IRSwap they are exactly
+`contracts.ZERO_BY_CONVENTION["IRSwap"]`; for an IRSwaption only `IRBasis` and `IRXccyDelta`:
 
 ```yaml
 functions:
@@ -249,7 +262,7 @@ portfolio_functions:
 
 Why: `pnl_explain` and `aggregate` need every held instrument to answer every measure of a
 definition. A swaption book hedged with swaps under `swaption_pnl_definition` asks the swaps for
-vega. Declaring these unsupported is allowed, but it breaks mixed books with vol attribution
+vega. A Bond may still declare these unsupported, but that breaks mixed books with vol attribution
 (R2-8). `IRBasis` and `IRXccyDelta` are zero only if your library really has one curve and one
 currency. A multi-curve library maps the real basis delta (shift the projection-minus-discount
 spread). Keep the zero vol's unit equal to your swaption configs' vol unit.
@@ -359,8 +372,8 @@ The contract (DEV-I15) is one calendar day of carry, total return, with the own 
 
 - **Delta ladder** (`IRDelta` bucketed): central key-rate bumps of each pillar
   (`key_rate_ladder`). Keys are plain tenors, with the scalar's sign and unit. It sums to the
-  **parallel** curve delta (about `IRDiscountDeltaParallel` on one curve), not to the own-rate
-  scalar. For a native bucketed delta, map its keys (pattern 8), flip and scale it like the scalar,
+  **parallel** whole-curve delta (forwards moving too; never `IRDiscountDeltaParallel`, which holds
+  the forwards and is about 0 at the money), not to the own-rate scalar. For a native bucketed delta, map its keys (pattern 8), flip and scale it like the scalar,
   and raise on an unknown pillar.
 - **Gamma ladder** (`IRGamma`, bucketed only): the diagonal (pattern 17).
 - **Vega cube** (`IRVega` bucketed): one row per (expiry, tail), `mkt_point = "<tail>;<expiry>"`
@@ -390,8 +403,10 @@ def multi_curve_ladder(m, trades, weights):
     return rows
 ```
 
-**PnlExplain** is optional (it is not in the contract; gs 030007). `PnlExplain(CloseMarket(date=to))`
-maps to a buckets portfolio function that also receives `market_to` (the target date's market) and
+**PnlExplain** is a contract row for IRSwap and IRSwaption (its **bucketed** form: the loader puts
+a `returns: buckets` portfolio function in the bucketed slot, so `PnlExplain: pnl_explain` satisfies
+it) and optional for a Bond (gs 030007). `PnlExplain(CloseMarket(date=to))` maps to a buckets
+portfolio function that also receives `market_to` (the target date's market) and
 `pricebt_to_date`. Its expression must name one of them (DEV-M2). It is a full revaluation by risk
 factor, with no time component:
 
@@ -415,8 +430,11 @@ def explain_by_factor(m0, m1, trades, weights, d):
 ```
 
 Value on the pricing date, not on the market's own date, so no time passes. gs 030007 adds the time
-part separately. The runnable references are `pnl_explain` in `tests/toylib/swaption.py` and
-`explain_rows` in `tests/toylib/irrisk.py`.
+part separately. A swap has one factor: one IR row = `Price(market_to) - Price(market)`, both seen
+from the pricing date, plus `CROSSES` 0. The runnable references are `pnl_explain` in
+`tests/toylib/swaption.py`, `explain_rows` in `tests/toylib/irrisk.py`, and the `pnl_explain`
+recipes of the connect skill's templates (they take `lib_at(m, d)`: a market's curves seen from date
+d, no time passing).
 
 ## 23. Frames: Cashflows, and when Price drops paid flows
 
@@ -531,3 +549,132 @@ functions:
 - **Quoted prices only.** A bond marked only by a quoted price has no curve to shift. Compute its
   Z-spread once and shift the curve holding it, or declare `IRDiscountDeltaParallel`, the `IRDelta`
   ladder and `IRGamma` with that reason.
+
+## 28. P&L explain functions (gamma, theta, year_fraction, cash_paid_to_date)
+
+Four optional functions turn on `skills/pricebt-strategy-recipes/scripts/swap_pnl.py`'s
+`swap_pnl_definition()`/`explain_table()` for an `IRSwap` config (`docs/v2/PNL_EXPLAIN_PLAN.md`
+sections 2-2.5 have the exact conventions; `docs/v2/ASSET_CONFIG_GUIDE.md` has the contract). Toy
+shape (`tests/assets/toy_usd_irs.yaml`):
+
+```yaml
+functions:
+  gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                # ccy per YEAR, not per day
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}           # intensive: never unit: number
+  cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
+risk_measures:
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date
+```
+
+ARBS-shaped (illustrative style, matching `configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s own
+`code:`/`functions:` pattern -- not something T1 tests against real ARBS; the real functions are T2's
+job):
+
+```yaml
+code: |
+  def _shift(curve, bp):
+      # library-specific: rebuild the SAME curve type with every zero node bumped by `bp`
+      return curve.parallel_shift(bp * 1e-4)
+
+  def gamma(market, trade):
+      up, down = _shift(market.curve, 1.0), _shift(market.curve, -1.0)
+      npv_up, npv_down, npv_mid = price(up, trade), price(down, trade), price(market.curve, trade)
+      par_up, par_down = par_rate(up, trade), par_rate(down, trade)              # the trade's OWN measured move
+      return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+
+  def theta(market, trade):
+      translated = market.curve.translate(days=1)                              # forward rates held fixed
+      return (price(translated, trade) - price(market.curve, trade)) * 365.0
+
+  def year_fraction(market):
+      return (market.reference_date() - EPOCH).days / 365.0                    # intensive: no `trade` argument
+
+  def cash_paid_to_date(market, trade):
+      cashflows = remark(market, trade).cashflows(curves=market.handle())
+      return sum(cf.amount for cf in cashflows if cf.payment_date <= market.reference_date())
+functions:
+  gamma:             {expr: 'gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'theta(market, trade)', unit: ccy}
+  year_fraction:     {expr: 'year_fraction(market)', unit: decimal}
+  cash_paid_to_date: {expr: 'cash_paid_to_date(market, trade)', unit: ccy}
+```
+
+`IRGammaParallel` must be the chain-rule second derivative of pattern 17. `tr.gamma` is that formula (the same as `toylib.irrisk.ir_gamma`); the earlier `(n₊ + n₋ − 2n₀)/((p₊ − p₋)/2)²` left out the par rate's own convexity and was about 10% low at 10y ATM (`docs/v2/MERGE_NOTES_pnl_explain.md` §4, fixed since).
+
+**Every explain function must return `0.0` for a dead (matured) trade**, never `NaN`
+(`pnl_explain()`'s own `cum_total += metric_pnl` has no guard, so one `NaN` poisons every later
+cumulative value -- PNL_EXPLAIN_PLAN.md section 2.5).
+
+**The traps** (each one is a test in `tests/skills/test_skill_swap_pnl.py`, and a checker row in
+`skills/pricebt-verify-asset-config/scripts/check_asset.py`):
+
+- **Half gamma.** `gamma` must be the second derivative of `npv` (a central difference of `npv`
+  itself), never the difference of `dv01`/`pv01` across the same bump -- `(dv01(up)-dv01(down))/
+  (par(up)-par(down))` looks plausible but is half the true convexity at the money (`T-GAMMA-2`'s
+  "half-gamma trap": exactly 0.5 against the chain-rule gamma -- see `docs/v2/DECISIONS_LOG.md`).
+- **Per-day theta, not per year.** `theta` is `ccy` per YEAR (`Δyear_fraction` is what converts it
+  to a step's actual carry); a `θ` that is really "PV change over one calendar day" with no `* 365`
+  looks like a plausible number but is 365x too small (`T-THETA-1`).
+- **Extensive time.** `year_fraction` must be `unit: decimal` (intensive -- the SAME value
+  regardless of position size), never `unit: number` (pricebt would then scale it by `quantity_`,
+  so a 3x position gets 3x the "time", and `PNL_carry` ends up scaled by the position size SQUARED
+  through `theta x Δyear_fraction`) (`T-YF`, `T-SCALE`).
+- **Static-roll theta (the double-count).** `theta` must translate the curve (forward rates held
+  fixed) -- ARBS's own `roll_curve`/`carry_bps_running` are a DIFFERENT, static-SHAPE measure. Using
+  a rolled curve for `theta` books real roll-down twice: once correctly in `PNL_delta` (a genuine
+  `Δpar`), and again in `PNL_carry` (`T-SLOPE-2`).
+- **NaN on a dead trade.** A swap that matures between two marks has `dv01(t-1) != 0` but a naive
+  `par_rate(t) = NaN`; never let the `NaN` reach `pnl_explain()`. Every sensitivity guards the dead
+  case and returns `0.0`; the levels stay **continuous** with the last live value (R2-7): the market
+  rate feeding `PNL_delta` (`IRFwdRate`) carries the **final accrual period's** par, i.e. that
+  period's simple forward `(DF(start)/DF(end) - 1)/acc` from its own two dates (the ARBS config's
+  `_final_period_par`, the Meridian example's `_par_pct`). With one period left it equals the live
+  par exactly, so the level does not jump at maturity, and a past date's DF (> 1) keeps it finite
+  after. The old `fixed_rate * 1e4` dead convention is superseded: it jumps the level by `K - par`
+  on the maturity step.
+
+## 29. The rest of the strict contract: ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate, CRIFIRCurve
+
+IRSwap and IRSwaption also map these rows (`docs/v2/IR_STRICT_CONTRACT.md` R3-1, DEV-I19). All are
+holder-signed and per unit trade, and every one derives from measures you already have. The worked
+recipes are `par_spread_bp`, `fair_premium`, `forward_value`, `compounded_rate_bp` and `crif_frame`
+in [`config-template.yaml`](../../pricebt-connect-pricing-library/references/config-template.yaml)
+and [`config-template-swaption.yaml`](../../pricebt-connect-pricing-library/references/config-template-swaption.yaml);
+the toy versions are in `tests/toylib/irrisk.py` and `tests/toylib/swaption.py`; a bank-SDK version
+is in `skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml`.
+
+```yaml
+functions:
+  par_spread:      {expr: 'resolved["fixed_rate"] * 1e4 - own_rate_bp(market, trade)', unit: bp}   # swaption: resolved["strike"]
+  fair_premium:    {expr: 'pv(market, trade) / lib_discount_factor(market, lib_spot_date(market))', unit: ccy}
+  forward_price:   {expr: 'forward_value(market, trade, resolved["termination_date"], pricebt_date)', unit: ccy}   # swaption: expiration_date
+  premium_cents:   {expr: 'pv(market, trade) / abs(resolved["notional"]) * 1e4', unit: bp}
+  local_annuity:   {expr: 'lib_annuity(market, trade) / abs(resolved["notional"])', unit: decimal}
+  compounded_rate: {expr: 'compounded_rate_bp(resolved["fixed_rate"], lib_fixed_frequency(trade))', unit: bp}
+  crif:            {expr: 'crif_frame(market, trade, pricebt_currency)', unit: ccy_per_bp, returns: frame, scale_columns: [Amount]}
+risk_measures:
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif
+```
+
+| Measure | Recipe | Trap the checker catches |
+|---|---|---|
+| `ParSpread` (rate, intensive) | K − `IRFwdRate` in bp when both legs share one curve and schedule (swaption: strike − forward of the underlying); otherwise the floating-leg spread that solves PV = 0. The **same for payer and receiver** | forward − K (`ir_par_spread`), a holder-signed spread |
+| `FairPremium` (ccy) | Price / DF(premium settlement): the swaption's premium payment date if set, else the spot date; no spot lag: Price | the expiry or final date used (`ir_fair_premium`) |
+| `ForwardPrice` (ccy) | Price / DF(the date `ExpiryInYears` counts to: a swaption's expiry, a swap's termination date); Price on or after it | Price × DF (`ir_forward_price`) |
+| `PremiumCents` (notional_level: bp/pct/decimal/number, intensive) | Price / \|notional_amount\| × 1e4 in `bp` (1 cent per 100 of notional = 1bp) | percent of notional under `bp`, the signed notional (`ir_premium_cents`) |
+| `LocalAnnuityInCents` (notional_level, intensive) | Annuity / \|notional_amount\|, unit `decimal` (a 10y payer ≈ +8.5) | the pv01 (Annuity × 1e-4) (`ir_local_annuity`) |
+| `CompoundedFixedRate` (rate, intensive) | (1 + K/f)^f − 1 for a fixed leg paying f times a year: K itself for an annual leg. A trade term: it never moves | a de-compounded rate below K (`ir_compounded_fixed_rate`) |
+| `CRIFIRCurve` (frame) | one row per ladder pillar from the trade's own `IRDelta` ladder (weights `[1.0]`): `RiskType` `'Risk_IRCurve'`, `Qualifier` the currency, `Bucket` a **string** (`'1'` for USD, EUR), `Label1` a lower-case SIMM tenor (`2w 1m 3m 6m 1y 2y 3y 5y 10y 15y 20y 30y`), `Label2` the sub-curve, `Amount` (ccy per +1bp), `AmountCurrency`; `scale_columns: [Amount]`. Σ `Amount` = Σ of the `IRDelta` ladder; an empty frame (with the columns) once the instrument is dead | `'10Y'`, a sign flip (`ir_crif`) |
+
+`PnlExplain` is the eighth new row (pattern 22). A pillar that is not a SIMM tenor (`4Y`) needs your
+ladder bumped at the SIMM tenors for CRIF; the template's `crif_frame` raises rather than guess.

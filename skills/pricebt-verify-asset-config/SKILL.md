@@ -1,6 +1,6 @@
 ---
 name: pricebt-verify-asset-config
-description: Automated "zero to confidence" checker for a new or changed pricebt asset config. It loads the config, evaluates market, resolve, every function and risk measure, and runs a smoke backtest. For IRSwap, IRSwaption and Bond (or a ConfigInstrument with --pack) it also checks the measure contract (mapped, declared, TODO or stale) and contract semantics from evaluated values - a one-day Taylor P&L check, Theta against implied carry (per-year trap), the half-gamma ratio, ExpiryInYears decay, dead-instrument levels, ladders, vega-cube keys, Cashflows sign and coupon drop, bump_size pass-through - and runs the swap (plus annuity sign), swaption (buy/sell fold, straddle, strike pinning, parity, forward and vol units, greek signs, expiry) or bond pack (fold, dv01/convexity signs, LightningDV01, yield unit, coupon bound). Prints a PASS/WARN/FAIL/INFO table. Use after writing or editing any asset config, before strategy or P&L work, or when a config's numbers look wrong.
+description: Checker for a new or changed pricebt asset config. It loads the config, evaluates market, resolve, every function and risk measure, and runs a smoke backtest. For IRSwap, IRSwaption and Bond (or a ConfigInstrument with --pack) it checks the measure contract (swaps and swaptions map every row, no placeholder constants; a Bond may declare) and contract semantics from evaluated values - one-day Taylor P&L, Theta vs implied carry, the half-gamma ratio, ExpiryInYears, dead-instrument levels, ladders, vega-cube keys, Cashflows and coupon drop, bump_size pass-through, and the identities of PremiumCents, LocalAnnuityInCents, ForwardPrice, FairPremium, ParSpread, CompoundedFixedRate and CRIF - and runs the swap, swaption (fold, straddle, strike pinning, parity, units, greek signs, expiry) or bond pack (fold, signs, LightningDV01, yield unit, coupon bound). Prints a PASS/WARN/FAIL/INFO table. Use after writing or editing any asset config, before strategy or P&L work, or when a config's numbers look wrong.
 ---
 
 # Verify an asset config
@@ -11,7 +11,7 @@ An asset config is trusted code that turns your pricing library into pricebt num
 
 - **Use** after writing a new asset config, after any edit to one, after upgrading the pricing library, and before any strategy or P&L-attribution work on that asset.
 - **Use** when a backtest number or a P&L explain looks wrong: rerun the checker first, so you know whether the config is to blame.
-- **Use** `--pack IRSwaption` (or `IRSwap`, `Bond`) on a `ConfigInstrument` asset that is really a swaption, swap or bond. The loader does not enforce a contract on `ConfigInstrument`; the checker does.
+- **Use** `--pack IRSwaption` (or `IRSwap`, `Bond`) as a **diagnostic** on a `ConfigInstrument` asset for a product gs has no class for, to hold it to the nearest contract. A real swap, swaption or bond is never a `ConfigInstrument`: its config says `instrument: IRSwap` / `IRSwaption` / `Bond`, so the loader enforces the contract, and the loader rejects routing a gs-class instrument (`pricebt_asset=`) to a config of another class.
 - **Do not** use it as the only validation of a config going into production research. Do the independent validation in [`references/independent-validation.md`](references/independent-validation.md) once per asset.
 - **Do not** use it to learn how to compute a measure with your library. That is [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md).
 - **Do not** use it to review a strategy. That is [`pricebt-adversarial-review`](../pricebt-adversarial-review/SKILL.md).
@@ -39,7 +39,7 @@ An asset config is trusted code that turns your pricing library into pricebt num
    python skills/pricebt-verify-asset-config/scripts/check_asset.py configs/assets/<your_asset>.yaml --sys-path <dir with your library or helper modules> --date 2024-01-03 --date 2024-02-05
    ```
 
-   On POSIX use `PYTHONPATH=src:tests`. Try it first on the toys, which pass: `tests/assets/toy_usd_irs.yaml` (a declaration-only swap), and `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml` (the full contract on the closed-form libraries in `tests/toylib/`).
+   On POSIX use `PYTHONPATH=src:tests`. Try it first on the toys, which pass: `tests/assets/toy_usd_irs.yaml` (the whole strict IRSwap contract with an annuity-pv01 `IRDelta`, plus the swap P&L recipe's extras), and `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml` (the full contract on the closed-form libraries in `tests/toylib/`).
 
    | option | effect |
    |---|---|
@@ -62,7 +62,7 @@ An asset config is trusted code that turns your pricing library into pricebt num
 
 2. **Read the table top to bottom.** Rows run in this order: loading, market, resolve, the generic rows, the shape rows, `contract[...]`, `ir_*`, `fd_params`, the pack (`swap_*`, `swaption_*` or `bond_*`), and `performance`. If `config_loads`, `imports_execute` or `market_available` FAILs, the rest is a single `remaining | SKIP` row: fix that first.
 
-3. **Fix every FAIL** with the tables below, then rerun. **Explain every WARN** in one line, in your notes or the config's `description:`; a WARN you cannot explain is a FAIL. A `contract[M]` WARN for a declared measure is explained by its declared reason, so make that reason specific.
+3. **Fix every FAIL** with the tables below, then rerun. **Explain every WARN** in one line, in your notes or the config's `description:`; a WARN you cannot explain is a FAIL. A Bond's `contract[M]` WARN for a declared measure is explained by its declared reason, so make that reason specific (an IRSwap/IRSwaption cannot declare).
 
 4. **For an IR asset, clear the P&L-critical rows before any P&L work**: `contract[...]` for `IRDelta`, `IRGammaParallel`, `IRFwdRate`, `Theta`, `ExpiryInYears` and `Cashflows` (plus the vol measures for a swaption), then `ir_taylor`, `ir_theta` and `ir_gamma_ratio`. [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md) relies on exactly these.
 
@@ -72,7 +72,8 @@ An asset config is trusted code that turns your pricing library into pricebt num
 
 The contract and IR rows run when a pack applies: auto for `IRSwap`, `IRSwaption` and `Bond`, or `--pack` for a `ConfigInstrument`. Every row is catalogued, with the mistake it catches, in the docstring of `skills/pricebt-verify-asset-config/scripts/check_asset_ir.py`.
 
-- **Contract rows** list, per contract measure, what serves each form. Mapped is PASS. Declared under `unsupported_measures:` is WARN, never FAIL: an honest declaration is the contract working, and the P&L code raises `UnsupportedMeasureError` loudly on a declared measure it needs. The row says when a declaration is P&L-critical. A reason starting with `TODO` is WARN "declaration reason is a TODO". This is the pasted loader block, never edited. Neither mapped nor declared is FAIL. The loader already refuses that for the three classes, so you only see it with `--pack` on a `ConfigInstrument`. A stale declaration (mapped *and* declared) is a `contract_declarations` WARN; the mapping wins.
+- **Contract rows** list, per contract measure, what serves each form. Mapped is PASS. **IRSwap and IRSwaption** (the strict classes, `docs/v2/IR_STRICT_CONTRACT.md`): not mapped is FAIL, and so is a declaration of the measure, a form or a preset of it, mapped or not (a declaration cannot satisfy a strict row); each declared contract measure is also a `contract_declarations` FAIL. **Bond**: declared under `unsupported_measures:` is WARN, never FAIL: an honest declaration is the contract working, and the P&L code raises `UnsupportedMeasureError` loudly on a declared measure it needs. The row says when a declaration is P&L-critical. A reason starting with `TODO` is WARN "declaration reason is a TODO" (the pasted loader block, never edited). Neither mapped nor declared is FAIL. A stale declaration (mapped *and* declared) is a `contract_declarations` WARN; the mapping wins. The loader already refuses every contract FAIL, so you see them only with `--pack` on a `ConfigInstrument` (the diagnostic for a product gs has no class for; a swap or swaption config always uses its gs class, and the loader rejects routing a gs-class instrument to a config of another class).
+- **`ir_fake_constant`** (strict classes) FAILs a contract measure mapped to a literal constant (`'0.0'`, `'{}'`, `float('nan')`, `math.nan`, `math.inf`) outside `contracts.ZERO_BY_CONVENTION` (the vol measures on a swap, `IRBasis` on one curve, `IRXccyDelta` in one currency): a placeholder that silently zeroes (or NaNs) risk and P&L. A zero-by-convention measure must be exactly 0 (or `{}`): `IRVega: '5.0'` FAILs too. The loader does not inspect expressions; this row does.
 - **`ir_taylor`** compares the Price change plus cash paid over one business day after `d2` with `Δ·dr + ½Γ·dr² + ν·dσ + vanna·dr·dσ + ½volga·dσ² + Θ·days`. Greeks are at the start, dr is in bp of `IRFwdRate`, and dσ is in bp of `IRAnnualImpliedVol`. The residual is a share of the explained size: PASS ≤ 5%, WARN ≤ 20%, FAIL above. Declared measures drop out and are listed. A wrong unit, sign or scale in any greek shows here first.
 - **`ir_theta`** compares `Theta` with the implied one-day carry (the step's Price change with every other term removed). A ratio of about 365 is FAIL "looks per year". PASS is 0.8 to 1.25. Both near zero (an at-the-money swap on a translated curve) is an inconclusive PASS. Because the implied carry is what every other term leaves over, a WARN here with nothing else flagged can also be an `IRDelta` that is not the total own-rate derivative (an annuity pv01 off-market), or a wrong gamma or vega: clear `ir_taylor`, `ir_gamma_ratio` and `swap_annuity_sign` before you change `Theta`.
 - **`ir_gamma_ratio`** compares `IRGammaParallel` with `d(IRDelta)/dr`, fitted over the 20 business-day steps after `d1` as `ΔIRDelta = slope·dr + drift·days` (vanna·dσ removed), so a delta that drifts with time (a bond's charm) does not bias the slope. About 1 is PASS (0.7 to 1.4). About 0.5 is FAIL: the half-gamma trap. About 2 is WARN: either `IRDelta` is a fixed-annuity pv01 (at-the-money-exact, R2-1) with a true gamma, or gamma is doubled. When `|IRDelta|` equals `|Annuity| × 1e-4` off-market, the reference is `2 × d(IRDelta)/dr` and 1 is again PASS. On an `IRSwap` with **no** `Annuity` mapped (or no off-market `d2`), a PASS becomes WARN "unverifiable": a fixed-annuity `IRDelta` with a half gamma also reads about 1, and only `Annuity` tells them apart. Rates never moving 0.5bp in a day is SKIP. The fit costs 21 evaluations of `IRDelta`, `IRGammaParallel` and `IRFwdRate`.
@@ -94,21 +95,46 @@ Generic rows (every asset):
 | `quantity_scaling[M]` | FAIL | `scale_with_quantity:` contradicts the unit | remove the override, or fix the unit |
 | `quantity_scaling[M bucketed]` | FAIL | a ladder in ccy per bp that ignores `weights` | return per-unit buckets times `weights` |
 | `quantity_scaling[Cashflows frame]` | FAIL | a level (`rate`, `spread`, `discount_factor`, a date) in `scale_columns`, or `notional` missing | `scale_columns` = the amount columns: `payment_amount` (and `notional`) |
-| `notional_linearity[f]` | FAIL "it is a rate" / "an amount" | wrong `unit:` | `bp`/`pct`/`decimal` for rates, `ccy`/`ccy_per_bp` for amounts |
-| `risk_measures[M]` | FAIL / WARN "not a pricebt.risk measure" | mapped function fails in one form / typo | fix the function or `{scalar, bucketed}` mapping / use the gs name |
+| `notional_linearity[f]` | FAIL "it is a rate" / "it is an amount" | wrong `unit:` (a par rate declared `ccy`, a PV declared `bp`) | declare `bp`/`pct`/`decimal` for rates, `ccy`/`ccy_per_bp` for amounts |
+| `notional_linearity[f]` | WARN "neither linear nor constant" | library applies notional-dependent logic, or the size kwarg is not reaching the trade | check the trade builder uses `resolved` notional |
+| `risk_measures[M]` | FAIL | mapped function fails in scalar or bucketed form | fix the function, or the `{scalar, bucketed}` mapping |
+| `risk_measures[M]` | WARN "not a pricebt.risk measure" | typo in the measure name | use the gs name (`IRDelta`, `IRFwdRate`, ...) |
 | `measure_series` | WARN "constant" | the tracked function (the one mapped to `IRFwdRate`, else the first non-literal rate) ignores `pricebt_date` | pass `pricebt_date` to the market loader; literal expressions such as a `'0.0'` vol are never tracked |
-| `smoke_backtest` | FAIL non-finite / identity | NaN on a grid date / engine could not run | price that date by hand / rerun with `--no-backtest` to isolate |
-| `fx_round_trip` | FAIL | reverse pair returns the same quote | return the reciprocal |
-| `performance` | WARN SLOW | curve rebuilt per call | build it once in `market:`, reuse it |
+| `smoke_backtest` | FAIL non-finite Price | NaN or inf on some grid date | find the date in the detail and price it by hand |
+| `smoke_backtest` | FAIL identity / exception | engine could not run the asset (message says why) | fix per message; rerun with `--no-backtest` to isolate |
+| `fx_round_trip` | FAIL | FX config returns the same quote both ways | return the reciprocal for the reverse pair |
+| `performance` | WARN SLOW | one evaluation over 1s: curve rebuilt per call, no caching in the library session | build the curve once in `market:`, reuse it in every function |
+| `swap_atm_npv` | FAIL/WARN | ATM strike computed on a different curve, date or convention than valuation | strike and value off the same `market` object |
+| `swap_dv01_sign` | FAIL payer <= 0 | library reports risk as PV change per -1bp, or receiver-positive | negate in the function; pricebt wants payer dv01 > 0 per +1bp |
+| `swap_dv01_sign` | FAIL receiver != -payer | `pay_or_receive` not reaching the trade builder | map it in `resolve:`/`trade:` |
+| `swap_dv01_band` | FAIL | dv01 per 1% (x100), per unit rate (x1e4), or per unit notional | rescale to currency per 1bp on the full notional |
+| `swap_par_rate_unit` | FAIL "looks like decimal" | library returns 0.0425 and the function is declared `bp` | multiply by 1e4, or declare `decimal` |
+| `swap_par_rate_unit` | WARN "could be percent" | 4.25 declared `bp` | multiply by 100, or declare `pct` |
+| `swap_par_rate_atm` | FAIL | an ATM trade's par rate on its trade date != `resolved["fixed_rate"] * 1e4` (unit wrong, or resolve and par_rate use different curves) | fix the unit of `par_rate`, or price par and strike off the same market |
+| `swap_bucket_sum` | FAIL / WARN 2-10% same sign | ladder in a different unit/sign than the scalar, or missing pillars; a WARN: an own-rate scalar and a curve ladder differ by dr/ds (R2-2) | same convention as the scalar; include every pillar |
+| `swap_pnl_explain` | FAIL negative ratio | npv and dv01 use opposite sign conventions | make npv payer-positive when rates rise |
+| `swap_pnl_explain` | WARN ratio outside [0.5, 1.5] | large carry/roll between the dates, or a scale error | try closer dates; if it persists, check units |
+| `swap_pv_identity` | FAIL | `npv`/`dv01`/`par`/`fixed_rate` disagree on sign or unit (`PV != dv01*(par-K)`), at the ATM date or the off-market one | fix whichever of the four is wrong; the two FAIL details show exactly which date broke |
+| `swap_pv_identity` | WARN "dv01 depends on the strike" | `dv01` is a realistic full-curve PV sensitivity, not the fixed-leg annuity pv01 (PNL_EXPLAIN_PLAN.md 2.1) — a legitimate convention difference, not a bug | nothing to fix; explain the WARN in the config's `description:` if it is expected |
+| `swap_gamma` | FAIL sign/band | payer gamma >= 0, receiver != -payer, or `abs(gamma)/(abs(dv01)*T*1e-4)` outside [0.2, 2] | fix the second-npv-difference formula or its sign |
+| `swap_gamma` | FAIL half-gamma probe | gamma computed from `dv01` differences instead of the true second difference of `npv` (PNL_EXPLAIN_PLAN.md 2.1's "half-gamma trap") | use `npv(up)+npv(down)-2*npv(mid)`, never `dv01(up)-dv01(down)` |
+| `swap_gamma` | SKIP half-gamma probe | no pair of business days within 30 (up to 10 apart) moved the trade's par by >= 3bp | pass `--date`s further apart, or on a more volatile market; never lower the 3bp threshold |
+| `swap_theta` | FAIL | receiver `theta` != `-payer`, or `abs(theta) > 1000*abs(dv01)` (a unit-magnitude check — commonly theta computed per day instead of per year) | fix the sign convention or the time unit (PNL_EXPLAIN_PLAN.md 2.2) |
+| `year_fraction` | FAIL | declared `unit: number` (extensive) instead of `decimal`, so pricebt multiplies it by trade size, or the d1->d2 delta != `(d2-d1).days/365` | declare `decimal`; `year_fraction` must be an intensive time coordinate (PNL_EXPLAIN_PLAN.md 2.3) |
+| `cash_paid_to_date` | FAIL | a fresh ATM trade already shows nonzero cash at d1, or receiver != `-payer` at d2 | fix the sign convention, or the cumulative-cash calculation itself |
 
 Contract and IR semantics rows (IRSwap, IRSwaption, Bond, or `--pack`):
 
 | check | symptom | likely cause | fix in your library's terms |
 |---|---|---|---|
-| `contract[M]` | WARN declared | library cannot compute M | keep it if true and specific; for a swap or bond, prefer mapping vol measures to `0.0` (R2-8) so mixed books work |
-| `contract[M]` | WARN "reason is a TODO" | pasted block never edited | write why *your* library cannot compute it, or map it |
-| `contract[M]` | FAIL (only with `--pack`) | neither mapped nor declared, or wrong unit/shape | map it with the contract unit, or declare it |
-| `contract_declarations` | WARN stale | the measure is mapped and declared | delete the declaration (the mapping already wins) |
+| `contract[M]` | FAIL "not mapped" (IRSwap/IRSwaption, only with `--pack`) | a strict contract measure has no mapping | map it with the contract unit (`measures.py block <config>` prints the mapping skeleton); there is no declaration route |
+| `contract[M]` | FAIL "a declaration cannot satisfy it" (IRSwap/IRSwaption, only with `--pack`) | the measure, a form or a preset is declared | map it and delete the declaration |
+| `contract_declarations` | FAIL (IRSwap/IRSwaption, only with `--pack`) | `unsupported_measures declares <name>, a <class> contract measure` | delete the declaration |
+| `ir_fake_constant` | FAIL (IRSwap/IRSwaption) | a literal constant (`'0.0'`, `'{}'`, `float('nan')`, `math.nan`) for a measure outside `contracts.ZERO_BY_CONVENTION`, or a non-zero constant for one inside it | compute it (cookbook pattern 14); a zero-by-convention measure is exactly `'0.0'` / `'{}'` |
+| `contract[M]` | WARN declared (Bond) | library cannot compute M | keep it if true and specific; prefer mapping vol measures to `0.0` (R2-8) so mixed books work |
+| `contract[M]` | WARN "reason is a TODO" (Bond) | pasted block never edited | write why *your* library cannot compute it, or map it |
+| `contract[M]` | FAIL (Bond, only with `--pack`) | neither mapped nor declared, or wrong unit/shape | map it with the contract unit, or declare it |
+| `contract_declarations` | WARN stale (Bond) | the measure is mapped and declared | delete the declaration (the mapping already wins) |
 | `ir_expiry_in_years` | FAIL | business-day or ACT/365.25 year fraction, or a frozen date | `max(final − pricebt_date, 0).days / 365` with the final or expiry date from `resolved` |
 | `ir_taylor` | WARN/FAIL | one greek off by a unit (x100, x1e4), sign, or per-day/per-year | print the listed terms; the one that dwarfs the Price change is wrong |
 | `ir_theta` | FAIL "looks per year" | the library's theta is per year | divide by 365, or reprice at t+1 calendar day on the curve translated `DF(x)/DF(t+1d)` with the own rate and vol held fixed |
@@ -142,11 +168,24 @@ Swaption pack (`IRSwaption`) and bond pack (`Bond`):
 | `bond_dv01_sign`, `bond_gamma_sign` | FAIL | risk per -1bp (long bond > 0) / convexity sign | long bond `IRDelta` < 0 per +1bp of yield; `IRGammaParallel` > 0 |
 | `bond_lightning_dv01` | FAIL | yield DV01 in another scale, or IRDelta a curve delta with dy/dz ≠ 1 | both are Price per +1bp of **yield**; use the total own-rate derivative |
 | `bond_yield_unit` | FAIL / WARN | yield in decimal or percent while declared `bp` | multiply, or declare the unit you return |
+| `ir_cashflow_drop` | FAIL > 20% of the flow | `Price` does not drop the flow `Cashflows` lists on its payment date, or drops another amount | drop exactly the listed flows on their payment date (R2-6). The rate move is `IRFwdRate`'s. For an `IRSwap` that is not a PASS, the delta term is re-taken on the market part of that move: `IRFwdRate` on the step's end date minus the same priced on the start date's market (a `CloseMarket` override), because a seasoned swap's par rate also jumps when the paid period rolls off the remaining schedule; `Theta` holds the own par fixed across that roll (DEV-I15), so the roll part is explained at the remaining `Annuity` × 1e-4 |
 | `bond_price_yield` | FAIL | `IRFwdRate` sign or definition wrong | the yield to maturity, rising when the price falls |
 | `bond_cashflows_bound` | FAIL | principal or coupons missing from `Cashflows` | list every future flow, holder-signed |
 | `bond_expiry` | WARN | `ExpiryInYears` not to maturity | years to the final date (DEV-I17) |
 
-The swap pack rows (`swap_atm_npv`, `swap_dv01_sign`, `swap_dv01_band`, `swap_par_rate_unit`, `swap_par_rate_atm`, `swap_bucket_sum`, `swap_pnl_explain`) are catalogued in the docstring of `skills/pricebt-verify-asset-config/scripts/check_asset.py`; `swap_annuity_sign` (above) runs with the IR rows. `swap_par_rate_atm` FAILs a par rate left in percent; `swap_par_rate_unit` only WARNs "could be percent". `swap_bucket_sum` WARNs a ladder 2-10% from the scalar with the same sign: an own-rate `IRDelta` and a zero- or par-pillar ladder differ by dr/ds (R2-2); explain it. It FAILs beyond 10% or on opposite signs.
+`swap_annuity_sign` (above) runs with the IR rows.
+
+Strict-contract identities (IRSwap, IRSwaption; `docs/v2/IR_STRICT_CONTRACT.md` R3-1). Each SKIPs when its measures are not mapped, and runs on `d2` (off-market) when it has a market:
+
+| check | symptom | likely cause | fix in your library's terms |
+|---|---|---|---|
+| `ir_premium_cents` | FAIL (WARN within 1%) | `PremiumCents` != Price / \|notional_amount\| × the unit factor (bp 1e4, pct 100, decimal/number 1): a percent of notional under `bp`, the signed notional, an unsigned `abs(Price)` (checked on both directions) | `Price / abs(notional) * 1e4`, unit `bp` |
+| `ir_local_annuity` | FAIL (WARN within 1%) | `LocalAnnuityInCents` != Annuity / \|notional_amount\|: an annuity per bp (× 1e-4), the signed notional, an unsigned `abs(Annuity)` (checked on both directions) | `Annuity / abs(notional)`, unit `decimal` |
+| `ir_forward_price` | FAIL / WARN | opposite sign to Price (FAIL); the implied rate ln(ForwardPrice / Price) / `ExpiryInYears` of the opposite sign to `IRFwdRate` once \|r\| ≥ 10bp (FAIL: Price × DF, at any rate level); far from `IRFwdRate` (WARN beyond max(r/2, 25bp), FAIL beyond max(r, 50bp)): the wrong date; != Price from expiry on | `Price / DF(expiry)` (a swaption's expiration date, a swap's termination date) |
+| `ir_fair_premium` | FAIL / WARN | opposite sign (FAIL); a ratio discounting the wrong way for the own rate's sign (FAIL: Price × DF(spot)); more than ~10 days of discounting at the own rate (WARN up to 1%: a far premium date; FAIL beyond: the expiry or final date, i.e. `ForwardPrice`) | `Price / DF(premium settlement)`: spot, or the premium payment date |
+| `ir_par_spread` | FAIL / WARN | changes with direction, reversed sign (forward − K), or off by a scale factor of 2 or more (FAIL); more than max(0.5bp, 1%) from K − `IRFwdRate` (WARN: legs on different schedules or curves) | K − `IRFwdRate` in bp, the same for payer and receiver |
+| `ir_compounded_fixed_rate` | FAIL | outside [K, e^K − 1] (a de-compounded or continuous restatement), moving with the pricing date, or, when the fixed-leg frequency f is knowable (a `fixed_rate_frequency` kwarg or resolved term, else the spacing of the fixed leg's `Cashflows`), != (1 + K/f)^f − 1: a semiannual leg returned as K. With f unknowable only the bounds are checked, and the row says so | `(1 + K/f)^f − 1` from the resolved fixed rate / strike |
+| `ir_crif` | FAIL (WARN within 1%) | `RiskType` not `Risk_IRCurve`, `Qualifier` not the config currency, `Bucket` not a SIMM volatility-group string (`'1'`, `'2'`, `'3'`; an int FAILs), `Label1` not a SIMM tenor (`'10Y'`), `Label2` not a SIMM sub-curve (`OIS`, `Libor1m/3m/6m/12m`, `Prime`, `Municipal`; a SOFR curve is `OIS`), `AmountCurrency` not the `Qualifier`'s, or sum(`Amount`) != the `IRDelta` ladder's sum | rows from the trade's own `IRDelta` ladder, lower-case SIMM tenors |
 
 ## What the checker cannot prove
 
@@ -174,11 +213,11 @@ You are done when:
 - **The checker imports your library in-process.** A config that logs in does so on the first evaluation.
 - **At-the-money probes hide errors.** An ATM swap's npv and theta are about 0, so the checker scales, folds and runs Taylor on `d2`, where the `d1` trade is off-market.
 - **A fixed-annuity swap dv01 is at-the-money-exact only** (R2-1). Off-market it leaves `N·(F−K)·ΔA` in `ir_taylor`'s residual. Map the total own-rate derivative for P&L attribution.
-- **One fixture per mistake** lives in `tests/skills/fixtures/check_asset/` (for example `bad_half_gamma_swaption.yaml`, `bad_swaption_theta_per_year.yaml`, `bad_bond_dv01_positive.yaml`). Run one to see a FAIL before you trust a PASS.
+- **One fixture per mistake** lives in `tests/skills/fixtures/check_asset/` (for example `bad_half_gamma_swaption.yaml`, `bad_swaption_theta_per_year.yaml`, `bad_bond_dv01_positive.yaml`; for the strict rows `bad_premium_cents_pct.yaml`, `bad_local_annuity_per_bp.yaml`, `bad_forward_price_times_df.yaml`, `bad_fair_premium_final_date.yaml`, `bad_par_spread_reversed.yaml`, `bad_compounded_rate_decompounded.yaml`, `bad_crif_upper_tenors.yaml` and `bad_fake_constant.yaml`, each failing only its own row; `bad_todo_reason.yaml` is a Bond, the class that may still declare). Run one to see a FAIL before you trust a PASS.
 
 ## Related skills
 
-- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): what each measure means and how to compute it with your library (bump recipes, units, when to declare).
+- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): what each measure means and how to compute it with your library (bump recipes, units; a Bond may declare, a swap or swaption must map).
 - [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md): writing the config this skill checks.
 - [`pricebt-asset-config-cookbook`](../pricebt-asset-config-cookbook/SKILL.md): patterns for fixing what this skill finds.
 - [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): the P&L decomposition that the P&L-critical rows protect.

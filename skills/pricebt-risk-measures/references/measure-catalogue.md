@@ -13,7 +13,7 @@ How to read the tables:
 
 ## 1. The IR contract (`IRSwap`, `IRSwaption`, `Bond`)
 
-An asset whose `instrument:` is one of these three classes must, for every row and form below, **map** it to a function with an allowed unit, or **declare** it under `unsupported_measures:` with a reason (DEV-I11). Every other measure name is unrestricted. The full one-line semantics are in `src/pricebt/risk/contracts.py`; print them with `python skills/pricebt-risk-measures/scripts/measures.py contract IRSwaption`.
+An asset whose `instrument:` is one of these three classes must, for every row and form below, **map** it to a function with an allowed unit. For `IRSwap` and `IRSwaption` that is the only way (DEV-I11 amended, `docs/v2/IR_STRICT_CONTRACT.md`): declaring a contract measure, a form or a preset of one is a load error, and a literal constant is honest only for `contracts.ZERO_BY_CONVENTION`. A `Bond` may instead **declare** a row under `unsupported_measures:` with a reason. Every other measure name is unrestricted. The full one-line semantics are in `src/pricebt/risk/contracts.py`; print them with `python skills/pricebt-risk-measures/scripts/measures.py contract IRSwaption`.
 
 | Measure | Kind | Forms | Allowed units | Classes | Semantics (short) |
 |---|---|---|---|---|---|
@@ -36,6 +36,14 @@ An asset whose `instrument:` is one of these three classes must, for every row a
 | `ExpiryInYears` | time | scalar | decimal, number (intensive) | all 3 | `max(final_or_expiry − t, 0).days / 365` (DEV-I17) |
 | `Annuity` | annuity | scalar | ccy | all 3 | N·A = 1e4 × fixed-leg pv01, signed notional (payer / bought / long > 0) |
 | `Cashflows` | table | frame | (frame) | all 3 | flows `Price` still includes, `payment_date > t`; empty for a total-return `Price` |
+| `ParSpread` | rate | scalar | bp, pct, decimal (intensive) | IRSwap, IRSwaption | floating-leg spread making Price 0; one curve and matching schedules: `K − IRFwdRate`; direction-independent (DEV-I19) |
+| `FairPremium` | value | scalar | ccy | IRSwap, IRSwaption | `Price / DF(premium settlement)` (premium payment date, else spot; no spot lag: Price) |
+| `ForwardPrice` | value | scalar | ccy | IRSwap, IRSwaption | `Price / DF(expiry)`, the date `ExpiryInYears` counts to; Price after it |
+| `PremiumCents` | notional_level | scalar | bp, pct, decimal, number (intensive) | IRSwap, IRSwaption | `Price / \|notional_amount\|` (bp: cents per 100 of notional) |
+| `LocalAnnuityInCents` | notional_level | scalar | bp, pct, decimal, number (intensive) | IRSwap, IRSwaption | `Annuity / \|notional_amount\|`, holder-signed |
+| `CompoundedFixedRate` | rate | scalar | bp, pct, decimal (intensive) | IRSwap, IRSwaption | `(1 + K/f)^f − 1` of the fixed rate / strike; annual leg: K |
+| `CRIFIRCurve` | table | frame | (frame) | IRSwap, IRSwaption | SIMM CRIF IR-curve delta rows; Σ `Amount` = Σ `IRDelta` ladder; `scale_columns: [Amount]` |
+| `PnlExplain` | value | bucketed | ccy | IRSwap, IRSwaption | a `returns: buckets` portfolio function reading `market_to`; rows by `mkt_type`; `PnlExplainClose` resolves here |
 | `ProbabilityOfExercise` | prob | scalar | decimal, number | IRSwaption | probability of finishing in the money (annuity measure) |
 | `LightningDV01` | sens1 | scalar | ccy_per_bp | Bond | yield DV01 (= the bond's IRDelta scalar) |
 | `LightningOAS` | rate | scalar | bp, pct, decimal | Bond | OAS; a bullet bond uses its Z-spread |
@@ -44,14 +52,16 @@ An asset whose `instrument:` is one of these three classes must, for every row a
 **Kinds and units.**
 
 - value, theta and annuity are `ccy`; sens1 is `ccy_per_bp`; sens2 is `ccy_per_bp2`. These are extensive: pricebt multiplies them by `quantity_`.
-- rate, vol, time and prob are intensive: `scale_with_quantity` must be false, which is the default for `bp`, `pct` and `decimal`.
-- table is a `functions:` entry with `returns: frame`, whose `scale_columns` include `payment_amount`.
+- rate, vol, time, prob and notional_level are intensive: `scale_with_quantity` must be false, which is the default for `bp`, `pct` and `decimal` (set it for `number`).
+- table is a `functions:` entry with `returns: frame`, whose `scale_columns` include `payment_amount` (`Cashflows`) or `Amount` (`CRIFIRCurve`).
 
-**Presets that count toward a contract row** (R2-10): `IRDeltaParallel` and `IRDeltaLocalCcy` → `IRDelta`; `IRVegaParallel` and `IRVegaLocalCcy` → `IRVega`; `IRBasisParallel` → `IRBasis`; `IRXccyDeltaParallel` → `IRXccyDelta`; `IRGammaParallelLocalCcy` → `IRGammaParallel`; `IRDiscountDeltaParallelLocalCcy` → `IRDiscountDeltaParallel`. Declare the base measure, never the preset.
+**Presets that count toward a contract row** (R2-10): `IRDeltaParallel` and `IRDeltaLocalCcy` → `IRDelta`; `IRVegaParallel` and `IRVegaLocalCcy` → `IRVega`; `IRBasisParallel` → `IRBasis`; `IRXccyDeltaParallel` → `IRXccyDelta`; `IRGammaParallelLocalCcy` → `IRGammaParallel`; `IRDiscountDeltaParallelLocalCcy` → `IRDiscountDeltaParallel`; `PnlExplainClose` → `PnlExplain`. A Bond declares the base measure, never the preset; on a swap or swaption declaring either is a load error.
+
+The IR-relevant measures deliberately outside the strict contract, with the reason, are `contracts.EXCLUDED` (listed in the skill's [SKILL.md](../SKILL.md), "Excluded, with reasons").
 
 ## 2. Rates (31)
 
-The contract rows above plus the rest of gs's rates family. The rows outside the contract (inflation, cents measures, `ParSpread` on non-bonds) load and resolve by name with no unit checks.
+The contract rows above plus the rest of gs's rates family. The rows outside the contract (inflation, and any rates measure on a class without a contract) load and resolve by name with no unit checks.
 
 | gs name | class | measure_type | gs unit |
 |---|---|---|---|
@@ -203,4 +213,4 @@ The contract rows above plus the rest of gs's rates family. The rows outside the
 
 Non-IR classes (`FXOption`, `FXForward`, `EqOption`, `InflationSwap`, `Cash`, `ConfigInstrument`) have **no contract**: only `Price` is required, and any measure above may be mapped by name.
 
-**Custom names.** A `risk_measures:` key that is not in `pricebt.risk` loads and resolves by name, with no unit checks. Examples are the in-flight branch's `IRTheta` and `YearFraction`, or your own `CarryRoll`. Request it with `pricebt.risk.RiskMeasure(name="CarryRoll")`.
+**Custom names.** A `risk_measures:` key that is not in `pricebt.risk` loads and resolves by name, with no unit checks. Examples are the swap P&L recipe's `IRTheta` and `YearFraction` (`skills/pricebt-strategy-recipes/scripts/swap_pnl.py`), or your own `CarryRoll`. Request it with `pricebt.risk.RiskMeasure(name="CarryRoll")`.

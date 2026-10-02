@@ -71,21 +71,22 @@ Say it in your library's terms before you write the YAML. "Own rate" r = swap pa
 
 **Cannot compute one?**
 
-- Declare it under `unsupported_measures:` with the real reason, and build the definition without it (for example `vanna=False, volga=False`). The term then shows up in the residual; report it.
-- For swaps and bonds in a vol-attributed book, **map** the 0.0 convention instead of declaring it: every measure is priced for every held instrument, and a declared one raises `UnsupportedMeasureError`.
+- **IRSwap and IRSwaption configs map every contract measure** or do not load (`docs/v2/IR_STRICT_CONTRACT.md`): derive it from PV, a curve shift and a date (the recipes above). A literal `0.0` is honest only for `contracts.ZERO_BY_CONVENTION`.
+- **A Bond** may declare it under `unsupported_measures:` with the real reason; then build the definition without it (for example `vanna=False, volga=False`). The term shows up in the residual; report it.
+- For bonds in a vol-attributed book, **map** the 0.0 convention instead of declaring it: every measure is priced for every held instrument, and a declared one raises `UnsupportedMeasureError`.
 
 The runnable reference is the closed-form toy library: `tests/toylib/swaption.py` and `tests/toylib/bond.py`, wired in `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`.
 
 ## Procedure
 
-1. **Check the book can be attributed**, from the configs alone. This prints the definition the book gets, or every gap: an unmapped or declared-unsupported measure, or mixed level units.
+1. **Check the book can be attributed**, from the configs alone. This prints the definition the book gets, or every gap: an unmapped measure, a Bond's declared-unsupported one, or mixed level units.
 
    ```powershell
    $env:PYTHONPATH = "src;tests"
    python skills/pricebt-pnl-attribution/scripts/attribution.py --definition configs/assets/<a>.yaml configs/assets/<b>.yaml
    ```
 
-   Fix a gap in the config (map the measure, or map the 0.0 convention for swaps and bonds), or drop the attribute (`--kind bond`, or flags in-process). Try it on the toys first: `tests/assets/toy_usd_swaption.yaml`.
+   Fix a gap in the config (map the measure, or map the 0.0 convention for a bond), or drop the attribute (`--kind bond`, or flags in-process). Try it on the toys first: `tests/assets/toy_usd_swaption.yaml`.
 
 2. **Choose the definition.** `attribution.definition_for(session)` picks one:
 
@@ -93,7 +94,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
    |---|---|
    | any swaption (with swaps or bonds) | all six: `swaption_pnl_definition(rate_unit, vol_unit)` |
    | bonds, swaps, or both | delta, gamma, theta: `bond_pnl_definition(rate_unit)` = `ir_pnl_definition(vega=False, vanna=False, volga=False)` |
-   | swaps on configs written to the in-flight swap branch | its `swap_pnl_definition` (skills/pricebt-strategy-recipes/scripts/swap_pnl.py once merged; per-year `IRTheta × YearFraction`) |
+   | swaps on configs that map the swap P&L recipe's `IRTheta` and `YearFraction` | `swap_pnl_definition` ([`swap_pnl.py`](../pricebt-strategy-recipes/scripts/swap_pnl.py), merged from the swap P&L-explain branch; per-year `IRTheta × YearFraction`) |
    | anything else | `ir_pnl_definition(..., delta=, gamma=, vega=, vanna=, volga=, theta=)`, or your own `PnlDefinition` |
 
    Keyword flags override the kind: `definition_for(session, volga=False)`. Pass `assets=[names]` when the session holds configs the book never trades.
@@ -109,7 +110,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
                                      risks=[Cashflows], pnl_explain=definition)   # Cashflows: coupon-dropping Price only
    ```
 
-   **From a strategy spec** (the workflow skills), add the definition to the recipe's run arguments. A spec `pnl_explain:` block is planned by the in-flight workflow change; until it lands, pass the definition like this:
+   **From a strategy spec** (the workflow skills): the spec's `pnl_explain:` block (`enabled`, `gamma`, `carry`, `cash`) wires `swap_pnl_definition` into the run, for an **IRSwap primary only** (`recipes.build`; any other primary is skipped with a note). For a swaption or bond book, or for this skill's six-attribute definitions, add the definition to the recipe's run arguments yourself:
 
    ```python
    built = recipes.build(spec)

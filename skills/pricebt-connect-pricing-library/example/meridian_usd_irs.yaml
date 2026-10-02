@@ -3,19 +3,24 @@ asset: meridian_usd_irs
 description: >
   USD SOFR swap priced by the FICTIONAL Meridian SDK (example/meridian_sdk; not a real vendor API).
   Worked example for skills/pricebt-connect-pricing-library: every vendor convention is converted to
-  pricebt's, and every contract measure a PV-only service can produce is derived from its first-order
-  codes. Units: npv USD; delta (own-rate) and dv01 (zero curve) USD per +1bp (payer > 0); annuity USD
-  (payer > 0); par_rate bp; ladder USD per +1bp of each zero pillar (payer > 0). Checker WARNs, explained:
-  swap_bucket_sum / ir_ladder_sum -- the zero-pillar ladder sums to the curve DV01, which is dr/ds (about
-  1.03-1.05 on this curve) times the own-rate IRDelta (R2-2).
+  pricebt's, and the whole IRSwap contract is mapped (IRSwap and IRSwaption configs cannot declare a
+  contract measure unsupported). First-order measures come from Meridian's measure codes in ONE batch;
+  gamma, the gamma ladder, Theta and the discount-only delta reprice on Meridian scenario() markets. Units:
+  npv, fair_premium, forward_price USD; delta (own-rate) and dv01 (zero curve) USD per +1bp (payer > 0);
+  discount_delta USD per +1bp of the discount curve only (projected flows held; about 0 at the money); gamma USD per bp^2
+  of the own par rate; theta USD per calendar day, own par held across a coupon (DEV-I15); annuity USD (payer > 0); par_rate, spot_rate,
+  par_spread, compounded_fixed_rate, premium_cents bp; local_annuity decimal; ladder and CRIF Amount USD
+  per +1bp of each zero pillar (payer > 0). Price drops each flow on its payment date; Cashflows lists
+  the flows still to drop. Checker WARNs, explained: swap_bucket_sum / ir_ladder_sum -- the zero-pillar
+  ladder sums to the curve DV01, which is dr/ds (about 1.03-1.05 on this curve) times the own-rate
+  IRDelta (R2-2); ir_theta -- the curve also changes SHAPE every day (its slope moves), which the
+  own-rate delta does not explain, so the one-day implied carry is noisy; ir_ladder_sum[IRGamma] -- a
+  zero-pillar diagonal against the own-rate gamma. Under a CloseMarket override every function values the
+  override's curve from the pricing date (no time passes; spot, DFs and scenarios too), as PnlExplain does.
+  Dead (every flow dropped): levels continue (IRFwdRate = the final period's par), sensitivities are 0.
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
-unsupported_measures:   # only what a PV-only service without scenario requests cannot produce (docs/v2/IR_RISK_DESIGN.md section 2)
-  IRGammaParallel: "the fictional Meridian SDK takes no scenario request (no curve shift, no valuation-date override) and its DV01 is first order only: no second derivative in the own rate"
-  IRGamma: "the fictional Meridian SDK takes no scenario request: no per-pillar shift, so no diagonal gamma ladder"
-  Theta: "the fictional Meridian SDK takes no valuation-date override: it values only on the market's own date, so no one-day translated-curve reprice"
-  Cashflows: "the fictional Meridian SDK exposes no schedule or fixings call. Its PV drops each paid fixed coupon (Price is not total return), so a hold across a coupon date leaves that coupon in the attribution residual"
 defaults:
   pay_or_receive: Receive          # gs default; coerced to the PayReceive enum (value 'Rec')
   termination_date: 10y
@@ -24,14 +29,19 @@ defaults:
   notional_amount: 1.0e6
 
 imports: |
+  import math
   import re
   import datetime as _dt
+  import pandas as pd
   import meridian_sdk as mdn       # the bank SDK: assumed installed / on sys.path
 
 code: |
   _CLIENT = mdn.connect(env="SIM")   # ONE session per process: `code:` runs once, so this is module-level
   _CURVE = "USD.SOFR"
-  _MEASURES = ["PV", "DV01", "PAR_PCT"]   # everything the per-trade functions need, in ONE price call
+  _PILLARS = ("1Y", "2Y", "5Y", "10Y", "30Y")
+  _MEASURES = ["PV", "DV01", "PAR_PCT", "BUCKET_DV01", "CASHFLOWS"]   # everything the per-trade functions need, in ONE price call
+  _FIXED_FREQ = 1                    # Meridian swaps pay annual fixed coupons
+  _CRIF_COLUMNS = ["RiskType", "Qualifier", "Bucket", "Label1", "Label2", "Amount", "AmountCurrency"]
   _ATM = re.compile(r"^\s*(?:atm|a)\s*(?:([+-])\s*(\d+(?:\.\d+)?))?\s*$", re.I)   # 'ATM', 'ATM+25', 'a-10' (bp)
   _TENOR = re.compile(r"^\s*\d+\s*[dwmy]\s*$", re.I)
 
@@ -104,30 +114,164 @@ code: |
       return _CLIENT.swap(t.currency, t.start, t.end, fixed_rate_pct=t.fixed_rate_pct + bp / 100.0,
                           notional=t.notional, direction=t.direction)
 
+  def _memo(m):
+      # Memo rule (for every user memo): key on the market object (the memo lives on it), the pricing
+      # date and the trade -- under a CloseMarket override pricebt hands the same market object to
+      # another pricebt_date.
+      return m.__dict__.setdefault("_pricebt_memo", {})
+
+  def _scenario(m, key, **kw):
+      # a Meridian what-if market, built once per market object and reused by every trade on it
+      cache = m.__dict__.setdefault("_pricebt_scenarios", {})
+      if key not in cache:
+          cache[key] = _CLIENT.scenario(m, **kw)
+      return cache[key]
+
+  def _seen_from(m, d):
+      # The market every function values on: the snapshot's zero curve seen from the PRICING date d. It is m
+      # itself on its own date; under a CloseMarket override (m is another date's snapshot) no time passes, as
+      # PnlExplain requires. Spot dates, discount factors and scenarios all come from it, never from m's date.
+      return m if m.as_of == d.isoformat() else _scenario(m, ("seen", d), valuation_date=d.isoformat())
+
+  def _cached(mk, key, fn):
+      # one vendor call per market object for date-only facts (spot date, next business day)
+      cache = mk.__dict__.setdefault("_pricebt_dates", {})
+      if key not in cache:
+          cache[key] = fn()
+      return cache[key]
+
+  def _spot(mk):
+      return _cached(mk, "spot", lambda: _CLIENT.spot_date(mk))
+
+  def _period_rate_pct(mk, start, end):
+      # simple forward rate over [start, end] from mk's DFs, percent: the par rate of a one-period swap
+      df_s, df_e = _CLIENT.discount_factors(mk, [start, end])
+      return (df_s / df_e - 1.0) / ((_dt.date.fromisoformat(end) - _dt.date.fromisoformat(start)).days / 365.0) * 100.0
+
+  def _par_pct(mk, t, par_pct):
+      # IRFwdRate continuous past maturity (R2-7). Meridian's PAR_PCT is NaN once every flow has dropped
+      # (no annuity left); carry the FINAL period's par instead, from its own two dates. With one period
+      # left that IS PAR_PCT exactly ((DF(prev) - DF(end)) / (acc x DF(end))), so the level never jumps,
+      # and it stays finite after the end (a past date's DF is just > 1). Same idea as the ARBS config's
+      # _final_period_par.
+      if math.isfinite(par_pct):
+          return par_pct
+      return _period_rate_pct(mk, *_CLIENT.schedule(t, mk)[-1])
+
   def _risk(m, t, d):
-      # Every per-trade number from ONE vendor call: the trade, the trade with its fixed rate +-1bp, and
-      # a spot-starting probe to the same end. Memo rule (for every user memo): key on the market object
-      # (the memo lives on it), the pricing date and the trade -- under a CloseMarket override pricebt
-      # hands the same market object to another pricebt_date.
-      memo = m.__dict__.setdefault("_pricebt_memo", {})
+      # Every first-order number from ONE vendor call: the trade, the trade with its fixed rate +-1bp, and
+      # a spot-starting probe to the same end, all on _seen_from(m, d).
+      memo = _memo(m)
       if (d, t) not in memo:
-          if "_pricebt_spot" not in m.__dict__:
-              m._pricebt_spot = _CLIENT.spot_date(m)
-          probe = _CLIENT.swap("USD", m._pricebt_spot, t.end, fixed_rate_pct=None, notional=1e6, direction="PAY")
-          row, up, dn, spot = _CLIENT.price([t, _strike_moved(t, 1), _strike_moved(t, -1), probe], m, _MEASURES)
+          mk = _seen_from(m, d)
+          spot = _spot(mk)
+          probe = _CLIENT.swap("USD", spot, t.end, fixed_rate_pct=None, notional=1e6, direction="PAY")
+          row, up, dn, sp = _CLIENT.price([t, _strike_moved(t, 1), _strike_moved(t, -1), probe], mk, _MEASURES)
           dv01 = _flip(row["DV01"])                     # zero-curve parallel DV01, dPV/ds per +1bp
-          annuity = -(up["PV"] - dn["PV"]) / 2e-4        # Annuity = -dPV/dK (K decimal): N x A, payer > 0, receiver < 0
+          annuity = -(up["PV"] - dn["PV"]) / 2e-4        # Annuity = -dPV/dK (K decimal): N x A, payer > 0, receiver < 0; 0 dead
           # own-rate IRDelta (dPV/dr, the contract) from first-order codes only: DV01 is linear in K, so the
           # same swap struck at its par rate r has DV01 dv01 + (r - K) x dDV01/dK, and a par-struck swap moves
-          # only through r: dr/ds = that DV01 / (Annuity x 1e-4). IRDelta = dv01 / (dr/ds).
-          k, r = t.fixed_rate_pct / 100.0, row["PAR_PCT"] / 100.0
+          # only through r: dr/ds = that DV01 / (Annuity x 1e-4). IRDelta = dv01 / (dr/ds); 0 once dead.
+          par_pct = _par_pct(mk, t, row["PAR_PCT"])
+          k, r = t.fixed_rate_pct / 100.0, par_pct / 100.0
           d_dv01_dk = (_flip(up["DV01"]) - _flip(dn["DV01"])) / 2e-4
           dr_ds = (dv01 + (r - k) * d_dv01_dk) / (annuity * 1e-4) if annuity else 0.0
-          memo[(d, t)] = dict(row, dv01=dv01, annuity=annuity, delta=dv01 / dr_ds if dr_ds else 0.0, spot_par_pct=spot["PAR_PCT"])
+          # IRSpotRate: nothing left to start from spot once the end is on or before it -- the zero-length
+          # limit of that swap, the overnight (one business day) forward at spot, as the ARBS config does
+          # (the probe's PAR_PCT is NaN exactly then: no positive annuity from spot to the end)
+          if math.isfinite(sp["PAR_PCT"]):
+              spot_par = sp["PAR_PCT"]
+          else:
+              spot_par = _period_rate_pct(mk, spot, _CLIENT.maturity(mk, spot, "1D"))
+          memo[(d, t)] = dict(row, PAR_PCT=par_pct, dv01=dv01, annuity=annuity, delta=dv01 / dr_ds if dr_ds else 0.0, spot_par_pct=spot_par)
       return memo[(d, t)]
 
-  def delta_ladder(m, trades, weights):
-      out = {"1Y": 0.0, "2Y": 0.0, "5Y": 0.0, "10Y": 0.0, "30Y": 0.0}
+  def _pv_par(m, t):
+      row = _CLIENT.price([t], m, ["PV", "PAR_PCT"])[0]
+      return row["PV"], row["PAR_PCT"] * 100.0           # PAR_PCT percent -> bp
+
+  def gamma(m, t, d):
+      # IRGammaParallel: the chain-rule second derivative of PV in the own par rate r on the +-1bp
+      # parallel scenarios, per bp^2 of r. NEVER d(DV01)/dr (half the gamma at the money).
+      base, mk = _risk(m, t, d), _seen_from(m, d)
+      n_up, r_up = _pv_par(_scenario(mk, "up", shift_bp=1.0), t)
+      n_dn, r_dn = _pv_par(_scenario(mk, "dn", shift_bp=-1.0), t)
+      n_0, r_0 = base["PV"], base["PAR_PCT"] * 100.0
+      dr = r_up - r_dn
+      if not math.isfinite(dr) or dr == 0.0:
+          return 0.0                                     # a dead trade (raw PAR_PCT is NaN): no rate exposure
+      delta = (n_up - n_dn) / dr
+      return (n_up + n_dn - 2.0 * n_0 - delta * (r_up + r_dn - 2.0 * r_0)) / (dr / 2.0) ** 2
+
+  def _holder_flows(row):
+      # vendor CASHFLOWS: positive amount + the holder's direction -> pricebt: holder-signed amounts
+      return [(_dt.date.fromisoformat(f["date"]), f["amount"] if f["direction"] == "RECEIVE" else -f["amount"], f["leg"]) for f in row["CASHFLOWS"]]
+
+  def cashflows(m, t, d):
+      flows = _holder_flows(_risk(m, t, d))
+      return pd.DataFrame([{"payment_date": p, "payment_amount": a, "currency": "USD", "payment_type": leg.title()} for p, a, leg in flows],
+                          columns=["payment_date", "payment_amount", "currency", "payment_type"])
+
+  def theta(m, t, d):
+      # Theta (DEV-I15), USD per calendar day: one day with every FORWARD held (hold="FORWARDS"; the vendor
+      # default "ZEROS" would roll the curve down), plus the flows PV drops in (t, t+1d], with the trade's
+      # OWN par held fixed. Off coupon dates the translated par equals today's exactly (both legs scale by
+      # 1/DF(t+1d)). Across a coupon the paid period leaves the schedule and the par jumps: that jump is the
+      # schedule rolling, not the market, so take it out at the translated annuity pv01 (as the ARBS config
+      # does). P&L explain multiplies Theta by the step's calendar days while its delta term sees the par
+      # jump once, so on a business-day grid the jump term is divided by n = calendar days to the next
+      # business day (DEV-I15): Theta x n then removes it exactly once (a Friday coupon step: n = 3).
+      base = _risk(m, t, d)
+      if not base["annuity"]:
+          return 0.0                                     # a dead trade: nothing left to carry
+      mk = _seen_from(m, d)
+      tomorrow = d + _dt.timedelta(days=1)
+      later = _scenario(mk, "theta", valuation_date=tomorrow.isoformat(), hold="FORWARDS")
+      cash = sum(a for p, a, _leg in _holder_flows(base) if d < p <= tomorrow)
+      row, up, dn = _CLIENT.price([t, _strike_moved(t, 1), _strike_moved(t, -1)], later, ["PV", "PAR_PCT"])
+      pv01 = (dn["PV"] - up["PV"]) / 2.0                 # translated annuity pv01, USD per bp of par (payer > 0)
+      jump_bp = (_par_pct(later, t, row["PAR_PCT"]) - base["PAR_PCT"]) * 100.0
+      n = (_dt.date.fromisoformat(_cached(mk, "next_bday", lambda: _CLIENT.maturity(mk, d.isoformat(), "1D"))) - d).days
+      return row["PV"] + cash - base["PV"] - pv01 * jump_bp / n
+
+  def _dfs(m, t, d):
+      # DF to the spot date (premium settlement) and to the swap's end, valued from the PRICING date (as
+      # Price is), one vendor call per trade and market
+      mk = _seen_from(m, d)
+      memo = mk.__dict__.setdefault("_pricebt_dfs", {})
+      if t not in memo:
+          memo[t] = _CLIENT.discount_factors(mk, [_spot(mk), t.end])
+      return memo[t]
+
+  def forward_price(m, t, d):
+      # ForwardPrice: PV forward-valued to the termination date (the date ExpiryInYears counts to); PV after it
+      pv = _risk(m, t, d)["PV"]
+      return pv / _dfs(m, t, d)[1] if _dt.date.fromisoformat(t.end) > d else pv
+
+  def discount_delta(m, t, d):
+      # IRDiscountDeltaParallel: +-1bp on the DISCOUNT curve only, every projected float coupon held (the
+      # forwards do not move): rediscount the trade's own CASHFLOWS (the flows PV holds; sum(flow x DF) = PV)
+      # on the +-1bp scenario curves. Meridian has ONE curve, so the full-curve DV01 is NOT this: a parallel
+      # shift also moves the float coupons. About 0 at the money (the legs' durations nearly offset).
+      flows = _holder_flows(_risk(m, t, d))
+      if not flows:
+          return 0.0                                     # a dead trade
+      mk, dates = _seen_from(m, d), [p.isoformat() for p, _a, _leg in flows]
+      up = _CLIENT.discount_factors(_scenario(mk, "up", shift_bp=1.0), dates)
+      dn = _CLIENT.discount_factors(_scenario(mk, "dn", shift_bp=-1.0), dates)
+      return sum(a * (u - v) for (_p, a, _leg), u, v in zip(flows, up, dn)) / 2.0
+
+  def crif(m, t, d):
+      # CRIFIRCurve: the trade's own BUCKET_DV01 (already in the batch) as SIMM CRIF rows; vendor pillar
+      # "USD.SOFR:10Y" -> SIMM Label1 "10y" (lower case); Label2 is the SIMM sub-curve name ("OIS" for a SOFR
+      # curve: "SOFR" is not a SIMM sub-curve); empty once nothing is left (a dead swap).
+      rows = [{"RiskType": "Risk_IRCurve", "Qualifier": "USD", "Bucket": "1", "Label1": key.split(":", 1)[1].lower(),
+               "Label2": "OIS", "Amount": _flip(v), "AmountCurrency": "USD"} for key, v in _risk(m, t, d)["BUCKET_DV01"].items() if v]
+      return pd.DataFrame(rows, columns=_CRIF_COLUMNS)
+
+  def delta_ladder(m, trades, weights, d):
+      m = _seen_from(m, d)
+      out = dict.fromkeys(_PILLARS, 0.0)
       live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
       if not live:
           return out
@@ -138,6 +282,34 @@ code: |
               # An unknown pillar raises KeyError on purpose: never drop risk silently.
               out[key.split(":", 1)[1]] += w * _flip(v)
       return out
+
+  def gamma_ladder(m, trades, weights, d):
+      # IRGamma bucketed (DEV-I13: the diagonal): +-1bp scenario on ONE pillar at a time, per bp^2
+      m = _seen_from(m, d)
+      out = dict.fromkeys(_PILLARS, 0.0)
+      live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
+      if not live:
+          return out
+      specs = [t for t, _ in live]
+      base = [r["PV"] for r in _CLIENT.price(specs, m, ["PV"])]
+      for p in _PILLARS:
+          key = f"{_CURVE}:{p}"
+          up = _CLIENT.price(specs, _scenario(m, ("up", p), pillar_shifts_bp={key: 1.0}), ["PV"])
+          dn = _CLIENT.price(specs, _scenario(m, ("dn", p), pillar_shifts_bp={key: -1.0}), ["PV"])
+          out[p] = sum(w * (u["PV"] + v["PV"] - 2.0 * b) for (_t, w), u, v, b in zip(live, up, dn, base))
+      return out
+
+  def pnl_explain(market, market_to, trades, weights, d):
+      # PnlExplain: full revaluation from market to market_to on the pricing date, weighted. One curve, so
+      # the IR row is the whole move and CROSSES is 0.
+      m0, m1 = _seen_from(market, d), _seen_from(market_to, d)
+      live = [(t, w) for t, w in zip(trades, weights) if w != 0.0]
+      ir = 0.0
+      if live:
+          specs = [t for t, _ in live]
+          pv0, pv1 = _CLIENT.price(specs, m0, ["PV"]), _CLIENT.price(specs, m1, ["PV"])
+          ir = sum(w * (b["PV"] - a["PV"]) for (_t, w), a, b in zip(live, pv0, pv1))
+      return [{"mkt_type": "IR", "mkt_asset": "USD", "value": ir}, {"mkt_type": "CROSSES", "value": 0.0}]
 
 market:
   expr: 'load_market(pricebt_date)'   # -> MarketHandle, or None (weekend, holiday, data gap, outside history)
@@ -150,18 +322,35 @@ trade:
 functions:
   npv:       {expr: '_risk(market, trade, pricebt_date)["PV"]', unit: ccy}               # vendor PV is ccy, holder's view: same as pricebt
   delta:     {expr: '_risk(market, trade, pricebt_date)["delta"]', unit: ccy_per_bp}     # own-rate dPV/dr (see _risk); payer > 0
-  dv01:      {expr: '_risk(market, trade, pricebt_date)["dv01"]', unit: ccy_per_bp}      # zero-curve DV01: single curve, so it is the discount-only delta too
+  dv01:      {expr: '_risk(market, trade, pricebt_date)["dv01"]', unit: ccy_per_bp}      # zero-curve DV01 (forwards move too): what the ladder sums to; mapped to no measure
+  discount_delta: {expr: 'discount_delta(market, trade, pricebt_date)', unit: ccy_per_bp}   # discount curve only, projected flows held
+  gamma:     {expr: 'gamma(market, trade, pricebt_date)', unit: ccy_per_bp2}
+  theta:     {expr: 'theta(market, trade, pricebt_date)', unit: ccy}                     # per calendar day
   par_rate:  {expr: '_risk(market, trade, pricebt_date)["PAR_PCT"] * 100.0', unit: bp}   # vendor: percent -> pricebt: bp (1% = 100bp)
   spot_rate: {expr: '_risk(market, trade, pricebt_date)["spot_par_pct"] * 100.0', unit: bp}   # percent -> bp
   annuity:   {expr: '_risk(market, trade, pricebt_date)["annuity"]', unit: ccy}
   expiry_in_years: {expr: 'max((resolved["termination_date"] - pricebt_date).days, 0) / 365', unit: decimal}   # date arithmetic (DEV-I17)
-  zero_per_bp:  {expr: '0.0', unit: ccy_per_bp}    # a swap has no vol exposure (R2-8); one curve, one currency: no basis/xccy
-  zero_per_bp2: {expr: '0.0', unit: ccy_per_bp2}
+  cashflows: {expr: 'cashflows(market, trade, pricebt_date)', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+  # R3-1: K - par with Meridian's float leg on the fixed schedule (single curve, matching schedules); same for payer and receiver
+  par_spread: {expr: 'resolved["fixed_rate"] * 1e4 - _risk(market, trade, pricebt_date)["PAR_PCT"] * 100.0', unit: bp}
+  fair_premium:  {expr: '_risk(market, trade, pricebt_date)["PV"] / _dfs(market, trade, pricebt_date)[0]', unit: ccy}   # PV / DF(spot): Meridian settles at spot
+  forward_price: {expr: 'forward_price(market, trade, pricebt_date)', unit: ccy}
+  premium_cents: {expr: '_risk(market, trade, pricebt_date)["PV"] / abs(resolved["notional"]) * 1e4', unit: bp, scale_with_quantity: false}
+  local_annuity: {expr: '_risk(market, trade, pricebt_date)["annuity"] / abs(resolved["notional"])', unit: decimal}
+  compounded_fixed_rate: {expr: '((1.0 + resolved["fixed_rate"] / _FIXED_FREQ) ** _FIXED_FREQ - 1.0) * 1e4', unit: bp}   # annual fixed leg: K itself
+  crif:      {expr: 'crif(market, trade, pricebt_date)', unit: ccy_per_bp, returns: frame, scale_columns: [Amount]}
+  zero_per_bp:  {expr: '0.0', unit: ccy_per_bp}    # zero by convention (contracts.ZERO_BY_CONVENTION): a swap has no vol
+  zero_per_bp2: {expr: '0.0', unit: ccy_per_bp2}   # exposure (R2-8); one curve, one currency: no basis/xccy
   zero_vol:     {expr: '0.0', unit: bp}            # vol levels 0.0 by convention, so mixed swap + swaption books work
 portfolio_functions:
   delta_ladder:
-    expr: 'delta_ladder(market, trades, weights)'
+    expr: 'delta_ladder(market, trades, weights, pricebt_date)'
     unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: USD-SOFR, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'gamma_ladder(market, trades, weights, pricebt_date)'
+    unit: ccy_per_bp2
     returns: buckets
     labels: {mkt_type: IR, mkt_asset: USD-SOFR, mkt_class: OIS}
   vega_cube:
@@ -169,15 +358,21 @@ portfolio_functions:
     unit: ccy_per_bp
     returns: buckets
     labels: {mkt_type: IR VOL, mkt_asset: USD, mkt_class: SWAPTION}
+  pnl_explain:
+    expr: 'pnl_explain(market, market_to, trades, weights, pricebt_date)'
+    unit: ccy
+    returns: buckets
 attributes:
   effective_date:   'resolved["effective_date"]'
   termination_date: 'resolved["termination_date"]'
   notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'   # signed by quantity (rebalance netting)
 size_attribute: notional_amount
-risk_measures:
+risk_measures:                  # the whole IRSwap contract (src/pricebt/risk/contracts.py)
   Price: npv
   IRDelta: {scalar: delta, bucketed: delta_ladder}
-  IRDiscountDeltaParallel: dv01
+  IRDiscountDeltaParallel: discount_delta
+  IRGammaParallel: gamma
+  IRGamma: {bucketed: gamma_ladder}
   IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
   IRVanna: zero_per_bp2
   IRVolga: zero_per_bp2
@@ -188,5 +383,15 @@ risk_measures:
   IRAnnualImpliedVol: zero_vol
   IRAnnualATMImpliedVol: zero_vol
   IRDailyImpliedVol: zero_vol
+  Theta: theta
   ExpiryInYears: expiry_in_years
   Annuity: annuity
+  Cashflows: cashflows
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_fixed_rate
+  CRIFIRCurve: crif
+  PnlExplain: pnl_explain

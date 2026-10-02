@@ -1,0 +1,113 @@
+# Broken on purpose (check_asset fixture): LocalAnnuityInCents built from the pv01 (the annuity per
+# bp, Annuity x 1e-4) instead of the annuity. Must FAIL ir_local_annuity.
+# Copy of tests/assets/toy_usd_irs.yaml (the whole strict IRSwap contract) with ONE thing broken (functions.local_annuity).
+schema_version: 1
+asset: bad_local_annuity_per_bp
+description: >
+  Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
+  fixture, never shipped. Exercises build_on: each_market. Maps the whole strict IRSwap contract
+  (docs/v2/IR_STRICT_CONTRACT.md; no unsupported_measures) on tests/toylib/rates.py +
+  tests/toylib/irrisk.py, plus the swap P&L recipe's IRTheta / YearFraction / CashPaidToDate.
+  Units: npv USD (total return); dv01 USD per +1bp (payer > 0) -- the IRDelta scalar is the
+  annuity pv01, exact only at the money (R2-1), and the IRDelta ladder and CRIFIRCurve are built
+  from it; rates in bp; Theta USD per calendar day, IRTheta USD per year.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+defaults:
+  pay_or_receive: Receive
+  termination_date: 10y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+imports: |
+  import toylib.rates as tr
+  import toylib.irrisk as tri
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+  build_on: each_market
+functions:
+  npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+  gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                  # ccy per YEAR
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}             # intensive time coordinate
+  cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
+  discount_delta:    {expr: 'tri.discount_delta(market, trade)', unit: ccy_per_bp}
+  zero_per_bp:       {expr: '0.0', unit: ccy_per_bp}     # no vol / basis / xccy exposure (R2-8, ZERO_BY_CONVENTION)
+  zero_per_bp2:      {expr: '0.0', unit: ccy_per_bp2}
+  zero_vol:          {expr: '0.0', unit: bp}             # vol levels 0.0 by convention (R2-8)
+  spot_rate:         {expr: 'tri.spot_rate(market, trade)', unit: bp}
+  theta_1d:          {expr: 'tri.theta_1d(market, trade)', unit: ccy}            # ccy per DAY (DEV-I15) = theta / 365
+  expiry_in_years:   {expr: 'tri.expiry_in_years(market, trade)', unit: decimal}
+  annuity:           {expr: 'tri.annuity(market, trade)', unit: ccy}
+  cashflows:         {expr: 'tri.empty_cashflows()', unit: ccy, returns: frame, scale_columns: [payment_amount]}
+  par_spread:        {expr: 'tri.par_spread(market, trade)', unit: bp}
+  fair_premium:      {expr: 'tri.fair_premium(market, trade)', unit: ccy}        # no spot lag: = npv
+  forward_price:     {expr: 'tri.forward_price(market, trade)', unit: ccy}       # npv / DF(final date)
+  premium_cents:     {expr: 'tri.premium_cents(market, trade)', unit: bp}
+  local_annuity:     {expr: 'tri.local_annuity_in_cents(market, trade) * 1e-4', unit: decimal}   # BROKEN: pv01 / |N|, not Annuity / |N|
+  compounded_rate:   {expr: 'tri.compounded_fixed_rate(market, trade)', unit: bp}  # annual fixed leg: K
+  crif_ir_curve:     {expr: 'tri.crif_ir_curve_pv01(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  gamma_ladder:
+    expr: 'tri.gamma_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp2
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+  vega_cube:
+    expr: '{}'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR VOL, mkt_asset: TOY-USD, mkt_class: SWAPTION}
+  pnl_explain:   # PnlExplain: full revaluation from market to market_to (IR_RISK_DESIGN section 8)
+    expr: 'tri.pnl_explain(market, market_to, trades, weights)'
+    unit: ccy
+    returns: buckets
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date
+  IRDiscountDeltaParallel: discount_delta
+  IRGamma: {bucketed: gamma_ladder}
+  IRVega: {scalar: zero_per_bp, bucketed: vega_cube}
+  IRVanna: zero_per_bp2
+  IRVolga: zero_per_bp2
+  IRBasis: zero_per_bp
+  IRXccyDelta: zero_per_bp
+  IRSpotRate: spot_rate
+  IRAnnualImpliedVol: zero_vol
+  IRAnnualATMImpliedVol: zero_vol
+  IRDailyImpliedVol: zero_vol
+  Theta: theta_1d
+  ExpiryInYears: expiry_in_years
+  Annuity: annuity
+  Cashflows: cashflows
+  PnlExplain: pnl_explain
+  ParSpread: par_spread
+  FairPremium: fair_premium
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif_ir_curve

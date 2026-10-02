@@ -46,9 +46,10 @@ D = date(2024, 3, 4)
 # %% [markdown]
 # ## 1. The measure contract
 #
-# Every `IRSwap`, `IRSwaption` and `Bond` config must map each measure (and form) of its class's
-# contract to a function with an allowed unit, or declare it under `unsupported_measures:` with a
-# reason; loading fails otherwise, listing every gap (DEV-I11). The contract is data in
+# Every `IRSwap` and `IRSwaption` config must map each measure (and form) of its class's contract to
+# a function with an allowed unit; `unsupported_measures:` cannot satisfy them (the strict classes,
+# `docs/v2/IR_STRICT_CONTRACT.md`). A `Bond` config may still declare a measure it cannot compute,
+# with a reason. Loading fails otherwise, listing every gap (DEV-I11). The contract is data in
 # `pricebt.risk.contracts`:
 
 # %%
@@ -60,11 +61,13 @@ contract = pd.DataFrame(
 contract
 
 # %% [markdown]
-# A library that cannot compute a measure pastes the block the load error prints, then writes the
-# real reason in place of each `TODO`:
+# A swaption config that misses a measure gets a paste-ready mapping skeleton in the load error. Its
+# `expr: '...'` stubs do not compile on purpose: each one must become the real computation (a
+# literal 0.0 is honest only for the zero-by-convention measures, `contracts.ZERO_BY_CONVENTION`):
 
 # %%
-print(contracts.unsupported_block("IRSwaption", [("IRVanna", "scalar"), ("IRVega", "bucketed")]))
+skeleton = contracts.mapping_skeleton("IRSwaption", [("IRVanna", "scalar"), ("IRVega", "bucketed")])
+print(skeleton)
 
 # %% [markdown]
 # ## 2. Pricing a Portfolio
