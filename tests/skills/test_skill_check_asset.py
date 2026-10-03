@@ -29,6 +29,12 @@ BROKEN = [
     ("bad_par_rate_decimal", "swap_par_rate_unit"),
     ("bad_unpinned_maturity", "resolve_pins_terms"),
     ("bad_weekend_raises", "market_weekend"),
+    # PNL_EXPLAIN_PLAN.md 5.3: the 4 new broken fixtures. bad_theta_per_day is NOT here -- see its
+    # own dedicated test below (its bug does not trip swap_theta's magnitude check, by design).
+    ("bad_half_gamma", "swap_gamma"),
+    ("bad_year_fraction_extensive", "year_fraction"),
+    ("bad_identity_par_pct", "swap_pv_identity"),
+    ("bad_identity_par_pct", "swap_par_rate_atm"),  # plan 5.3: verify BOTH rows fire, don't assume
 ]
 
 
@@ -46,10 +52,58 @@ def test_toy_configs_pass(config):
     assert _status(results, "swap_pnl_explain") == check_asset.PASS  # rates moved enough to be a real test
 
 
+def test_toy_usd_irs_new_pnl_explain_rows_present_and_pass():
+    """PNL_EXPLAIN_PLAN.md 5.3: on toy_usd_irs.yaml, swap_pv_identity/swap_gamma/swap_theta/
+    year_fraction/cash_paid_to_date are present and PASS, and the half-gamma probe inside swap_gamma
+    is not SKIP (it must find a qualifying business-day pair at these DATES, not just not-FAIL)."""
+    results = check_asset.run_checks(ASSETS / "toy_usd_irs.yaml", fx=ASSETS / "toy_fx.yaml", dates=DATES)
+    fails = [r for r in results if r.status == check_asset.FAIL]
+    assert not fails, fails
+    for name in ("swap_pv_identity", "swap_gamma", "swap_theta", "year_fraction", "cash_paid_to_date"):
+        assert _status(results, name) == check_asset.PASS, [r for r in results if r.name == name]
+    gamma_detail = next(r.detail for r in results if r.name == "swap_gamma")
+    assert "half-gamma probe: no business-day pair" not in gamma_detail, gamma_detail
+    # The allowlist fix (3.4): IRTheta/YearFraction/CashPaidToDate are recognised as real measures
+    # and actually evaluated (PASS), not merely excused from the "not a pricebt.risk measure" WARN.
+    for mname in ("IRTheta", "YearFraction", "CashPaidToDate"):
+        assert _status(results, f"risk_measures[{mname}]") == check_asset.PASS, mname
+
+
 @pytest.mark.parametrize("fixture,check", BROKEN)
 def test_broken_fixture_fails_its_check(fixture, check):
     results = check_asset.run_checks(FIXTURES / f"{fixture}.yaml", dates=DATES, sys_path=[FIXTURES])
     assert _status(results, check) == check_asset.FAIL
+
+
+def test_bad_theta_per_day_slips_past_swap_theta_but_t_theta_1_catches_it(monkeypatch):
+    """bad_theta_per_day.yaml (theta per DAY, the *365 dropped) is SMALLER in magnitude than the
+    correct theta, not bigger, so it slips past swap_theta's |theta| <= 1000*|dv01| magnitude band
+    undetected -- PNL_EXPLAIN_PLAN.md 5.3's own honesty clause: do not invent a new check just to
+    force this fixture to FAIL check_asset.
+
+    It IS caught elsewhere: tests/skills/test_skill_swap_pnl.py's T-THETA-1 (T1-B) is exactly this
+    mutation ("Mutation: per-day theta (drop *365)"), tested with its own frozen-world closed-form
+    formula theta == npv*(exp(z/365)-1)*365. Reproduced here (not by importing/duplicating that
+    file's test, just its formula, to prove the SAME per-365 mutation this fixture applies is what
+    T-THETA-1 is designed to catch) rather than editing T1-B's file."""
+    results = check_asset.run_checks(FIXTURES / "bad_theta_per_day.yaml", dates=DATES, sys_path=[FIXTURES])
+    assert _status(results, "swap_theta") != check_asset.FAIL  # the documented blind spot
+
+    import math
+
+    import toylib.rates as tr
+
+    monkeypatch.setitem(tr._CCY_PARAMS, "USD", (0.03, 0.0, 252))  # frozen world, matching T-THETA-1
+    market = tr.market(date(2024, 1, 2), "USD")
+    resolved = tr.resolve_swap(market, {"termination_date": "10y", "notional_amount": 1_000_000.0, "pay_or_receive": "Pay", "fixed_rate": 0.02})
+    trade = tr.build_swap(market, resolved)
+    npv0 = tr.npv(market, trade)
+    theta_correct = tr.theta(market, trade)
+    theta_per_day = theta_correct / 365.0  # bad_theta_per_day.yaml's exact mutation
+    z = 0.03
+    expected = npv0 * (math.exp(z / 365.0) - 1.0) * 365.0  # T-THETA-1's own known answer
+    assert theta_correct == pytest.approx(expected, rel=1e-9)  # T-THETA-1 passes on the correct theta
+    assert theta_per_day != pytest.approx(expected, rel=1e-2)  # and is caught (way off) under this mutation
 
 
 def _toy():

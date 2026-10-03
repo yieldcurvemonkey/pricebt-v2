@@ -58,8 +58,8 @@ def test_definition_for_picks_the_kind_and_reads_units_from_the_configs():
 
 
 def test_definition_for_refuses_a_book_it_cannot_attribute():
-    # toy_usd_irs declares gamma, theta and vol unsupported: every held asset must serve every measure
-    with pytest.raises(ValueError, match=r"toy_usd_irs: IRGammaParallel declared unsupported") as err:
+    # toy_usd_irs declares theta and vol unsupported: every held asset must serve every measure
+    with pytest.raises(ValueError, match=r"toy_usd_irs: Theta declared unsupported") as err:
         attribution.definition_for([SWAP_DECLARED, BOND])
     assert "toy_usd_irs: Theta declared unsupported" in str(err.value) and "toy_usd_bond" not in str(err.value)
     # one book, two level units: one PnlDefinition cannot scale both
@@ -198,7 +198,7 @@ def test_cli_definition_and_demo(capsys):
         attribution.main(["--definition", str(SWAP_DECLARED)])
     assert stop.value.code == 1
     err = capsys.readouterr().err
-    assert err.startswith("cannot attribute this book: every held asset must map") and "IRGammaParallel declared unsupported" in err
+    assert err.startswith("cannot attribute this book: every held asset must map") and "Theta declared unsupported" in err
     stats = attribution.main(["--demo", "bond"])
     out = capsys.readouterr().out
     assert stats["finite"] and '"grade": "PASS"' in out

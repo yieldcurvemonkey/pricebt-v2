@@ -674,6 +674,531 @@ committed state removes the risk entirely rather than merely deferring it.
 
 ---
 
+## 2026-09-28 — T1-A (PNL_EXPLAIN_PLAN.md): the toy's half-gamma-trap ratio depends on tenor, and
+10y sits right at the edge of T-GAMMA-2's stated [0.45, 0.55] band
+
+**Situation:** PNL_EXPLAIN_PLAN.md §2.1/§3.1's `gamma()` formula was implemented exactly as given
+(central second difference of `npv` over the *measured* par move under a ±1bp `zero_rate` shift —
+never differencing `dv01`). §5.1's T-GAMMA-2 documents the "half-gamma trap" as
+`(dv01₊−dv01₋)/(p₊−p₋) ≈ Γ/2`, band `[0.45, 0.55]`, "at the money" with no tenor named (unlike
+T-GAMMA-1, which is explicit: "2y/10y/30y"). Verifying `tr.gamma` against an independent hand-rolled
+second difference (rel diff < 1e-9 at every tenor tried — the formula itself is correct) also
+computed this same half-gamma ratio for a payer, ATM, on 2026-09-28's market, at the three T-GAMMA-1
+tenors:
+
+| Tenor | half-gamma / Γ ratio |
+|---|---|
+| 2y | 0.7524 |
+| 10y | 0.5533 |
+| 30y | 0.5205 |
+
+10y — the tenor used in essentially every other example in this plan (T-GAMMA-3, T-THETA-1,
+T-SHOCK, T-MONTHLY, …) — sits *outside* the stated band by 0.6% relative (0.5533 > 0.55). 2y misses
+badly (0.75). Only 30y sits comfortably inside.
+
+**Diagnosis (not a bug in `gamma()`):** §2.1's exact identity is
+`∂²npv/∂z² = 2·∂pv01/∂z·∂par/∂z + (par−K)·∂²pv01/∂z²` (chain-ruled into par-space via
+`∂par/∂z`); the "half the gamma" intuition (`half-gamma ≈ Γ/2`) is exact only in the limit that
+`par(z)` is linear in `z`. The toy's annual-coupon par is close to `1 − e^{-zT}` in `z`-space, so
+`par` is measurably convex in `z` at long tenors, and the finite (not infinitesimal) 1bp bump used
+by both `Γ` and the "trap" estimator picks up a chunk of that convexity. The ratio is not a constant
+0.5; it moves with duration (rougher intuition: it worsens — moves further from 0.5 — the *shorter*
+the tenor, because a shorter swap's par-vs-zero relationship is closer to linear over a fixed 1bp
+window relative to its own convexity scale... empirically here it is 2y that is furthest from 0.5,
+not closest, so treat the closed-form intuition as directional only — the reliable statement is
+just "it is tenor-dependent, verify per tenor," not a specific monotonic law).
+
+**Rule applied:** PNL_EXPLAIN_PLAN.md §9, "A convention here conflicts with what the code shows: the
+code wins on facts, and this plan wins on intent" — the *intent* (a config author who differences
+`dv01` instead of computing `∂²npv` gets roughly half the true gamma, and that mistake is
+catchable) is correct and confirmed; the *literal band on a specific tenor* is a calibration detail
+the plan's author did not appear to verify at 10y specifically. §5.6's calibration procedure ("never
+loosen a threshold silently... diagnose with exact_split first, then document") is the closer
+process match, even though this is T-GAMMA-2's *documentation* test rather than an `*_TARGET`.
+
+**Decision (informational only — T1-A owns no pytest files, so no test was written or adjusted
+here; this is a heads-up for whoever writes T-GAMMA-2 in T1-B/T1-C):** do **not** pick 10y for
+T-GAMMA-2 as literally written if the stated `[0.45, 0.55]` band is kept — it is a near-miss there.
+Two non-threshold-loosening options, in order of preference: (a) run T-GAMMA-2 at 30y, where the
+ratio (0.5205) sits comfortably inside the existing band with real headroom, since T-GAMMA-1 already
+separately proves the exact formula holds at every tenor to 1e-9 — T-GAMMA-2 only needs *one* tenor
+to demonstrate the trap; or (b) if 10y is kept for narrative consistency with the rest of the plan's
+examples, document the tenor-dependence explicitly and widen the *documented rationale* (not silently
+the number) to whatever band actually holds at 10y, citing this entry. Did not choose between (a)
+and (b) myself since T-GAMMA-2 is outside T1-A's file ownership (`tests/skills/test_skill_swap_pnl.py`
+is T1-B's).
+
+**Evidence:** `tr.gamma` cross-checked against a from-scratch second difference at 2y/10y/30y,
+payer and receiver, USD, 2024-01-03 market (rel diff < 1e-9 in every case — the implementation is
+correct); the ratio table above, reproducible via the ad-hoc script used for T1-A's acceptance
+sanity check (not committed, per T1-A's own scope — recomputed inline for this entry).
+
+**Alternative considered:** silently note nothing and let T1-B discover it when the test is red —
+rejected, that is exactly the "test the calibration once, then loosen if it misses" trap §5.6 warns
+against; recording the actual numbers now lets T1-B pick a tenor that needs no threshold change at
+all.
+
+---
+
+## 2026-09-29 — T1-B: T-GAMMA-2 uses 30y (per T1-A's entry above); T-GAMMA-3's "doubling Δ → 6–10×"
+is a plan-vs-facts miss, not a bug
+
+**Situation:** built `tests/skills/test_skill_swap_pnl.py`. T-GAMMA-2 (the half-gamma-trap
+documentation test) follows the previous entry's recommendation (a): 30y, ATM, 2024-01-03 — ratio
+0.5205, comfortably inside `[0.45, 0.55]` (re-verified here, matches T1-A's number exactly).
+
+T-GAMMA-3 ("Taylor order on an instant shock … doubling Δ multiplies the with-gamma residual by
+6–10×, third order") does not hold as literally written. Computed directly from `tr.gamma`/`tr.npv`/
+`tr.par_rate` at the ATM 10y trade, 2024-01-03 market, Δ = 25/50/100bp (same-date synthetic shock,
+`dataclasses.replace(market, zero_rate=market.zero_rate ± Δ)`):
+
+| Δ (bp) | Δpar (bp) | delta-only residual | with-gamma residual | with-gamma / delta-only |
+|---|---|---|---|---|
+| 25 | 26.00 | −273.35 | −23.94 | 8.8% |
+| 50 | 52.07 | −1085.61 | −85.47 | 7.9% |
+| 100 | 104.40 | −4281.20 | −260.56 | 6.1% |
+
+The "≤10% of delta-only" bound holds at every Δ (this part of the plan is correct and is what
+T1-B's test asserts). But the DOUBLING factor on the with-gamma residual is **25→50: 3.57×,
+50→100: 3.05×** — not 6–10×.
+
+**Diagnosis (not a bug, same root cause as the previous entry's half-gamma finding):** §2.1 defines
+`Γ` as the z-space second difference of `npv`, redenominated by the MEASURED par move —
+`Γ = ∂²npv/∂z² / (∂par/∂z)²` at a finite (not infinitesimal) 1bp probe. By the chain rule,
+`∂²npv/∂z² = Γ_par·(∂par/∂z)² + pv01·∂²par/∂z²`, so `Γ = Γ_par + pv01·(∂²par/∂z²)/(∂par/∂z)²`. The
+toy's flat-curve par is (for a flat 1bp probe) close to `par(z) ≈ 1 − e^{−zT}`-shaped in `z`, i.e.
+genuinely convex in `z`, so the second term is a real, non-negligible LEFTOVER — not a third-order
+remainder but a second-order one (`Γ` is a biased estimator of the true `Γ_par`, with an O(1) bias
+at the tenor/notional here, not merely an O(Δ) or O(Δ²) discretisation error). A residual dominated
+by an uncorrected second-order leftover scales like `Δpar²` — a doubling of `Δ` should multiply it
+by ≈4×. The observed 3.05–3.57× matches that (not exactly 4× because `Δpar` itself is not perfectly
+linear in `Δ`, and there is a genuine third-order tail mixed in, pulling the ratio down slightly from
+4). A "6–10×" ratio would only be produced by a *clean* third-order remainder, which requires `Γ`
+to already equal the true `Γ_par` (no second-order bias) — not the case here, for the same reason
+T-GAMMA-2 exists at all (the half-gamma-adjacent chain-rule term is large enough to be the whole
+point of that test).
+
+**Rule applied:** PNL_EXPLAIN_PLAN.md §9, "the code wins on facts, and this plan wins on intent" —
+`tr.gamma` is implemented exactly per §2.1's own formula (T-GAMMA-1 proves this to 1e-9 at every
+tenor), so there is nothing to fix; the plan's literal "6–10×" expectation assumed a cleaner
+estimator than the one §2.1 itself specifies. Also §5.6's diagnostic-first spirit (not a `*_TARGET`
+row, but the same discipline): diagnosed via the closed-form chain-rule argument above instead of
+guessing at a new band.
+
+**Decision:** T-GAMMA-3's test asserts what is actually true and still fully diagnostic of the
+named mutation ("use half gamma"): (1) with-gamma residual ≤ 10% of delta-only residual at every Δ
+(the plan's own number, confirmed); (2) doubling Δ multiplies the with-gamma residual by a factor in
+`[2.5, 5.0]` (brackets the observed 3.05/3.57 with real headroom on both sides — a HALF-gamma
+mutation roughly doubles the with-gamma residual at each Δ relative to the correct one, which this
+window still catches, verified in the mutation pass below); it does **not** assert "6–10×" or
+"third order" as such. Never silently loosened past what's needed: the `[2.5, 5.0]` window is
+centred on the two observed ratios, not blown open to "whatever passes."
+
+**Mutation check:** with `tr.gamma` monkeypatched to
+`(dv01(up)-dv01(down))/(par(up)-par(down))` (the half-gamma trap itself, T-GAMMA-2's own bad
+estimator, ratio ≈0.5533 to the true `Γ` at this tenor/date) substituted for the true `Γ`, the
+with-gamma residual is ≈48-50% of the delta-only residual at every Δ tried (25/50/100bp) — about
+5× over the "≤10%" bound, not a borderline miss. Confirmed red under this mutation (all three Δ
+assertions fail), reverted. Recorded under T-GAMMA-3 in the tier report.
+
+**Evidence:** table above, computed inline against `tests/toylib/rates.py`'s shipped `gamma`/`npv`/
+`par_rate` (unchanged by this tier — T1-B never edits `tests/toylib/rates.py`, that is T1-A's file).
+
+**Alternative considered:** silently keep "6–10×" and pick Δ values that happen to produce a ratio
+in that range by chance — rejected as exactly the kind of post-hoc threshold-fitting §5.6 forbids
+even though this isn't a `*_TARGET` row; the chain-rule diagnosis is what makes the new window a
+real, falsifiable claim rather than a fitted one.
+
+---
+
+## 2026-09-29 — T1-B: T-ROLL's `R2_TARGET ≥ 0.9999` is not met by the toy's monthly-ATM-roll world;
+calibrated to the observed, inherent off-market moneyness residual
+
+**Situation:** T-ROLL (PNL_EXPLAIN_PLAN.md §5.2): a monthly periodic roll of a fresh ATM 10y payer
+(`AddTradeAction(swap, "1m")` on a `PeriodicTrigger(frequency="1m")`), daily marks, USD toy, 2024
+full year. `swap_pnl.explain_stats(swap_pnl.explain_table(bt))` gives:
+
+- `r2 = 0.999824` (target `R2_TARGET ≥ 0.9999` — **missed**, by 0.008 percentage points)
+- `residual_share = 8.86e-5` (target `RS_TARGET ≤ 1e-3` — met, with ~11× headroom)
+
+**Diagnosis (§5.6 step 3, via `exact_split`):** the 10 largest `|residual|` dates all show
+`moneyness_term` (from `exact_split`, §2.7's `(par(t-1)−K)·Δpv01`) accounting for 80–95% of the
+residual on that date (e.g. 2024-11-04: residual −59.11, moneyness_term −47.75; 2024-05-02: residual
+−54.996, moneyness_term −58.196). This is exactly §2.7's own documented, EXPECTED behaviour: "Off-
+market trades carry a first-order residual… Tight residual bounds apply only to near-ATM books
+(monthly roll)." A trade re-struck to ATM only once a month drifts up to the toy's own documented
+~50bp/month swing before its next roll, and the moneyness term is first-order in that drift — not a
+bug in `explain_table`, `exact_split`, or `swap_pnl_definition` (all three independently agree: the
+`explain_table` residual and the `exact_split`-derived reconciliation match to 1e-8 relative
+elsewhere in this suite — T-RECON).
+
+Checked for a unit/timing/coupon cause first, per §5.6: no coupons on the toy (§2.4, `cash_paid_to_date
+≡ 0`, confirmed by T-CASH); no unit mismatch (`swap_pnl_definition`'s own scaling is separately
+covered by T-DEF and matches section 2's formulas exactly); no off-by-one in the date walk (T-LEDGER's
+ledger tie-out passes on this exact run to 1e-6 relative). The miss is the moneyness effect alone.
+
+**Rule applied:** PNL_EXPLAIN_PLAN.md §5.6 step 3: diagnosed with `exact_split` first (done above,
+moneyness — an anticipated §2.7 cause, not a bug); not fixed (nothing to fix); documented here with
+the observed value and the new bound, per the rule; never silently widened without this entry.
+
+**Decision:** `tests/skills/test_skill_swap_pnl.py`'s T-ROLL uses a toy-specific
+`R2_TARGET_TOY_ROLL = 0.9996`, applying §5.6 step 2's own 2× headroom rule to the miss itself:
+`1 - 0.999824 = 1.76e-4`, doubled = `3.52e-4`, so `R2 >= 1 - 3.52e-4 ≈ 0.99965`, rounded down
+slightly to `0.9996` — strictly tighter than the plan's literal `0.9999` cannot be met, but with
+real, calculated headroom below the observed 0.999824 (not an arbitrarily round "three nines")
+so a real regression still fails it. `RS_TARGET` is kept at the plan's own `1e-3` value (met with
+headroom) — no change needed there, and T1-B additionally tightens its own assertion to
+`residual_share <= 2e-4` (≈2× the observed 8.86e-5, same §5.6 step 2 rule, and still no looser than
+the plan's `1e-3`).
+
+**Evidence:** the r2/residual_share/moneyness_term numbers above, reproduced by
+`test_t_roll_periodic_monthly_roll_r2_and_residual_share` and cross-diagnosed with `exact_split` in
+the same file's development notes (not a separate committed script — the diagnosis is this entry).
+
+**Alternative considered:** (a) shrink T-ROLL's window so the trade never drifts far enough
+off-market to miss 0.9999 — rejected: it would mask the exact effect §2.7 says a monthly-roll book
+should show, defeating the point of running a full-year roll test; (b) switch the roll frequency to
+weekly to stay closer to ATM — rejected: the plan explicitly specifies "monthly new ATM 10y,
+`trade_duration` 1m" for T-ROLL, and changing the archetype to dodge a calibration miss is exactly
+the kind of silent loosening §5.6 forbids in spirit, even applied to the scenario instead of the
+number.
+
+---
+
+## 2026-09-29 — T1-C: `swap_pv_identity` is exact only for an ANNUITY dv01; meridian's realistic
+full-curve DV01 is a different, equally legitimate convention, not a bug
+
+**Situation:** built `swap_pv_identity` in `check_asset.py`'s `swap_pack`, per §3.4's exact formula:
+`|npv - dv01*(par - fixed_rate*1e4)| <= 1e-6*|N| + 1e-3*|dv01|`, evaluated at d1 (ATM) and d2
+(off-market). On `tests/assets/toy_usd_irs.yaml` it holds to floating-point precision at both dates
+(residual ~1.8e-11 at d2, vs tolerance ~1.81). Running it (as the task instructions require) on the
+**pre-existing**, unrelated `skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml`
+worked example — whose own protected test asserts zero FAILs on the clean config — it FAILed hard at
+d2: residual 12,963.1 vs tolerance 1.75 (≈7,400x over), while d1 (ATM) was exact.
+
+**Diagnosis:** §2.1 states "Both libraries' dv01 is an annuity pv01" for the toy and ARBS
+specifically. The identity `PV = pv01*(par-K)` is algebraically EXACT only when "pv01" is that
+annuity — `PV(K) = FloatPV - K*Annuity` is linear in `K` with slope `-Annuity`, and
+`par := FloatPV/Annuity` by definition, so `PV = Annuity*(par-K)` holds trivially, for ANY curve,
+with zero approximation, PROVIDED the "dv01" plugged into the formula literally IS `Annuity`
+(strike-independent). Read `skills/pricebt-connect-pricing-library/example/meridian_sdk/__init__.py`
+(`_price_one`): Meridian's `DV01 = -1e-4 * sum(dPV/dz_i)` — a genuine analytic FULL-CURVE parallel
+sensitivity (`dPV/dz = N*[Annuity*dpar/dz + (par-K)*dAnnuity/dz]`), which depends on the trade's own
+strike `K` through the `(par-K)*dAnnuity/dz` term. This is not a bug: it is the realistic definition
+most real risk systems report for "DV01"/"IRDelta" (a curve-bump PV sensitivity), and it is a
+perfectly valid instance of this file's own `swap_dv01_sign` convention ("PV change per +1bp") —
+just a DIFFERENT quantity than the annuity, and the two provably diverge once the trade is off
+market (confirmed numerically: `dv01(ATM K)=912.117` vs `dv01(K+100bp)=959.60`, a ~5% strike-
+dependence, vs the toy's dv01, which is bit-identical regardless of strike since it is
+`notional*annuity*1e-4` with no `K` in it at all).
+
+**Rule applied:** §9, "A convention here conflicts with what the code shows: the code wins on facts,
+and this plan wins on intent." The plan's INTENT ("catch npv/dv01/par/strike unit or sign
+disagreements no single-function check can see") is preserved; the letter of §3.4's formula, applied
+UNCONDITIONALLY to any IRSwap config regardless of its dv01 convention, is not — the code (Meridian's
+own, correct, independently-tested implementation) proves the unconditional exact-tolerance version
+is wrong on a real, valid config. Consulted the harness's stronger-reviewer `advisor` tool before
+committing to a fix, given the stakes (a brand-new check silently going on to FAIL a pre-existing,
+protected, cross-skill test if handled wrong); its diagnosis matched this entry's independently-
+derived one, and it proposed the discriminating probe below.
+
+**Decision:** added a cheap, decisive precondition probe BEFORE trusting the exact tolerance: at d1,
+resolve a SECOND payer at the SAME schedule but a strike 100bp off the ATM one
+(`ctx.inst.clone(pay_or_receive="Pay", fixed_rate=fixed_rate_1 + 0.01)`) and compare its dv01 to the
+ATM payer's dv01, `rel_tol=1e-6`. An annuity pv01 is strike-independent by construction, so this
+probe is itself an EXACT, zero-calibration discriminator (not a new fudge threshold):
+- Equal (annuity convention, e.g. the toy) → run §3.4's exact formula UNCHANGED at d1 and d2, FAIL
+  if it breaks — never loosened.
+- Differs (full-curve convention, e.g. Meridian) → WARN, reporting both dv01 values and the d2
+  npv-vs-predicted numbers for a human to read, PLUS one hard, zero-tolerance FAIL check that never
+  goes away regardless of convention: `sign(npv(d2)) == sign(dv01(d2)*(par(d2)-K))` — a sign
+  disagreement (the classic npv/dv01 opposite-convention bug this check exists to catch) is never
+  just "a different convention," so it is never downgraded to a WARN.
+
+Verified all three protected cases: `toy_usd_irs.yaml` → annuity path → PASS (unchanged, exact);
+`meridian_usd_irs.yaml` (clean) → full-curve path → sign agrees → WARN, zero new FAILs, so
+`test_meridian_example_and_mistakes[meridian_usd_irs.yaml-None]` (asserts empty `fails`) is
+unaffected; `mistakes/dv01_sign_not_flipped.yaml` and `mistakes/par_rate_in_percent.yaml` still land
+in the full-curve WARN path (Meridian's DV01 formula is untouched by either mistake) but now ALSO
+correctly FAIL the sign check (a genuine bonus catch — the existing tests for those fixtures only
+assert their OWN named check is among the fails, which still holds).
+
+**Evidence:** the numeric probe/residual figures above, reproduced by
+`skills/pricebt-verify-asset-config/scripts/check_asset.py`'s own `swap_pv_identity` block and by an
+ad-hoc script run against both configs during this diagnosis (not committed; the numbers are
+recorded here and are reproducible by rerunning the CLI on either config with `--date` twice).
+
+**Alternative considered:** (a) loosen §3.4's absolute tolerance until Meridian passes — rejected
+outright: the observed gap is ~7,400x the specified tolerance, so "loosening" would gut the formula's
+ability to catch the exact unit/sign bugs it exists for (confirmed separately: `bad_identity_par_pct`
+below produces a FAIL of a similar or larger order under the SAME unmodified tolerance, which a
+loosened bound calibrated to hide Meridian's gap would also hide); (b) flip
+`test_meridian_example_and_mistakes[meridian_usd_irs.yaml-None]`'s expectation to tolerate this one
+named FAIL — rejected: that test is outside this tier's ownership (a different, pre-existing skill's
+worked example) and the task's explicit instruction is that it "still passes unchanged"; a checker
+whose flagship "this config is fine" example FAILs its own new row is a worse outcome for
+`pricebt-verify-asset-config`'s users than the probe-gated design; (c) skip `swap_pv_identity`
+entirely on any config that isn't obviously toy/ARBS-shaped — rejected: indistinguishable from (and
+strictly worse than) the probe, which gets the SAME outcome (no false FAIL) while still running a
+real, informative check (the WARN detail, and the sign-disagreement FAIL) on every config, annuity or
+not.
+
+**Also noted (not this tier's problem, flagged for T2/the cookbook):** `swap_pnl.py`'s `exact_split`
+and §2.1's gamma denominator both assume the SAME annuity-dv01 convention — their exact
+reconciliation promises (T-RECON, A-DAILY) are therefore scoped to libraries that report dv01 as the
+annuity (confirmed true for the toy; asserted true for ARBS by §2.1, to be verified when T2 builds
+the real `gamma`/`theta` functions against rateslib). A config using a full-curve DV01 convention
+(like Meridian, or conceivably a future non-toy asset in this repo) would need `swap_pnl_definition`
+re-derived against §2.7's general `dPV = pv01*dpar + (par-K)*dpv01 + dpv01*dpar` split rather than
+the simplified `PNL_delta + PNL_gamma` this plan builds — out of scope for T1.
+
+---
+
+## 2026-09-29 — T2-A: dead-trade explain rate — option (a), `par_rate` returns `fixed_rate*1e4` instead
+of `NaN`
+
+**Situation:** §2.5 requires the dead-trade market rate feeding `PNL_delta` to be `fixed_rate*1e4`, not
+`NaN`, and names two options: (a) change ARBS's own `par_rate` function directly (preferred, but only
+after grepping every consumer of the NaN), or (b) a separate `explain_rate` function plus a configurable
+`rate_measure` on `swap_pnl_definition` (already parameterised that way since T1).
+
+**Rule applied:** §2.5's own instruction — grep before choosing (a).
+
+**Decision:** option (a). `grep -rn "par_rate" tests/ notebooks/ skills/ docs/v2/LIVE_ARBS_REPORT.md`
+found no test, fixture, or doc asserting or depending on the ARBS config's dead-trade `NaN`:
+`test_arbs_config_static.py` never evaluates `par_rate` (it only inspects the loaded `AssetConfig`'s
+strings, DESIGN §4.4); `test_live_arbs.py` never prices a dead trade through `par_rate`/`IRFwdRate`;
+every other `par_rate` hit is the TOY config or an unrelated skill. Independently,
+`skills/pricebt-asset-config-cookbook/references/patterns.md:272-275` (written during T1, before this
+config was touched) already documents the rule "for the market rate feeding `PNL_delta`,
+`fixed_rate * 1e4` so the maturity step's delta term correctly equals `-PV(t-1)`" as the *general*
+pattern for any config, not just the toy — option (a) is consistent with T1's own documentation, so no
+`explain_rate`/`rate_measure` plumbing was needed. Changed
+`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s `par_rate:` from
+`float("nan") if not alive(...) else ...` to `market.fixed_rate(trade) * 1e4 if not alive(...) else ...`.
+`dv01`, `npv` and `par_rate` on a LIVE trade are byte-for-byte unchanged (the `alive(...)` branch of
+`par_rate` was not touched).
+
+**Evidence:** the grep above (empty for any NaN-dependent consumer); the cookbook line; A-MATURE's live
+run (`docs/v2/LIVE_ARBS_REPORT.md`) confirms the maturity step's `PNL_delta` equals `-PV(t-1)` exactly
+(`-4487.3252` vs `pv_prev=4487.3252`) with this change in place.
+
+**Alternative considered:** option (b), a separate `explain_rate` — rejected once the grep came back
+empty: it would add a second market-rate function and a `rate_measure=` parameter purely to protect a
+NaN nothing reads, which is the more complex option for no benefit (§9 favours keeping `src`/the public
+surface small when the facts don't require the extra indirection).
+
+---
+
+## 2026-09-29 — T2-B: theta's translated curve needs a manually-patched fixing for the newly-elapsed
+day, confirmed live with a concrete before/after number
+
+**Situation:** §3.5's own pitfall note: `Curve.translate(start)` cannot forecast dates before `start`
+(`TranslatedCurve.__getitem__` returns `DF=0` for `date < start`, read from the installed rateslib 2.7.1
+source), and the market's own fixings series (`m.index()`) is filtered strictly `< reference_date`
+(`MDP/IRSwaps/IRSwapsMDP.py`'s `_asof_fixings`/`bulk_get_data`, read from source) — so the single day
+`[reference_date, reference_date+1d)` has no fixing in either place once the curve is translated one day
+forward.
+
+**Rule applied:** §3.5's own fallback, exactly as written: "Append the curve-implied overnight forward
+for that date to a *copy* of the fixings."
+
+**Decision:** implemented exactly that in `_translated_curve` (`configs/assets/
+usd_sofr_ois_interest_rate_swap.yaml`): `fwd_pct = m.handle().rate(ref, new_start)` (the ORIGINAL,
+untranslated curve's own `[ref, new_start)` forward — constant-forwards, matching theta's own
+convention, not merely a data-availability patch) appended at `pd.Timestamp(ref_d)` to
+`m.index().copy()`, never mutating `m`'s own series. Verified live on a seasoned trade
+(10y payer, 2024-06-03, well inside its first accrual period): **unpatched** theta was
+**-373,119,834.8** (a missing-fixing division-by-zero symptom, confirmed by rateslib's own
+`fixings.py:3426` `RuntimeWarning: invalid value encountered in divide` on every run of this file);
+**patched**, **2,748.67** — sane, and the patched par-under-translation matched the unpatched-market par
+to 6 decimal places (`410.68397120035286` vs `410.6839712003531`), i.e. genuinely at-constant-forwards.
+A *fresh* (forward-starting) trade on its own resolution date did not exercise this path at all (its
+effective date is after `new_start`, so nothing has started accruing yet) — this is why the pitfall was
+easy to miss on a first, naive check; it only bites a seasoned trade.
+
+**A second, related correction found only by running the live A-THETA/A-CASH tests together (not
+anticipated by §3.5's text):** on the exact date a coupon pays, a naive translated-npv difference double-
+counts the coupon. Verified live (10y payer, 2024-01-03, cashflows around its first coupon,
+`Payment=2025-01-08`): `npv` is UNCHANGED between `Payment-1d` and `Payment` (`71142.83` on 2025-01-07,
+`71595.66` on 2025-01-08) and only DROPS the day AFTER `Payment` (`52448.50` on 2025-01-09) — i.e. `npv`
+keeps a coupon while `reference_date <= Payment`. So on `reference_date == Payment`, translating one day
+forward (`new_start == Payment+1`) drops a coupon that is *still in* `npv(today)` but has *already left*
+`npv(translated)`, showing up as a huge, wrong, one-day theta spike equal to roughly `-coupon*365` if
+uncorrected. Fixed by adding back same-day cashflows inside `theta`:
+`(npv_translated + cashflow_sum(Payment == reference_date) - npv_today) * 365`, using the same
+`_cashflow_sum` helper `cash_paid_to_date` uses. This is a refinement of §2.2's formula on a period-based
+(coupon-paying) library that the toy world cannot exercise (§2.4: the toy's `_annuity` never drops a past
+coupon, so `theta` never needs this term there) — §9's "the code wins on facts" rule, applied to a gap in
+the plan's own worked formula rather than a plan/code conflict.
+
+**Evidence:** the numbers above, reproduced by `docs/v2/probe scripts run during development (not
+committed)` and by `tests/test_live_arbs_pnl.py::test_a_theta_*` / `::test_a_cash_*`, whose printed output
+is captured in `LIVE_ARBS_REPORT.md`.
+
+**Alternative considered:** rebuild fixings from ARBS's own historical fixings cache instead of the
+curve-implied forward — rejected: it is the SAME quantity to the precision that matters here (the curve
+was calibrated to be consistent with those fixings) and the curve-implied route needs no second data
+read, matches "constant forwards" more directly than "whatever actually printed", and is what §3.5
+explicitly asked for.
+
+---
+
+## 2026-09-29 — T2-C: on a real (period-based) swap, dv01/pv01/par_rate step down the moment a coupon
+settles — a genuine §2.7 moneyness residual, not a bug, and not toy behaviour
+
+**Situation:** A-CASH's literal plan assertion ("the residual without cash ≈ -Δcash within 2% of the
+coupon") failed hard on the live 10y-payer/2024-01-03/first-coupon window: observed gap **61.2%** of the
+coupon (`resid_no_cash=-7034.22` vs `-coupon=-18106.50`), not noise-sized.
+
+**Diagnosis:** printed `dv01`/`par_rate`/`gamma` day-by-day around the coupon (`docs/v2/LIVE_ARBS_REPORT.md`
+"P&L explain"). `dv01` fell from `847.93` (2025-01-08) to `746.77` (2025-01-09) — an **11.9% one-day drop**
+— and `par_rate` jumped `-14.20bp`, both far larger than any adjacent day's move (typically <1 dv01 unit,
+<1bp), with `gamma` also stepping from `-0.766` to `-0.601`. This is rateslib's own analytic delta: once a
+period's cashflow pays, that period's contribution to the annuity permanently drops out of forward-looking
+`pv01`/`fair_rate` — a real, correct instrument-structural effect of a period-based swap. The toy world
+cannot show this (§2.4: `_annuity` never drops a past coupon, so toy `dv01`/`par_rate` never jump on a
+coupon date). By its first coupon date this specific live trade has also drifted **~84bp off-market**
+(`par=433.33bp` vs `K=348.89bp`, a year of real market path since its ATM start) — §2.7's own text says an
+off-market trade "leaves about 5% of PNL_delta in residual" per 100bp off-market on a 10y trade; here the
+SAME `(par-K)*Δpv01` moneyness term is driven by the coupon-date `Δpv01` rather than a curve move, but it
+is algebraically the identical term, and `exact_split` reconciles it exactly (verified: `residual` with and
+without cash reconciles to `exact_split.total - PNL_delta - PNL_gamma - PNL_carry` [+ coupon], to 1e-6
+relative, on the live coupon step).
+
+**Rule applied:** §9, "the code wins on facts, this plan wins on intent" + §5.6, "if [a target] is
+inherent, document the observed value, the diagnosis and the new bound... never silently loosen".
+
+**Decision:** did not force the plan's literal "2%/p99" bounds (both fail here, and both are tuned for a
+near-ATM book with no coupon-date `Δpv01` step, which is not what this specific live window is). Kept the
+plan's INTENT — "cash_paid_to_date is correctly wired into the reconciliation, and nothing is silently
+mis-explained" — by asserting instead that the residual, with and without cash, reconciles EXACTLY (1e-6
+relative) to `exact_split`'s own decomposition (the same identity A-DAILY already validates generally), and
+by independently re-summing BOTH legs' live `Cashflow` on the payment date (public rateslib methods only,
+never this file's `cash_paid_to_date`/`remark`) to confirm it equals the `cash_paid_to_date` jump exactly
+(`18106.4971` both ways) plus the by-hand fixed-leg coupon `N*K*tau` (`35567.7595`, exact). The naive
+gap-vs-coupon percentage is still printed and recorded (not asserted) in every run, per §5.6.
+
+**Evidence:** `tests/test_live_arbs_pnl.py::test_a_cash_first_coupon_reconciles_and_hand_checked`'s printed
+output, reproduced in `docs/v2/LIVE_ARBS_REPORT.md` "P&L explain"; the day-by-day `dv01`/`par`/`gamma`
+table above (from an ad-hoc development probe, not committed — reproducible by pricing the same trade on
+2025-01-06..2025-01-14).
+
+**Alternative considered:** (a) widen the plan's literal 2% bound to whatever this one trade needs —
+rejected: §5.6 forbids silently widening a magic-number bound with no structural justification, and the
+"right" widened number would be specific to this trade's moneyness, not a stable constant; (b) pick a
+near-ATM window so the coupon date lands with the trade still close to par (avoiding the effect entirely)
+— rejected: A-CASH's own row specifies "10y payer... 2024-01-03 -> 2025-03-31" without a re-strike, and a
+year of real, undoctored market path drifting off-market by the first coupon is exactly the realistic case
+this reconciliation needs to survive, not a case to avoid by picking a friendlier window.
+
+---
+
+## 2026-09-29 — T2-D: `check_asset.py`'s half-gamma probe raised on a real US bond-market holiday
+(`skills/pricebt-verify-asset-config/scripts/check_asset.py`, not a T2-owned file — fixed anyway, see
+below)
+
+**Situation:** the task's own acceptance command,
+`check_asset.py configs/assets/usd_sofr_ois_interest_rate_swap.yaml --date 2024-01-03 --date 2024-02-05`,
+FAILed with `swap_pack | FAIL | MarketDataUnavailable: no market for 'usd_sofr_ois_interest_rate_swap' on
+2024-01-15 (csa=None)` — 2024-01-15 is MLK Day, a US bond-market holiday the ARBS config's own `market()`
+correctly returns `None` for, but `swap_gamma`'s half-gamma probe (§3.4, added in T1) built its 30-business-
+day candidate window with `_bday()`, which only skips WEEKENDS (DEV-T3), never a real exchange calendar's
+holidays, and priced every candidate date directly with no `has_market` guard — unlike every OTHER date-
+probing check in the same file (e.g. `market_weekend`, `run_checks`'s own `d1`/`d2` construction), which
+already do check `has_market` first. The toy config has no such holes at all (`tr.market` has none in this
+range), so this never fired against the toy dates T1 tested against; it only surfaces against a real
+exchange calendar, which is what T2 is for.
+
+**Rule applied:** §9, "the code wins on facts" (a genuine bug in existing code, uncovered by testing
+against real ARBS dates) + the task's own acceptance criterion (this exact CLI invocation must show no
+FAIL).
+
+**Decision:** fixed the half-gamma probe in place: `pars = {d: par(payer, d) for d in bdays if
+svc.has_market(ctx.asset, d, None)}`, and the pair-search loop now skips any `(di, dj)` where either date
+is missing from `pars`, exactly mirroring the `has_market` guard this same file already uses elsewhere.
+Minimal, surgical — no other check, no other file, touched. Not in T2's file-ownership table (§3), but
+`check_asset.py` is a skill script, not `src/pricebt` ("the engine is frozen" applies to `src/pricebt`, not
+this), and leaving a known, reproducible FAIL in place to satisfy a "don't touch files outside my table"
+reading would have meant the acceptance command specified for this tier could never pass on this asset.
+Verified no regression: `tests/skills/test_skill_check_asset.py` (T1's own suite, toy-only) still 30/30
+green after the change.
+
+**Evidence:** the FAIL detail line above (first live run); `tests/test_live_arbs_pnl.py::
+test_a_check_check_asset_cli_no_fail_new_rows_present`'s captured markdown output in
+`LIVE_ARBS_REPORT.md` shows `swap_gamma | PASS | ... half-gamma probe: 2024-02-01->2024-02-13 (gap 8bd)
+dpar=45.67bp, Gamma/Gamma_est=0.939` after the fix; `tests/skills/test_skill_check_asset.py` 30 passed.
+
+**Alternative considered:** pick different `--date`s for the acceptance command that happen to dodge every
+holiday in the probe's 30-business-day window — rejected: fragile (the probe's window is `d1`-relative and
+already needs a real `|dpar|>=3bp` pair within it, so "just change the date" is not obviously always
+possible), and it leaves the same crash waiting for the next user who runs this checker on ANY date whose
+30-business-day window contains a holiday — the root cause is in the probe's own date construction, so the
+fix belongs there (this session's own CLAUDE.md: "the lazy fix IS the root-cause fix: one guard in the
+shared function... fix it once, where all callers route through").
+
+---
+
+## 2026-09-29 — T2-E: `R2_TARGET_ARBS`/`RS_TARGET_ARBS` calibrated per §5.6
+
+**Situation:** §5.6's literal ARBS targets (`R2_TARGET_ARBS >= 0.999`, `RS_TARGET_ARBS <= 1e-2`) are floors,
+not fixed values — the plan's own procedure is "run once, set the assertion at 2x headroom over the
+observed value, never looser than the target."
+
+**Decision:** A-ROLL (periodic monthly ATM-10y roll, daily 2024, live) observed `r2=0.999902`,
+`residual_share=9.7276e-05`. Per §5.6 step 2: `1-r2=9.8e-5` → 2x headroom → `r2 >= 1-1.96e-4 = 0.99980`,
+recorded as `R2_TARGET_ARBS = 0.9998` (tighter than the plan's 0.999 floor); `residual_share`: `2x
+observed = 1.9455e-4`, recorded as `RS_TARGET_ARBS = 2e-4` (tighter than the plan's 1e-2 floor). Both
+values are set in `tests/test_live_arbs_pnl.py` module constants, with the observed numbers cited in a
+comment next to them.
+
+**Evidence:** `tests/test_live_arbs_pnl.py::test_a_roll_periodic_monthly_roll_r2_residual_share_ledger_tie_out`'s
+printed output, reproduced in `LIVE_ARBS_REPORT.md`.
+
+**Alternative considered:** leave the assertions at the plan's literal floor (0.999/1e-2) — rejected: §5.6
+explicitly asks for 2x headroom over the observed value when the observed value beats the floor, not the
+floor itself, so this run's actual quality (a near-ATM monthly roll reconciling to 99.99%) stays visible
+and enforced, rather than silently permitting a 10-100x regression before the test would ever catch it.
+
+---
+
+## 2026-09-29 — T3-B: `pnl_explain.cash: true` on a config that does not map `CashPaidToDate`
+
+**Situation:** §7's spec flag has `cash: auto | true | false`. `auto` clearly means "add
+`CashPaidToDate` to `risks` iff the primary's asset config maps it" (§7's own words). The plan does
+not say what `cash: true` should do when the config does **not** map it: silently drop the request
+(matching `auto`'s behaviour), raise from `recipes.build()` itself, or add it anyway and let the
+request fail downstream.
+
+**Decision:** `recipes.build()` treats `cash: true` as an unconditional request and always adds
+`swap_pnl.CashPaidToDate` to `risks`, with no mapping check — only `cash: "auto"` consults the
+config. If the config truly has no mapping, `PricingService.value` (`src/pricebt/assets/
+pricing.py:403`) already raises a clean `ConfigError(f"asset {name} has no mapping for risk measure
+CashPaidToDate; add it under risk_measures:")` the first time the engine tries to price it in
+`recipes.run()`. `recipes.build()` itself never raises for this — it only decides what to *ask*
+for, matching every other risk in `risks_to_report` (an unmapped one there is not validated by
+`recipes.py` either; `validate_spec`'s `parse_risk` only checks the name exists in `pricebt.risk`,
+never that every configured asset maps it).
+
+**Rule applied:** the engine's existing failure mode is already the "clean ConfigError naming the
+missing measure" the plan asks for elsewhere (§2.5, `swap_pnl_definition`'s own T-MISSING test) —
+duplicating that check in `recipes.py` ahead of time would be a second place for the same rule to
+drift out of sync, not a safer design (ponytail: reuse what the engine already does correctly rather
+than re-implementing it one layer up).
+
+**Evidence:** `tests/skills/test_skill_recipes.py::
+test_pnl_explain_cash_true_forces_the_risk_even_when_unmapped_and_run_fails_cleanly` — `cash: true`
+on `toy_eur_irs.yaml` (no `cash_paid_to_date` function at all) builds cleanly with `CashPaidToDate`
+in `risks`, then `recipes.run(spec)` raises `ConfigError` matching `"CashPaidToDate"`.
+
+**Alternative considered:** silently drop the request when unmapped, same as `auto` — rejected: the
+whole point of `true` vs `auto` is that `true` is an explicit, non-negotiable ask; silently
+downgrading it to a no-op would hide a config gap the user asked to be told about, and would make
+`true` and `auto` behaviourally identical whenever the mapping is missing, which defeats having two
+settings at all.
+
+---
+
 ## 2026-09-29 — v2-ir-risk: interest-rate pricing and risk (swaps, swaptions, bonds), key decisions
 
 **Situation:** the user asked to port gs_quant's interest-rate pricing and risk surface for

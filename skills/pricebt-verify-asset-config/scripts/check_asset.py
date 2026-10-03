@@ -65,6 +65,18 @@ RATES-SWAP PACK (only when `instrument: IRSwap`)
                       dr/ds, IR_RISK_DESIGN R2-2).
   swap_pnl_explain    npv and dv01 with opposite sign conventions: npv(d2)-npv(d1) of the same
                       resolved payer should be ~ dv01 * change in its par rate (bp).
+  swap_pv_identity    npv/dv01/par/fixed_rate disagreeing on sign or unit in a way no single
+                      other check can see: PV != pv01*(par - K) at the ATM date or the off-market
+                      one (PNL_EXPLAIN_PLAN.md 2.7).
+  swap_gamma          gamma computed from dv01 differences instead of the true second npv
+                      difference (the "half-gamma trap", PNL_EXPLAIN_PLAN.md 2.1), a payer/
+                      receiver/band violation, or (via a probe over nearby dates) a gamma that is
+                      roughly half what a clean second difference would give.
+  swap_theta          theta per day instead of per year, another unit error (|theta| implausibly
+                      large relative to dv01), or receiver != -payer.
+  year_fraction       a quantity-scaled (extensive) time measure: declared `unit: number` instead
+                      of `decimal`, so pricebt multiplies it by trade size (PNL_EXPLAIN_PLAN.md 2.3).
+  cash_paid_to_date   receiver != -payer, or a fresh ATM trade's cumulative paid cash != 0.
 """
 from __future__ import annotations
 
@@ -145,10 +157,45 @@ def _finite(v: Any) -> bool:
         return False
 
 
+def _swap_pnl_module():
+    """Lazily import skills/pricebt-strategy-recipes/scripts/swap_pnl.py -- the SAME cross-skill
+    sys.path pattern this test's own test file (tests/skills/test_skill_check_asset.py) already
+    uses to import check_asset.py itself. Returns None (never raises) if that skill script is not
+    importable in this invocation context, so check_asset.py's unrelated checks keep working
+    regardless (PNL_EXPLAIN_PLAN.md 3.4)."""
+    try:
+        import swap_pnl
+
+        return swap_pnl
+    except ImportError:
+        pass
+    scripts_dir = Path(__file__).resolve().parents[2] / "pricebt-strategy-recipes" / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        import swap_pnl
+
+        return swap_pnl
+    except ImportError:
+        return None
+
+
+def _custom_measures() -> Dict[str, Any]:
+    """swap_pnl.py's IRTheta/YearFraction/CashPaidToDate custom RiskMeasure singletons, keyed by
+    their own `.name` (PNL_EXPLAIN_PLAN.md 3.4: "do not duplicate the strings" -- the key comes
+    from the real measure object, never a hand-typed literal). Empty when swap_pnl.py is not
+    importable here."""
+    mod = _swap_pnl_module()
+    if mod is None:
+        return {}
+    return {m.name: m for m in (mod.IRTheta, mod.YearFraction, mod.CashPaidToDate)}
+
+
 def _risk(name: str):
     import pricebt.risk as pr
 
-    return getattr(pr, name, None)
+    measure = getattr(pr, name, None)
+    return measure if measure is not None else _custom_measures().get(name)
 
 
 def _scalar_form(measure):
@@ -409,7 +456,7 @@ def check_performance(ctx: _Ctx) -> List[CheckResult]:
 def swap_pack(ctx: _Ctx) -> List[CheckResult]:
     """Optional check pack, run only when the config's instrument is IRSwap. Conventions assumed
     (pricebt's, from gs): payer dv01 > 0 is the PV change per +1bp; pay_or_receive 'Pay'/'Receive'."""
-    from pricebt.risk import IRDelta, IRFwdRate, Price
+    from pricebt.risk import IRDelta, IRFwdRate, IRGammaParallel, Price
     from pricebt.risk.results import LazyFuture
 
     svc, d1, d2 = ctx.service, ctx.d1, ctx.d2
@@ -421,6 +468,16 @@ def swap_pack(ctx: _Ctx) -> List[CheckResult]:
     dv01 = lambda inst, d: float(svc.value(inst, d, IRDelta(aggregation_level="Type"), None))  # noqa: E731
     npv = lambda inst, d: float(svc.value(inst, d, Price, None))  # noqa: E731
     out = []
+
+    # PNL_EXPLAIN_PLAN.md 3.4: a par-rate accessor (in bp), hoisted for the new checks below to
+    # share. The existing swap_par_rate_unit/swap_par_rate_atm checks further down keep their own,
+    # separate par_fn resolution unchanged, per this task's "do not restructure the existing
+    # checks" rule -- this is purely additive.
+    _par_fn = ctx.cfg.risk_measures.get("IRFwdRate")
+    _par_fn = _par_fn.scalar if _par_fn is not None else ("par_rate" if "par_rate" in ctx.cfg.functions else None)
+    _par_unit = ctx.cfg.functions[_par_fn].unit if (_par_fn is not None and _par_fn in ctx.cfg.functions) else None
+    _to_bp = {"bp": 1.0, "pct": 100.0, "decimal": 1e4}.get(_par_unit)
+    par = (lambda inst, d: svc.unit_value(inst, d, _par_fn, None) * _to_bp) if _to_bp is not None else None
 
     # ATM npv ~ 0
     fr = ctx.kwargs.get("fixed_rate")
@@ -509,6 +566,207 @@ def swap_pack(ctx: _Ctx) -> List[CheckResult]:
             ratio = dnpv / predicted if predicted else float("nan")
             status = FAIL if ratio < 0 else PASS if 0.5 <= ratio <= 1.5 else WARN
             out.append(CheckResult("swap_pnl_explain", status, f"payer npv change {_fmt(dnpv)} vs dv01 x {dpar:.2f}bp = {_fmt(predicted)} (ratio {ratio:.3f})"))
+
+    # -------------------------------------------------------------------------- PNL_EXPLAIN_PLAN.md 3.4
+
+    # swap_pv_identity: PV = pv01*(par - K) at d1 (ATM) AND d2 (now off-market). Catches
+    # npv/dv01/par/fixed_rate unit or sign disagreements no single-function check sees alone (2.7).
+    #
+    # The identity is algebraically EXACT only when "dv01" is the fixed-leg ANNUITY (PNL_EXPLAIN_
+    # PLAN.md 2.1's convention for the toy and ARBS: strike-independent, since PV is linear in K with
+    # slope -annuity). A config may instead report a realistic full-curve PV sensitivity (also a
+    # valid "dv01"/IRDelta, per this file's own "PV change per +1bp" convention) that DOES depend on
+    # the strike -- that is not a bug, just a different, equally legitimate convention (confirmed on
+    # skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml: its DV01 is an analytic
+    # full-curve sensitivity, docs/v2/DECISIONS_LOG.md 2026-09-29 T1-C). Probe which one this config
+    # uses BEFORE trusting the exact tolerance, so a strike-dependent dv01 gets a WARN (with a sign-
+    # only FAIL check, since a sign disagreement is never a convention difference) instead of a
+    # false FAIL from a legitimate design choice.
+    fixed_rate_1 = payer.resolved_terms.get("fixed_rate")
+    if not has_dv01 or par is None or n is None or not isinstance(fixed_rate_1, (int, float)):
+        out.append(CheckResult("swap_pv_identity", SKIP, "needs IRDelta, a bp/pct/decimal par-rate function, a numeric notional, and a numeric resolved fixed_rate"))
+    else:
+        k_bp = float(fixed_rate_1) * 1e4
+        dv01_atm = dv01(payer, d1)
+        off_market_probe = svc.resolve(ctx.inst.clone(pay_or_receive="Pay", fixed_rate=fixed_rate_1 + 0.01), d1, None)
+        dv01_probe = dv01(off_market_probe, d1)
+        is_annuity = math.isclose(dv01_probe, dv01_atm, rel_tol=1e-6)
+
+        if is_annuity:
+            parts, status = [], PASS
+            for label, d in (("d1(ATM)", d1), ("d2", d2)):
+                v_npv, v_dv01, v_par = npv(payer, d), dv01(payer, d), par(payer, d)
+                lhs = abs(v_npv - v_dv01 * (v_par - k_bp))
+                tol = 1e-6 * n + 1e-3 * abs(v_dv01)
+                ok = lhs <= tol
+                status = status if ok else FAIL
+                parts.append(f"{label}: abs(npv-dv01*(par-K))={_fmt(lhs)} vs tol {_fmt(tol)} ({'ok' if ok else 'BREAKS'})")
+            out.append(CheckResult("swap_pv_identity", status, "; ".join(parts)))
+        else:
+            v_npv2, v_dv012, v_par2 = npv(payer, d2), dv01(payer, d2), par(payer, d2)
+            predicted2 = v_dv012 * (v_par2 - k_bp)
+            sign_ok = predicted2 == 0 or v_npv2 == 0 or (v_npv2 > 0) == (predicted2 > 0)
+            detail = (
+                f"dv01 depends on the strike (dv01(ATM)={_fmt(dv01_atm)} vs dv01(K+100bp)={_fmt(dv01_probe)}): "
+                f"a full-curve PV sensitivity, not an annuity pv01, so PV=dv01*(par-K) is exact only for the "
+                f"annuity convention (PNL_EXPLAIN_PLAN.md 2.1); d2 npv={_fmt(v_npv2)} vs dv01*(par-K)={_fmt(predicted2)}"
+            )
+            if not sign_ok:
+                detail += " -- SIGN DISAGREEMENT (never just a convention difference)"
+            out.append(CheckResult("swap_pv_identity", WARN if sign_ok else FAIL, detail))
+
+    # swap_gamma: only if IRGammaParallel is mapped. Sign/receiver/band, plus the half-gamma probe.
+    gamma_mapping = ctx.cfg.risk_measures.get("IRGammaParallel")
+    if gamma_mapping is None or gamma_mapping.scalar is None:
+        out.append(CheckResult("swap_gamma", SKIP, "no IRGammaParallel mapping"))
+    elif not has_dv01 or par is None:
+        out.append(CheckResult("swap_gamma", SKIP, "IRGammaParallel mapped, but needs IRDelta and a bp/pct/decimal par-rate function too"))
+    else:
+        gamma_measure = _risk("IRGammaParallel")
+        gamma_val = lambda inst, d: float(svc.value(inst, d, gamma_measure, None))  # noqa: E731
+        g_payer, g_recv = gamma_val(payer, d1), gamma_val(recv, d1)
+        dv01_1 = dv01(payer, d1)
+
+        problems = []
+        if g_payer >= 0:
+            problems.append(f"payer Gamma {_fmt(g_payer)} >= 0 (want < 0)")
+        if not math.isclose(g_recv, -g_payer, rel_tol=0.01):
+            problems.append(f"receiver Gamma {_fmt(g_recv)} != -payer {_fmt(-g_payer)}")
+        eff, mat = payer.resolved_terms.get("effective_date"), payer.resolved_terms.get("termination_date")
+        band_note = ""
+        if isinstance(eff, date) and isinstance(mat, date) and dv01_1:
+            years = (mat - eff).days / 365.0
+            band_ratio = abs(g_payer) / (abs(dv01_1) * years * 1e-4)
+            band_note = f", abs(Gamma)/(abs(dv01)*T*1e-4)={band_ratio:.3f}"
+            if not (0.2 <= band_ratio <= 2.0):
+                problems.append(f"abs(Gamma)/(abs(dv01)*T*1e-4)={band_ratio:.3f} outside [0.2, 2]")
+        base_status = FAIL if problems else PASS
+        base_detail = "; ".join(problems) if problems else f"payer {_fmt(g_payer)}, receiver {_fmt(g_recv)}{band_note}"
+
+        # Half-gamma probe (3.4): search up to 30 business days from d1 for a pair up to 10
+        # business days apart (need not be consecutive) where the SAME resolved ATM trade's
+        # |dpar| >= 3bp; Gamma_est = 2*ddv01/dpar over that pair. Ratio Gamma/Gamma_est in [0.7,1.4]
+        # -> PASS; in [0.4,0.6] -> FAIL (half-gamma trap); otherwise -> WARN; no qualifying pair ->
+        # SKIP. Among every qualifying pair, use the one with the LARGEST |dpar| (cleanest signal,
+        # least sensitive to the higher-order terms T-GAMMA-3/DECISIONS_LOG 2026-09-29 found to be
+        # non-negligible at a small bump) rather than just the first one found.
+        bdays = [d1]
+        for _ in range(30):
+            bdays.append(_bday(bdays[-1] + timedelta(days=1)))
+        # _bday only skips WEEKENDS (DEV-T3), never a real exchange calendar's holidays -- a live
+        # ARBS config's own market() correctly returns None for a US bond-market holiday (e.g.
+        # 2024-01-15, MLK Day) that still lands on a weekday here. Skip those, matching every other
+        # date-probing check in this file (line 247, 787): svc.value()/unit_value() otherwise raises
+        # MarketDataUnavailable and turns the whole swap_pack into one FAIL, not a SKIPped date.
+        pars = {d: par(payer, d) for d in bdays if svc.has_market(ctx.asset, d, None)}
+        best_pair = None  # (abs_dpar, i, gap)
+        for gap in range(1, 11):
+            for i in range(len(bdays) - gap):
+                di, dj = bdays[i], bdays[i + gap]
+                if di not in pars or dj not in pars:
+                    continue
+                dpar_probe = pars[dj] - pars[di]
+                if abs(dpar_probe) >= 3.0 and (best_pair is None or abs(dpar_probe) > best_pair[0]):
+                    best_pair = (abs(dpar_probe), i, gap)
+        if best_pair is None:
+            probe_status, probe_detail = SKIP, "no business-day pair within 30 business days had abs(dpar) >= 3bp"
+        else:
+            _, i, gap = best_pair
+            di, dj = bdays[i], bdays[i + gap]
+            dpar_probe = pars[dj] - pars[di]
+            # The factor 2 holds only for a fixed-annuity pv01 (d pv01/dpar = Gamma/2). Under the measure
+            # contract (IR_RISK_DESIGN R2-1) the IRDelta scalar may be the TOTAL own-rate derivative,
+            # whose slope over dpar already is Gamma. Tell them apart the way swap_pv_identity does.
+            k = payer.resolved_terms.get("fixed_rate")
+            off = svc.resolve(ctx.inst.clone(pay_or_receive="Pay", fixed_rate=k + 0.01), d1, None) if isinstance(k, (int, float)) else None
+            annuity_dv01 = off is None or math.isclose(dv01(off, d1), dv01_1, rel_tol=1e-6)
+            gamma_est = (2.0 if annuity_dv01 else 1.0) * (dv01(payer, dj) - dv01(payer, di)) / dpar_probe
+            ratio = g_payer / gamma_est if gamma_est else float("nan")
+            where = f"{di}->{dj} (gap {gap}bd) dpar={dpar_probe:.2f}bp, Gamma/Gamma_est={ratio:.3f}"
+            if not annuity_dv01:
+                where += " (IRDelta is a total own-rate derivative: Gamma_est = ddv01/dpar)"
+            if 0.7 <= ratio <= 1.4:
+                probe_status, probe_detail = PASS, where
+            elif 0.4 <= ratio <= 0.6:
+                probe_status, probe_detail = FAIL, f"{where}: looks like gamma from dv01 differences (half-gamma trap)"
+            else:
+                probe_status, probe_detail = WARN, where
+
+        final_status = base_status
+        if probe_status == FAIL:
+            final_status = FAIL
+        elif probe_status == WARN and base_status == PASS:
+            final_status = WARN
+        out.append(CheckResult("swap_gamma", final_status, f"{base_detail}; half-gamma probe: {probe_detail}"))
+
+    # swap_theta: only if IRTheta is mapped. receiver ~= -payer; |theta| <= 1000*|dv01| (unit check).
+    theta_mapping = ctx.cfg.risk_measures.get("IRTheta")
+    if theta_mapping is None or theta_mapping.scalar is None:
+        out.append(CheckResult("swap_theta", SKIP, "no IRTheta mapping"))
+    elif not has_dv01:
+        out.append(CheckResult("swap_theta", SKIP, "IRTheta mapped, but needs IRDelta too"))
+    else:
+        theta_measure = _risk("IRTheta")
+        if theta_measure is None:
+            out.append(CheckResult("swap_theta", SKIP, "IRTheta mapped, but skills/pricebt-strategy-recipes/scripts/swap_pnl.py is not importable here"))
+        else:
+            # d2, not d1: the fresh ATM trade's theta at d1 is ~0 (same reasoning check_quantity_
+            # scaling already uses), which would make both the sign-symmetry and magnitude checks
+            # below vacuous. At d2 the trade has moved off ATM, so theta is a real, checkable number.
+            th_payer = float(svc.value(payer, d2, theta_measure, None))
+            th_recv = float(svc.value(recv, d2, theta_measure, None))
+            dv01_2 = dv01(payer, d2)
+            problems = []
+            if not math.isclose(th_recv, -th_payer, rel_tol=0.01, abs_tol=1e-6):
+                problems.append(f"receiver theta {_fmt(th_recv)} != -payer {_fmt(-th_payer)}")
+            if abs(th_payer) > 1000 * abs(dv01_2):
+                problems.append(f"abs(theta) {_fmt(abs(th_payer))} > 1000*abs(dv01) {_fmt(1000 * abs(dv01_2))}: looks like a per-day theta or other unit error")
+            status = FAIL if problems else PASS
+            out.append(CheckResult("swap_theta", status, "; ".join(problems) if problems else f"payer {_fmt(th_payer)}, receiver {_fmt(th_recv)} (at {d2})"))
+
+    # year_fraction: only if YearFraction is mapped. delta(d1,d2) == (d2-d1).days/365; identical at x3
+    # quantity (intensive; DESIGN.md 4.2 -- pricebt would otherwise scale it by trade size).
+    yf_mapping = ctx.cfg.risk_measures.get("YearFraction")
+    if yf_mapping is None or yf_mapping.scalar is None:
+        out.append(CheckResult("year_fraction", SKIP, "no YearFraction mapping"))
+    else:
+        yf_measure = _risk("YearFraction")
+        if yf_measure is None:
+            out.append(CheckResult("year_fraction", SKIP, "YearFraction mapped, but skills/pricebt-strategy-recipes/scripts/swap_pnl.py is not importable here"))
+        else:
+            yf1 = float(svc.value(payer, d1, yf_measure, None))
+            yf2 = float(svc.value(payer, d2, yf_measure, None))
+            expected_delta = (d2 - d1).days / 365.0
+            yf1_x3 = float(svc.value(payer.clone(quantity_=3.0), d1, yf_measure, None))
+            problems = []
+            if abs((yf2 - yf1) - expected_delta) > 1e-12:
+                problems.append(f"delta_year_fraction {yf2 - yf1:.12g} != (d2-d1).days/365 = {expected_delta:.12g}")
+            if abs(yf1_x3 - yf1) > 1e-12:
+                problems.append(f"year_fraction x1={yf1:.12g} != x3={yf1_x3:.12g}: not intensive (unit: number instead of decimal?)")
+            status = FAIL if problems else PASS
+            out.append(CheckResult("year_fraction", status, "; ".join(problems) if problems else f"delta={yf2 - yf1:.6g} == (d2-d1)/365; identical at quantity x3 (intensive)"))
+
+    # cash_paid_to_date: only if mapped. A fresh ATM trade's cash at d1 -> 0; receiver = -payer at d2.
+    cash_mapping = ctx.cfg.risk_measures.get("CashPaidToDate")
+    if cash_mapping is None or cash_mapping.scalar is None:
+        out.append(CheckResult("cash_paid_to_date", SKIP, "no CashPaidToDate mapping"))
+    else:
+        cash_measure = _risk("CashPaidToDate")
+        if cash_measure is None:
+            out.append(CheckResult("cash_paid_to_date", SKIP, "CashPaidToDate mapped, but skills/pricebt-strategy-recipes/scripts/swap_pnl.py is not importable here"))
+        else:
+            c1 = float(svc.value(payer, d1, cash_measure, None))
+            c2_payer = float(svc.value(payer, d2, cash_measure, None))
+            c2_recv = float(svc.value(recv, d2, cash_measure, None))
+            problems = []
+            is_fresh_atm = fr is None or (isinstance(fr, str) and _ATM_RE.match(fr))
+            if is_fresh_atm and abs(c1) > 1e-6:
+                problems.append(f"fresh ATM trade cash_paid_to_date at d1 = {_fmt(c1)} != 0")
+            if not math.isclose(c2_recv, -c2_payer, rel_tol=0.01, abs_tol=1e-6):
+                problems.append(f"receiver cash {_fmt(c2_recv)} != -payer {_fmt(-c2_payer)} at d2")
+            status = FAIL if problems else PASS
+            out.append(CheckResult("cash_paid_to_date", status, "; ".join(problems) if problems else f"d1 fresh-ATM cash {_fmt(c1)}; d2 payer {_fmt(c2_payer)} receiver {_fmt(c2_recv)}"))
+
     return out
 
 

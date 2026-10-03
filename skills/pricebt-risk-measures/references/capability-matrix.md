@@ -74,7 +74,7 @@ Fill in one row per contract (measure, form) **before** you write YAML, from wha
 
   The functions are in `tests/toylib/`.
 - **A PV-only service, honest declarations:** the fictional bank-SDK example `skills/pricebt-connect-pricing-library/example/meridian_usd_irs.yaml`. It derives the own-rate `IRDelta`, `Annuity` and `IRSpotRate` from PV, DV01 and the par rate (`implementing-measures.md` section 1, Shape B), maps the zeros and `ExpiryInYears`, and declares only `IRGammaParallel`, `IRGamma`, `Theta` and `Cashflows`, each with the reason (no scenario request, no schedule call). `measures.py matrix --strict` passes on it.
-- **Declaration-only (a test fixture, not a pattern):** `tests/assets/toy_usd_irs.yaml` maps `Price`, `IRDelta` and `IRFwdRate` and declares the rest, including the **zero** vol rows, `ExpiryInYears`, `Annuity` and `IRSpotRate`. The loader allows that, but those four kinds are declarations every library can avoid: `measures.py matrix` prints a hint on each and `--strict` exits 1. Mapping `'0.0'` for the zeros keeps mixed books with vol attribution working (R2-8).
+- **Declaration-only (a test fixture, not a pattern):** `tests/assets/toy_usd_irs.yaml` maps `Price`, `IRDelta`, `IRFwdRate` and `IRGammaParallel` and declares the rest, including the **zero** vol rows, `ExpiryInYears`, `Annuity` and `IRSpotRate`. The loader allows that, but those four kinds are declarations every library can avoid: `measures.py matrix` prints a hint on each and `--strict` exits 1. Mapping `'0.0'` for the zeros keeps mixed books with vol attribution working (R2-8).
 
 Run `measures.py matrix` on each to see a filled matrix:
 

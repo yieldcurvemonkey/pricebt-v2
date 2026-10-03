@@ -7,9 +7,8 @@ description: >
 instrument: IRSwap
 match: {notional_currency: USD}
 currency: USD
-unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); R2-20 keeps this config declaration-only
+unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2); R2-20 kept this config declaration-only until the v2-pnl-explain merge; it maps Price, IRDelta, IRFwdRate and IRGammaParallel and declares the rest
   IRDiscountDeltaParallel: "toylib.rates has one curve and no discount-only bump function; not wired in this config"
-  IRGammaParallel: "toylib.rates has no own-rate gamma function; not wired in this config"
   IRGamma: "toylib.rates has no gamma ladder function; not wired in this config"
   IRVega: "toylib.rates has no volatility (a swap's vega is 0.0 by convention, R2-8, but no zero function is wired here)"
   IRVanna: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
@@ -20,7 +19,7 @@ unsupported_measures:   # IR measure contract (docs/v2/IR_RISK_DESIGN.md section
   IRAnnualImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
   IRAnnualATMImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
   IRDailyImpliedVol: "toylib.rates has no volatility (0.0 by convention for a swap, R2-8); not wired in this config"
-  Theta: "toylib.rates has no one-day translated-curve carry function; not wired in this config"
+  Theta: "the per-year IRTheta (tr.theta) is mapped; Theta (per day) = IRTheta / 365 is not wired in this config"
   ExpiryInYears: "no years-to-final-date function is wired in this config"
   Annuity: "toylib.rates exposes pv01 but no Annuity function; not wired in this config"
   Cashflows: "toy npv never drops paid coupons (total return by construction), so its Cashflows would be an empty frame (R2-6); no frame function is wired in this config"
@@ -44,6 +43,10 @@ functions:
   npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
   dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
   par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+  gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                  # ccy per YEAR
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}             # intensive time coordinate
+  cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
 portfolio_functions:
   delta_ladder:
     expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
@@ -59,3 +62,7 @@ risk_measures:
   Price: npv
   IRDelta: {scalar: dv01, bucketed: delta_ladder}
   IRFwdRate: par_rate
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date

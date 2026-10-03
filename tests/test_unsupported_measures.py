@@ -69,7 +69,7 @@ def test_declared_whole_measure_raises_naming_measure_and_reason():
     err = info.value
     assert isinstance(err, ConfigError) and isinstance(err, NotSupportedError)
     assert (err.measure, err.form, err.asset, err.key) == ("Theta", "*", "toy_usd_irs", "unsupported_measures.Theta")
-    assert "no one-day translated-curve carry function" in str(err)
+    assert "Theta (per day) = IRTheta / 365 is not wired" in str(err)  # the config's own reason
 
 
 def test_declared_fd_measure_raises_in_its_scalar_form_too():

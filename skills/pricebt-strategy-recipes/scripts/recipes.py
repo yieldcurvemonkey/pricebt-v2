@@ -32,6 +32,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pricebt-strategy-intake" / "scripts"))
 import spec as specmod  # noqa: E402
 import instrument_terms as terms  # noqa: E402  (same directory as spec.py)
+import swap_pnl  # noqa: E402 -- same directory as this file, already on sys.path however recipes.py is imported
 
 from pricebt import instrument as _instrument_mod  # noqa: E402
 from pricebt.backtests.actions import (  # noqa: E402
@@ -45,6 +46,7 @@ from pricebt.backtests.actions import (  # noqa: E402
 from pricebt.backtests.backtest_objects import (  # noqa: E402
     ConstantCashAccrualModel,
     ConstantTransactionModel,
+    PnlDefinition,
     ScaledTransactionModel,
     TransactionModel,
 )
@@ -418,15 +420,39 @@ def build(spec: Union[dict, str, Path]) -> Built:
     notes.append(f"costs: {spec['costs']['model']} level {spec['costs'].get('level')} per side "
                  f"({type(tc).__name__}); applied to entries, exits and hedges")
 
+    # P&L explain (PNL_EXPLAIN_PLAN.md section 7): swap_pnl_definition() only makes sense for an
+    # IRSwap primary (gamma/theta/year_fraction/cash_paid_to_date are swap-shaped conventions).
+    pe = spec["pnl_explain"]
+    pnl_def = None
+    add_cash = False
+    if pe.get("enabled"):
+        primary_cls = spec["instruments"]["primary"]["class"]
+        if primary_cls == "IRSwap":
+            primary_cfg = primary.asset_config  # PricebtSession.current lookup (use_session ran above)
+            pnl_def = swap_pnl.swap_pnl_definition(rate_unit=swap_pnl.rate_unit_for(primary_cfg),
+                                                    gamma=pe["gamma"], carry=pe["carry"])
+            maps_cash = "CashPaidToDate" in primary_cfg.risk_measures
+            add_cash = pe["cash"] is True or (pe["cash"] == "auto" and maps_cash)
+            notes.append(f"P&L explain: swap_pnl_definition(gamma={pe['gamma']}, carry={pe['carry']}); "
+                         f"cash column {'included' if add_cash else 'not requested/not mapped'}")
+        else:
+            notes.append(f"P&L explain requested but primary is not IRSwap (got {primary_cls!r}): skipped")
+    else:
+        notes.append("P&L explain not enabled")
+
     risks = [specmod.parse_risk(r) for r in spec.get("risks_to_report") or []]
     if sz["method"] == "dv01_target" or arch in ("curve_trade", "delta_hedged", "risk_band"):
         risks.append(BOOK_DV01)  # the sizing measure is not added to the results automatically
+    if add_cash:
+        risks.append(swap_pnl.CashPaidToDate)
     # run_backtest de-duplicates its risks BEFORE the result_ccy rewrite, so a bare measure whose
     # currency form a trigger/hedge already carries (strategy.risks) would appear twice: drop it here.
     risks = [r for r in dict.fromkeys(risks) if with_ccy(r, ccy) not in strategy.risks or with_ccy(r, ccy) == r]
     run_kwargs = dict(start=d["start"], end=d["end"], frequency=d["frequency"], risks=risks,
                       holiday_calendar=d.get("holiday_calendar") or None, result_ccy=ccy,
                       initial_value=spec.get("initial_value") or 0, show_progress=False)
+    if pnl_def is not None:
+        run_kwargs["pnl_explain"] = pnl_def  # absent (not None) when disabled: GenericEngine.run_backtest's own default applies
     return Built(strategy, run_kwargs, parts.signal, notes, spec)
 
 
@@ -442,6 +468,8 @@ def run(spec: Union[dict, str, Path]) -> "tuple[Any, Built]":
 def _short(v: Any) -> str:
     if isinstance(v, Instrument):
         return f"{type(v).__name__}({v.name})"
+    if isinstance(v, PnlDefinition):
+        return f"PnlDefinition({', '.join(a.attribute_name for a in v.attributes)})"
     if isinstance(v, (pd.Series, GenericDataSource)):
         return type(v).__name__
     if hasattr(v, "priceables") and not isinstance(v, Action):  # Portfolio
@@ -477,7 +505,7 @@ def describe(built: Built) -> str:
         lines.append(f"- {type(t).__name__}: {_req(t.trigger_requirements)}")
         for a in t.actions:
             lines.append(f"    -> {type(a).__name__}(name={a.name}, {_fields(a, _ACTION_FIELDS)})")
-    rk = {k: (_short(v) if k == "risks" else v) for k, v in built.run_kwargs.items()}
+    rk = {k: (_short(v) if k in ("risks", "pnl_explain") else v) for k, v in built.run_kwargs.items()}
     lines.append(f"GenericEngine().run_backtest(strategy, {', '.join(f'{k}={v}' for k, v in rk.items())})")
     if built.signal is not None:
         lines.append(f"signal: {len(built.signal)} points, {built.signal.index[0]}..{built.signal.index[-1]}")

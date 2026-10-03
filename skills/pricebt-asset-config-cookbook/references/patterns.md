@@ -531,3 +531,86 @@ functions:
 - **Quoted prices only.** A bond marked only by a quoted price has no curve to shift. Compute its
   Z-spread once and shift the curve holding it, or declare `IRDiscountDeltaParallel`, the `IRDelta`
   ladder and `IRGamma` with that reason.
+
+## 28. P&L explain functions (gamma, theta, year_fraction, cash_paid_to_date)
+
+Four optional functions turn on `skills/pricebt-strategy-recipes/scripts/swap_pnl.py`'s
+`swap_pnl_definition()`/`explain_table()` for an `IRSwap` config (`docs/v2/PNL_EXPLAIN_PLAN.md`
+sections 2-2.5 have the exact conventions; `docs/v2/ASSET_CONFIG_GUIDE.md` has the contract). Toy
+shape (`tests/assets/toy_usd_irs.yaml`):
+
+```yaml
+functions:
+  gamma:             {expr: 'tr.gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}                # ccy per YEAR, not per day
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}           # intensive: never unit: number
+  cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
+risk_measures:
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date
+```
+
+ARBS-shaped (illustrative style, matching `configs/assets/usd_sofr_ois_interest_rate_swap.yaml`'s own
+`code:`/`functions:` pattern -- not something T1 tests against real ARBS; the real functions are T2's
+job):
+
+```yaml
+code: |
+  def _shift(curve, bp):
+      # library-specific: rebuild the SAME curve type with every zero node bumped by `bp`
+      return curve.parallel_shift(bp * 1e-4)
+
+  def gamma(market, trade):
+      up, down = _shift(market.curve, 1.0), _shift(market.curve, -1.0)
+      npv_up, npv_down, npv_mid = price(up, trade), price(down, trade), price(market.curve, trade)
+      par_up, par_down = par_rate(up, trade), par_rate(down, trade)              # the trade's OWN measured move
+      return (npv_up + npv_down - 2.0 * npv_mid) / ((par_up - par_down) / 2.0) ** 2
+
+  def theta(market, trade):
+      translated = market.curve.translate(days=1)                              # forward rates held fixed
+      return (price(translated, trade) - price(market.curve, trade)) * 365.0
+
+  def year_fraction(market):
+      return (market.reference_date() - EPOCH).days / 365.0                    # intensive: no `trade` argument
+
+  def cash_paid_to_date(market, trade):
+      cashflows = remark(market, trade).cashflows(curves=market.handle())
+      return sum(cf.amount for cf in cashflows if cf.payment_date <= market.reference_date())
+functions:
+  gamma:             {expr: 'gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'theta(market, trade)', unit: ccy}
+  year_fraction:     {expr: 'year_fraction(market)', unit: decimal}
+  cash_paid_to_date: {expr: 'cash_paid_to_date(market, trade)', unit: ccy}
+```
+
+`IRGammaParallel` must be the chain-rule second derivative of pattern 17; this `(n₊ + n₋ − 2n₀)/((p₊ − p₋)/2)²` gamma leaves out the par rate's own convexity and is about 10% low at 10y ATM until the chain-rule term lands (`docs/v2/MERGE_NOTES_pnl_explain.md` §4).
+
+**Every explain function must return `0.0` for a dead (matured) trade**, never `NaN`
+(`pnl_explain()`'s own `cum_total += metric_pnl` has no guard, so one `NaN` poisons every later
+cumulative value -- PNL_EXPLAIN_PLAN.md section 2.5).
+
+**The traps** (each one is a test in `tests/skills/test_skill_swap_pnl.py`, and a checker row in
+`skills/pricebt-verify-asset-config/scripts/check_asset.py`):
+
+- **Half gamma.** `gamma` must be the second derivative of `npv` (a central difference of `npv`
+  itself), never the difference of `dv01`/`pv01` across the same bump -- `(dv01(up)-dv01(down))/
+  (par(up)-par(down))` looks plausible but is only ABOUT half the true convexity (`T-GAMMA-2`'s
+  "half-gamma trap"; the exact ratio is tenor-dependent, not a clean 0.5 -- see
+  `docs/v2/DECISIONS_LOG.md`).
+- **Per-day theta, not per year.** `theta` is `ccy` per YEAR (`Δyear_fraction` is what converts it
+  to a step's actual carry); a `θ` that is really "PV change over one calendar day" with no `* 365`
+  looks like a plausible number but is 365x too small (`T-THETA-1`).
+- **Extensive time.** `year_fraction` must be `unit: decimal` (intensive -- the SAME value
+  regardless of position size), never `unit: number` (pricebt would then scale it by `quantity_`,
+  so a 3x position gets 3x the "time", and `PNL_carry` ends up scaled by the position size SQUARED
+  through `theta x Δyear_fraction`) (`T-YF`, `T-SCALE`).
+- **Static-roll theta (the double-count).** `theta` must translate the curve (forward rates held
+  fixed) -- ARBS's own `roll_curve`/`carry_bps_running` are a DIFFERENT, static-SHAPE measure. Using
+  a rolled curve for `theta` books real roll-down twice: once correctly in `PNL_delta` (a genuine
+  `Δpar`), and again in `PNL_carry` (`T-SLOPE-2`).
+- **NaN on a dead trade.** A swap that matures between two marks has `dv01(t-1) != 0` but a naive
+  `par_rate(t) = NaN`; every function above must guard the dead case and return `0.0` (or, for the
+  market rate feeding `PNL_delta`, `fixed_rate * 1e4` so the maturity step's delta term correctly
+  equals `-PV(t-1)`), never let the `NaN` reach `pnl_explain()`.

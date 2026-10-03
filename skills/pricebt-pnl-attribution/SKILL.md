@@ -93,7 +93,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
    |---|---|
    | any swaption (with swaps or bonds) | all six: `swaption_pnl_definition(rate_unit, vol_unit)` |
    | bonds, swaps, or both | delta, gamma, theta: `bond_pnl_definition(rate_unit)` = `ir_pnl_definition(vega=False, vanna=False, volga=False)` |
-   | swaps on configs written to the in-flight swap branch | its `swap_pnl_definition` (skills/pricebt-strategy-recipes/scripts/swap_pnl.py once merged; per-year `IRTheta × YearFraction`) |
+   | swaps on configs that map the swap recipe's `IRTheta`/`YearFraction` | `swap_pnl_definition` in [`swap_pnl.py`](../pricebt-strategy-recipes/scripts/swap_pnl.py) (per-year `IRTheta × YearFraction`; its `explain_table` takes cash from `CashPaidToDate`) |
    | anything else | `ir_pnl_definition(..., delta=, gamma=, vega=, vanna=, volga=, theta=)`, or your own `PnlDefinition` |
 
    Keyword flags override the kind: `definition_for(session, volga=False)`. Pass `assets=[names]` when the session holds configs the book never trades.
@@ -109,7 +109,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
                                      risks=[Cashflows], pnl_explain=definition)   # Cashflows: coupon-dropping Price only
    ```
 
-   **From a strategy spec** (the workflow skills), add the definition to the recipe's run arguments. A spec `pnl_explain:` block is planned by the in-flight workflow change; until it lands, pass the definition like this:
+   **From a strategy spec** (the workflow skills): the spec's `pnl_explain:` block wires `swap_pnl_definition` for a swap primary only. For a swaption or bond book, add the definition to the recipe's run arguments:
 
    ```python
    built = recipes.build(spec)

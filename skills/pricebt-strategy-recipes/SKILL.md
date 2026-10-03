@@ -157,6 +157,33 @@ Recipes (each a tested spec in `example/`, each with the measures your config mu
 - **`stop_loss_mtm` with `result_ccy`** is rejected by validation: `run_backtest` de-duplicates its risks before the `result_ccy` rewrite, so the trigger's `Price(currency=...)` and the engine's own price column would appear twice.
 - **Name every action** when composing by hand: unnamed actions take a process-global `Action{N}` name, so two builds of the same strategy name their trades differently.
 
+## P&L explain (delta / gamma / carry)
+
+`scripts/swap_pnl.py` adds a swap `PnlDefinition` on top of `bt.pnl_explain()` (see
+[references/construct-cheatsheet.md](references/construct-cheatsheet.md)'s "P&L explain" section for
+the full API). One-line wiring:
+
+```python
+import sys; sys.path.insert(0, "skills/pricebt-strategy-recipes/scripts")
+import swap_pnl
+
+backtest = GenericEngine().run_backtest(
+    strategy, start=start, end=end, frequency="1b",
+    risks=[swap_pnl.CashPaidToDate],              # optional: needed for the `cash` column
+    pnl_explain=swap_pnl.swap_pnl_definition(),    # -> bt.pnl_explain() now returns PNL_delta/_gamma/_carry
+)
+table = swap_pnl.explain_table(backtest)           # actual_dpv, cash, economic, PNL_*, explained, residual
+stats = swap_pnl.explain_stats(table)              # totals, r2, residual_share, worst-residual date
+```
+
+`run_backtest`'s own `pnl_explain=` kwarg takes the definition directly (it becomes `BackTest.pnl_explain_def`) --
+no separate wiring step. Read `docs/v2/PNL_EXPLAIN_PLAN.md` sections 2 and 2.7 before trusting a residual: a
+book that isn't near-ATM (a held-to-maturity trade, an off-market entry) carries a real, expected
+first-order residual that is not a bug (`swap_pnl.exact_split(backtest)` is the diagnostic for it).
+Only for `IRSwap` assets whose config maps `gamma`/`theta`/`year_fraction` (ASSET_CONFIG_GUIDE.md's
+"P&L explain functions" section) -- an asset without them raises a clean `ConfigError` naming the
+missing measure, or pass `gamma=False, carry=False` for delta-only attribution on any swap config.
+
 ## Related skills
 
 - [`pricebt-strategy-intake`](../pricebt-strategy-intake/SKILL.md): writes the spec this skill consumes.

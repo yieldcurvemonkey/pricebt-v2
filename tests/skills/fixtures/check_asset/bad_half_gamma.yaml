@@ -1,0 +1,85 @@
+# Broken on purpose (check_asset fixture): gamma computed from dv01 DIFFERENCES instead of the true
+# second-npv-difference formula -- the exact "half-gamma trap" PNL_EXPLAIN_PLAN.md 2.1 warns about.
+# Must FAIL swap_gamma (via its half-gamma probe).
+# Copy of tests/assets/toy_usd_irs.yaml with ONE thing broken, PLUS termination_date 10y -> 30y:
+# docs/v2/DECISIONS_LOG.md 2026-09-28/29 (T1-A/T1-B) already found the half-gamma ratio is
+# tenor-dependent and near/outside a [0.4,0.6]-style band at 10y, comfortably inside it at 30y --
+# this fixture reuses that finding rather than re-deriving it, per T1-C's own DECISIONS_LOG entry.
+schema_version: 1
+asset: bad_half_gamma
+description: >
+  Toy USD swap on the deterministic closed-form rates world in tests/toylib/rates.py. Test-only
+  fixture, never shipped. Exercises build_on: each_market. Units: npv USD; dv01 USD per +1bp
+  (payer > 0); rates in bp.
+instrument: IRSwap
+match: {notional_currency: USD}
+currency: USD
+unsupported_measures:
+  IRDiscountDeltaParallel: "check_asset fixture: IRDiscountDeltaParallel is not wired in this one-error copy of toy_usd_irs"
+  IRGamma: "check_asset fixture: IRGamma is not wired in this one-error copy of toy_usd_irs"
+  IRVega: "check_asset fixture: IRVega is not wired in this one-error copy of toy_usd_irs"
+  IRVanna: "check_asset fixture: IRVanna is not wired in this one-error copy of toy_usd_irs"
+  IRVolga: "check_asset fixture: IRVolga is not wired in this one-error copy of toy_usd_irs"
+  IRBasis: "check_asset fixture: IRBasis is not wired in this one-error copy of toy_usd_irs"
+  IRXccyDelta: "check_asset fixture: IRXccyDelta is not wired in this one-error copy of toy_usd_irs"
+  IRSpotRate: "check_asset fixture: IRSpotRate is not wired in this one-error copy of toy_usd_irs"
+  IRAnnualImpliedVol: "check_asset fixture: IRAnnualImpliedVol is not wired in this one-error copy of toy_usd_irs"
+  IRAnnualATMImpliedVol: "check_asset fixture: IRAnnualATMImpliedVol is not wired in this one-error copy of toy_usd_irs"
+  IRDailyImpliedVol: "check_asset fixture: IRDailyImpliedVol is not wired in this one-error copy of toy_usd_irs"
+  Theta: "check_asset fixture: Theta is not wired in this one-error copy of toy_usd_irs"
+  ExpiryInYears: "check_asset fixture: ExpiryInYears is not wired in this one-error copy of toy_usd_irs"
+  Annuity: "check_asset fixture: Annuity is not wired in this one-error copy of toy_usd_irs"
+  Cashflows: "check_asset fixture: Cashflows is not wired in this one-error copy of toy_usd_irs"
+defaults:
+  pay_or_receive: Receive
+  termination_date: 30y
+  notional_currency: USD
+  fixed_rate: ATM
+  notional_amount: 1.0e6
+imports: |
+  import dataclasses
+  import toylib.rates as tr
+code: |
+  def _bad_gamma(market, trade):
+      # BROKEN: gamma from dv01 differences, not the true second difference of npv (the half-gamma
+      # trap PNL_EXPLAIN_PLAN.md 2.1 documents -- this is HALF the true gamma).
+      up = dataclasses.replace(market, zero_rate=market.zero_rate + 1e-4)
+      down = dataclasses.replace(market, zero_rate=market.zero_rate - 1e-4)
+      dv01_up, dv01_down = tr.pv01(up, trade), tr.pv01(down, trade)
+      par_up, par_down = tr.par_rate(up, trade), tr.par_rate(down, trade)
+      return (dv01_up - dv01_down) / (par_up - par_down)
+market:
+  expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
+  key: toy_usd_ois
+resolve:
+  expr: 'tr.resolve_swap(market, kwargs)'
+trade:
+  expr: 'tr.build_swap(market, resolved)'
+  build_on: each_market
+functions:
+  npv:      {expr: 'tr.npv(market, trade)', unit: ccy}
+  dv01:     {expr: 'tr.pv01(market, trade)', unit: ccy_per_bp}
+  par_rate: {expr: 'tr.par_rate(market, trade)', unit: bp}
+  gamma:             {expr: '_bad_gamma(market, trade)', unit: ccy_per_bp2}
+  theta:             {expr: 'tr.theta(market, trade)', unit: ccy}
+  year_fraction:     {expr: 'tr.year_fraction(market)', unit: decimal}
+  cash_paid_to_date: {expr: 'tr.cash_paid_to_date(market, trade)', unit: ccy}
+portfolio_functions:
+  delta_ladder:
+    expr: 'tr.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
+    unit: ccy_per_bp
+    returns: buckets
+    labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
+attributes:
+  effective_date:   'resolved["effective_date"]'
+  termination_date: 'resolved["termination_date"]'
+  notional_amount:  'abs(resolved["notional"]) * pricebt_quantity'
+size_attribute: notional_amount
+risk_measures:
+  Price: npv
+  IRDelta: {scalar: dv01, bucketed: delta_ladder}
+  IRFwdRate: par_rate
+  IRGammaParallel: gamma
+  IRTheta: theta
+  YearFraction: year_fraction
+  CashPaidToDate: cash_paid_to_date
