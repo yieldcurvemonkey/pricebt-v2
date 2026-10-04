@@ -138,7 +138,7 @@ depend on the grid either) and the financing change at the mark date's FX. Flows
 without `result_ccy` raise `ValueError`. The record is keyed by the position object (two positions may share a name). Positions held to the end of the run stop at the last date. The ledger (`trade_ledger`) is
 unchanged (it pairs the price legs).
 
-`pnl_explain_table`: per held instrument, if `holding_cash[cur_date]` has its name, `cashflow_pnl += cashflow` and
+`pnl_explain_table`: per held instrument, if `holding_cash[cur_date]` has that position, `cashflow_pnl += cashflow` and
 `financing_pnl += financing`; otherwise the existing `Cashflows`-in-risks path. Columns:
 `actual_pnl, cashflow_pnl, financing_pnl, economic_pnl, <attributes>, explained_pnl, residual_pnl`.
 
