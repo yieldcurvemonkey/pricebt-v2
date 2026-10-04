@@ -567,6 +567,7 @@ def lib_annuity(m, t): return tb.annuity(m, t)
 def lib_oas(m, t): return m.spread
 def lib_par_spread(m, t): return m.spread
 def lib_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0)
+def lib_term_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0)   # the toy locks the trade date's rate
 def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), spread=m.spread, repo=m.repo)
 '''
 
@@ -771,3 +772,19 @@ def test_bond_template_seasoned_position_matches_the_toy_including_financing(var
     ref = _values(TOY_ASSETS / ref_cfg, instruments[variant](), d, resolve_on=traded)
     _compare("Bond", got, ref)
     assert abs(got[("FinancingToDate", "scalar")]) > 100.0 and (got[("FinancingToDate", "scalar")] > 0) == (variant == 1)  # the short receives
+
+
+def test_bond_template_term_repo_comes_from_its_own_primitive():
+    """repo_term: term locks lib_term_repo_rate's quote on the trade date, not the overnight fixing:
+    with a term rate 25bp over the overnight one, RepoRate of a term position is that quote on every
+    date, and an overnight position still reads the day's fixing."""
+    raw = _filled("Bond")
+    raw["code"] += "\ndef lib_term_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0) + 0.0025\n"
+    traded, d = date(2024, 4, 25), date(2024, 5, 10)
+    term = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD", repo_term="term")
+    over = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD", repo_term="overnight")
+    import toylib.bond as tb
+
+    want_term = (tb.gc(traded) - tb.SPECIALS["TOY 4.25 2034-11-15"] + 0.0025) * 1e4
+    assert _values(raw, term, d, resolve_on=traded)[("RepoRate", "scalar")] == pytest.approx(want_term, rel=1e-12)
+    assert _values(raw, over, d, resolve_on=traded)[("RepoRate", "scalar")] == pytest.approx((tb.gc(d) - tb.SPECIALS["TOY 4.25 2034-11-15"]) * 1e4, rel=1e-12)

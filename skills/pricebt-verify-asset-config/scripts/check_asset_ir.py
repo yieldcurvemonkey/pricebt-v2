@@ -139,7 +139,9 @@ BOND PACK (Bond; direction buy_sell, size `size`; docs/v2/BOND_DESIGN.md section
                       face, on d1 and on a later date (FinancingToDate is 0 on the trade date):
                       amounts negate, PremiumCents-style per-|face| levels negate, other levels
                       (yield, Clean/DirtyPrice per signed face, durations, repo terms, days) stay
-                      equal (FAIL).
+                      equal (FAIL). A RepoRate that differs by direction (a short reverse-repos the
+                      bond in) is allowed: RepoRate, RepoHaircut, FinancingToDate, ForwardPrice and
+                      Carry are then not folded, and the PASS says so.
   bond_size_linearity amounts not doubling with size, or a level (yield, price per 100, repo rate,
                       DaysToSettlement, ...) moving with size (FAIL).
   bond_dv01_sign      long bond IRDelta >= 0: risk reported per -1bp or receiver-positive (FAIL).
@@ -176,15 +178,22 @@ BOND PACK (Bond; direction buy_sell, size `size`; docs/v2/BOND_DESIGN.md section
                       SETTLEMENT days / basis (360 or 365, reported) on the first step and on a
                       Thursday -> Friday-like step: trade-date days, the haircut ignored (FAIL).
   bond_forward_parity ForwardPrice != Price (1 + r tau(s, H)) - coupons in (s, H] (1 + r tau(c, H)),
-                      H = settlement + 1 month, on the priced date and on a date whose horizon holds
-                      a coupon: a coupon kept, a sign flip, Price / DF (FAIL beyond 1%, WARN within).
-  bond_carry_roll     Carry != (Price - AI) - (parity forward - AI at H) (the accrued from the
-                      Cashflows accrual columns; INFO without them), or a short's Carry / RollDown
-                      not the long's negated, or Carry + RollDown non-finite (FAIL).
+                      H = settlement + 1 month on the following business day of the bond's calendar
+                      (a weekday with a market), c a coupon's payment date (its drop date's
+                      settlement: a weekend coupon is paid on Monday), on the priced date and on a
+                      date whose horizon holds a coupon: a coupon kept, a sign flip, Price / DF (FAIL
+                      beyond 1%, WARN within; PASS within one day of repo interest on |Price|).
+  bond_carry_roll     Carry != (Price - AI) - (parity forward - AI at H) (the accrued at H the
+                      config's AccruedInterest on the trade date settling on H; ACT/ACT from the
+                      Cashflows accrual columns when none has a market; INFO without either), or a
+                      short's Carry / RollDown not the long's negated, or Carry + RollDown
+                      non-finite (FAIL); the same one-day floor.
   bond_holding_cash   GenericEngine on a short across the first coupon drop date (pricebt DEV-E22):
                       backtest.holding_cash != the config's dropped Cashflows + FinancingToDate
-                      change, Total change != Price change + coupons + financing, or a coupon-sized
-                      step left unbooked (a Cashflows payment_date that is not the drop date) (FAIL).
+                      change on a mark, Total change != Price change + coupons + financing over the
+                      run, or a step whose Price change + booked coupon, net of its Theta and yield
+                      move, is over half a coupon (a Cashflows payment_date that is not the drop
+                      date) (FAIL).
 """
 from __future__ import annotations
 
@@ -1281,11 +1290,17 @@ def check_fd_params(ctx) -> List[CheckResult]:
 # ------------------------------------------------------------------------------------ swaption pack
 
 
-def _fold_mismatches(env: _Env, a, b, sign: float, d: date, size: float = 1.0) -> List[str]:
-    """Measures where b is not a with the direction flipped by `sign` and the size scaled by `size`
-    (see _scaling: amounts x size x sign, per-face levels x sign, levels unchanged)."""
+# a Bond's measures that a direction-dependent repo rate moves: not folded when RepoRate differs by side
+DIRECTION_REPO = frozenset({"RepoRate", "RepoHaircut", "FinancingToDate", "ForwardPrice", "Carry"})
+
+
+def _fold_mismatches(env: _Env, a, b, sign: float, d: date, size: float = 1.0, skip=frozenset()) -> List[str]:
+    """Measures (but `skip`) where b is not a with the direction flipped by `sign` and the size
+    scaled by `size` (see _scaling: amounts x size x sign, per-face levels x sign, levels unchanged)."""
     bad = []
     for key, spec in env.scalar_measures():
+        if key in skip:
+            continue
         va, vb = env.val(a, d, key), env.val(b, d, key)
         want = {"amount": size * sign, "per_face": sign, "level": 1.0}[_scaling(key, spec, env.inst)] * va
         if not _close(vb, want):
@@ -1482,10 +1497,16 @@ def row_bond_fold(env: _Env) -> List[CheckResult]:
     cases = {"Sell": (env.resolve(buy_sell="Sell", size=abs(size)), -1.0), "Buy with -size": (env.resolve(buy_sell="Buy", size=-abs(size)), -1.0),
              "Sell with -size": (env.resolve(buy_sell="Sell", size=-abs(size)), 1.0)}
     days = sorted({env.d1, _priced_date(env)})  # a later date too: FinancingToDate is 0 on the trade date
-    bad = [f"{label} on {d}: {m}" for d in days for label, (inst, sign) in cases.items() for m in _fold_mismatches(env, buy, inst, sign, d)[:2]]
+    sell = cases["Sell"][0]
+    # a repo rate (and haircut) may depend on the direction (a short reverse-repos the bond in, at the special
+    # rate): when it does, the financing measures built on it cannot negate exactly, so they are not folded
+    by_side = env.has("RepoRate") and any(not _close(env.val(buy, d, "RepoRate"), env.val(sell, d, "RepoRate")) for d in days)
+    skip = DIRECTION_REPO if by_side else frozenset()
+    bad = [f"{label} on {d}: {m}" for d in days for label, (inst, sign) in cases.items() for m in _fold_mismatches(env, buy, inst, sign, d, skip=skip if sign < 0 else frozenset())[:2]]
     if bad:
         return [CheckResult("bond_buy_sell_fold", FAIL, "; ".join(bad[:6]) + " -- fold buy_sell x sign(size) into one signed face amount in resolve")]
-    return [CheckResult("bond_buy_sell_fold", PASS, f"on {', '.join(map(str, days))}: Sell = -Buy, -size = -Buy, Sell with -size = Buy for every amount (and PremiumCents-style per-|face| level); other levels equal")]
+    note = f"; RepoRate depends on the direction, so {sorted(DIRECTION_REPO)} were not folded" if by_side else ""
+    return [CheckResult("bond_buy_sell_fold", PASS, f"on {', '.join(map(str, days))}: Sell = -Buy, -size = -Buy, Sell with -size = Buy for every amount (and PremiumCents-style per-|face| level); other levels equal{note}")]
 
 
 def row_bond_size(env: _Env) -> List[CheckResult]:
@@ -1609,32 +1630,49 @@ def _decimal(env: _Env, inst, d: date, m: str) -> float:
     return env.bp(inst, d, m) / 1e4
 
 
+def _business_day(env: _Env, d: date) -> date:
+    """d, or the first date after it, that is a business day of the bond's calendar: a weekday on
+    which the config has a market (a US holiday has none). Past the config's data (no market on any
+    of the next ten weekdays), the first weekday."""
+    first = x = _bday(d)
+    for _ in range(10):
+        if env.market_on(x):
+            return x
+        x = _bday(x + timedelta(days=1))
+    return first
+
+
 def _settle(env: _Env, inst, d: date) -> date:
-    """Standard settlement of trade date d: d + DaysToSettlement, else the next weekday (T+1)."""
-    return d + timedelta(days=round(env.val(inst, d, "DaysToSettlement"))) if env.has("DaysToSettlement") else _bday(d + timedelta(days=1))
+    """Standard settlement of trade date d: d + DaysToSettlement, else the next business day (T+1)."""
+    return d + timedelta(days=round(env.val(inst, d, "DaysToSettlement"))) if env.has("DaysToSettlement") else _business_day(env, d + timedelta(days=1))
 
 
-def _horizon(s: date) -> date:
-    """H = settlement + 1 calendar month, following weekday (BOND_DESIGN: ForwardPrice, Carry)."""
-    return _bday(s + ca.relativedelta(months=1))
+def _horizon(env: _Env, s: date) -> date:
+    """H = settlement + 1 calendar month on the following business day of the bond's calendar
+    (BOND_DESIGN: ForwardPrice, Carry): 2026-06-03 + 1 month = 2026-07-03, a US holiday, is 07-06."""
+    return _business_day(env, s + ca.relativedelta(months=1))
 
 
-def _flow_dates(f: pd.DataFrame) -> List[Tuple[date, date, float, str]]:
-    """(drop date, actual payment date, holder-signed amount, type) per Cashflows row: the actual
-    date is accrual_end_date when the frame has it, else the weekday after the drop date (T+1)."""
-    ends = f["accrual_end_date"] if "accrual_end_date" in f else [None] * len(f)
+def _flow_dates(env: _Env, inst, f: pd.DataFrame, until: Optional[date] = None) -> List[Tuple[date, date, float, str]]:
+    """(drop date, actual payment date, holder-signed amount, type) per Cashflows row. The actual
+    payment date is the settlement date of the drop date (the first settlement on or after the
+    coupon date: a weekend or holiday coupon is paid on the next business day, as a Treasury's is),
+    for rows dropping on or before `until` (default: the first drop date); later rows get the next
+    business day after the drop date (they are past every horizon the rows look at)."""
     kinds = f["payment_type"] if "payment_type" in f else [""] * len(f)
+    drops = [_as_date(p) for p in f["payment_date"]]
+    until = until if until is not None else min(drops, default=None)
     out = []
-    for p, e, a, k in zip(f["payment_date"], ends, f["payment_amount"], kinds):
-        drop = _as_date(p)
-        paid = _as_date(e) if e is not None and not pd.isna(e) and "principal" not in str(k).lower() else _bday(drop + timedelta(days=1))
+    for drop, a, k in zip(drops, f["payment_amount"], kinds):
+        exact = until is not None and drop <= until and env.market_on(drop)
+        paid = _settle(env, inst, drop) if exact else _business_day(env, drop + timedelta(days=1))
         out.append((drop, paid, float(a), str(k)))
     return sorted(out)
 
 
 def _coupons(env: _Env, inst, d: date):
     """Coupon rows (payment_type 'Coupon', else every row but the largest) of Cashflows(inst, d)."""
-    rows = _flow_dates(env.frame(inst, d))
+    rows = _flow_dates(env, inst, env.frame(inst, d))
     tagged = [r for r in rows if "coupon" in r[3].lower()]
     if tagged or not rows:
         return tagged
@@ -1932,9 +1970,15 @@ def _parity_forward(env: _Env, inst, d: date):
     """(Price, [(actual payment date, holder-signed amount)], RepoRate decimal, settlement s, horizon H)
     on d: the inputs of the parity forward (_forward_at)."""
     s = _settle(env, inst, d)
-    h, r = _horizon(s), _decimal(env, inst, d, "RepoRate")
-    flows = [(paid, a) for _drop, paid, a, _k in _flow_dates(env.frame(inst, d))] if env.has("Cashflows", "frame") else []
+    h, r = _horizon(env, s), _decimal(env, inst, d, "RepoRate")
+    flows = [(paid, a) for _drop, paid, a, _k in _flow_dates(env, inst, env.frame(inst, d), until=h)] if env.has("Cashflows", "frame") else []
     return env.val(inst, d, "Price"), flows, r, s, h
+
+
+def _day_floor(price: float, r: float) -> float:
+    """The forward and carry rows' absolute floor: one day of repo interest on |Price| (a payment or
+    horizon date one day apart, e.g. an unadjusted weekend coupon date, is not a mistake)."""
+    return abs(price) * max(abs(r), 1e-4) / 360.0
 
 
 def _forward_at(price: float, flows, r: float, s: date, h: date, basis: float) -> Tuple[float, float]:
@@ -1960,8 +2004,9 @@ def _coupon_horizon_date(env: _Env, inst) -> Optional[date]:
 
 def row_bond_forward_parity(env: _Env) -> List[CheckResult]:
     """ForwardPrice = Price (1 + RepoRate tau(s, H)) - sum over flows c in (s, H] of C (1 + RepoRate
-    tau(c, H)), H = settlement + 1 calendar month (following weekday), tau in the repo day count
-    (360 or 365, reported); on the priced date and on a date whose horizon holds a coupon."""
+    tau(c, H)), H = settlement + 1 calendar month (following business day), c the coupon's actual
+    payment date, tau in the repo day count (360 or 365, reported); on the priced date and on a date
+    whose horizon holds a coupon; within one day of repo interest on |Price| is a PASS."""
     name = "bond_forward_parity"
     if not all(env.has(m) for m in ("ForwardPrice", "RepoRate", "Price")) or env.spec("RepoRate").unit not in TO_BP:
         return [CheckResult(name, SKIP, "needs ForwardPrice, RepoRate (bp/pct/decimal) and Price")]
@@ -1974,8 +2019,10 @@ def row_bond_forward_parity(env: _Env) -> List[CheckResult]:
         fits = {b: _forward_at(price, flows, r, s, h, b) for b in REPO_BASES}
         basis = min(fits, key=lambda b: abs(fits[b][0] - got))
         want, cpn = fits[basis]
-        statuses.append(_identity_status(got, want, 1e-9 * abs(price) + 1e-12))
-        parts.append(f"{d}: ForwardPrice {_fmt(got)} vs Price {_fmt(price)} financed at {r:.4%} from {s} to H {h} (/{basis:g}) less coupons {_fmt(cpn)} = {_fmt(want)}")
+        statuses.append(_identity_status(got, want, _day_floor(price, r)))
+        paid = ", ".join(str(c) for c, _a in flows if s < c <= h)
+        parts.append(f"{d}: ForwardPrice {_fmt(got)} vs Price {_fmt(price)} financed at {r:.4%} from {s} to H {h} (/{basis:g}) less coupons {_fmt(cpn)}"
+                     + (f" paid {paid}" if paid else "") + f" = {_fmt(want)}")
     status = _worst(statuses)
     return [CheckResult(name, status, "long: " + "; ".join(parts) + ("" if status == PASS else
                         ": ForwardPrice is the financed forward value at H = settlement + 1 month: a coupon paid before H must be subtracted (with its"
@@ -1996,11 +2043,23 @@ def _accrued_at(f: pd.DataFrame, x: date) -> Optional[float]:
     return 0.0
 
 
+def _accrued_at_horizon(env: _Env, inst, d: date, h: date) -> Tuple[Optional[float], str]:
+    """(the holder-signed accrued for settlement H, where it came from): the config's own
+    AccruedInterest on the trade date that settles on H (its own day count), else the Cashflows
+    accrual columns read ACT/ACT in the period (the US Treasury convention), else (None, why)."""
+    x = _market_before(env, h)
+    if x is not None and x >= d and _settle(env, inst, x) == h:
+        return env.val(inst, x, "AccruedInterest"), f"the config's AccruedInterest on {x}, settling on H"
+    ai = _accrued_at(env.frame(inst, d), h) if env.has("Cashflows", "frame") else None
+    return ai, "ACT/ACT in the Cashflows accrual period: no trade date with a market settles on H"
+
+
 def row_bond_carry_roll(env: _Env) -> List[CheckResult]:
     """Carry = clean value now - clean forward value at H: (Price - AccruedInterest) - (forward - the
-    accrued at H), the forward from the parity formula (bond_forward_parity), the accrued at H from
-    the Cashflows accrual columns; Carry and RollDown negate with the direction; Carry + RollDown
-    finite."""
+    accrued at H), the forward from the parity formula (bond_forward_parity), the accrued at H the
+    config's own (AccruedInterest on the trade date settling on H; ACT/ACT from the Cashflows accrual
+    columns only when no such date has a market); Carry and RollDown negate with the direction;
+    Carry + RollDown finite; within one day of repo interest on |Price| is a PASS."""
     name = "bond_carry_roll"
     need = ("Carry", "RollDown", "Price", "AccruedInterest", "RepoRate")
     if not all(env.has(m) for m in need) or env.spec("RepoRate").unit not in TO_BP:
@@ -2016,16 +2075,16 @@ def row_bond_carry_roll(env: _Env) -> List[CheckResult]:
             return [CheckResult(name, FAIL, f"{d}: long Carry {_fmt(carry)}, RollDown {_fmt(roll)}; short {_fmt(sc)}, {_fmt(sr)} -- finite, holder-signed (a short's"
                                             " carry and roll-down are the long's negated)")]
         price, flows, r, s, h = _parity_forward(env, long_, d)
-        ai_h = _accrued_at(env.frame(long_, d), h) if env.has("Cashflows", "frame") else None
+        ai_h, source = _accrued_at_horizon(env, long_, d, h)
         if ai_h is None:
             statuses.append(INFO)
-            parts.append(f"{d}: Carry {_fmt(carry)}, RollDown {_fmt(roll)} (no accrual columns in Cashflows: the clean forward is not checkable here)")
+            parts.append(f"{d}: Carry {_fmt(carry)}, RollDown {_fmt(roll)} (the accrued at H {h} is not readable: no trade date settling on it, no accrual columns in Cashflows)")
             continue
         clean_now = price - env.val(long_, d, "AccruedInterest")
         fits = {b: clean_now - (_forward_at(price, flows, r, s, h, b)[0] - ai_h) for b in REPO_BASES}
         basis = min(fits, key=lambda b: abs(fits[b] - carry))
-        statuses.append(_identity_status(carry, fits[basis], 1e-9 * abs(price) + 1e-12))
-        parts.append(f"{d}: Carry {_fmt(carry)} vs clean now {_fmt(clean_now)} - (forward at H {h} - accrued at H {_fmt(ai_h)}) = {_fmt(fits[basis])} (/{basis:g});"
+        statuses.append(_identity_status(carry, fits[basis], _day_floor(price, r)))
+        parts.append(f"{d}: Carry {_fmt(carry)} vs clean now {_fmt(clean_now)} - (forward at H {h} - accrued at H {_fmt(ai_h)} ({source})) = {_fmt(fits[basis])} (/{basis:g});"
                      f" RollDown {_fmt(roll)}, Carry + RollDown {_fmt(carry + roll)}")
     status = _worst([s for s in statuses if s != INFO] or [INFO])
     return [CheckResult(name, status, "long: " + "; ".join(parts) + ("" if status in (PASS, INFO) else
@@ -2033,12 +2092,25 @@ def row_bond_carry_roll(env: _Env) -> List[CheckResult]:
                         " forward, the wrong horizon, or financing left out"))]
 
 
+def _step_explained(env: _Env, inst, t0: date, t1: date) -> float:
+    """Theta x days + IRDelta x dy + IRGammaParallel x dy^2 / 2 over t0 -> t1, greeks on t0, dy the
+    yield (IRFwdRate) move in bp: the Price change plus dropped flows a step should show (a bond's
+    Theta counts the flows it drops), so a large yield move is not taken for a missing coupon."""
+    out = (env.get(inst, t0, "Theta") or 0.0) * (t1 - t0).days
+    y0 = env.bp(inst, t0, "IRFwdRate")
+    if y0 is not None:
+        dy = env.bp(inst, t1, "IRFwdRate") - y0
+        out += (env.get(inst, t0, "IRDelta") or 0.0) * dy + 0.5 * (env.get(inst, t0, "IRGammaParallel") or 0.0) * dy * dy
+    return out
+
+
 def row_bond_holding_cash(env: _Env) -> List[CheckResult]:
     """A short position held across the first coupon drop date by GenericEngine: on every mark the
     engine books (backtest.holding_cash) the Cashflows dropped since the previous mark plus the
     change of FinancingToDate, both recomputed here from the config; the Total change over the run is
-    the Price change + coupons + financing; and on no step does the Price change leave a coupon-sized
-    jump uncompensated by the booked coupon (a Cashflows payment_date that is not the drop date)."""
+    the Price change + coupons + financing (once, over the run); and on no step does the Price change
+    plus the booked coupon, net of the step's Theta and yield move (_step_explained), leave a
+    coupon-sized jump (a Cashflows payment_date that is not the drop date)."""
     from pricebt.backtests.actions import AddTradeAction
     from pricebt.backtests.generic_engine import GenericEngine
     from pricebt.backtests.strategy import Strategy
@@ -2074,8 +2146,10 @@ def row_bond_holding_cash(env: _Env) -> List[CheckResult]:
         if not (_close(cash, want_cash, 1e-9) and _close(fin, want_fin, 1e-9)):
             bad.append(f"{d}: booked coupons {_fmt(cash)}, financing {_fmt(fin)} vs the config's {_fmt(want_cash)}, {_fmt(want_fin)}")
         dp = env.val(inst, d, "Price") - env.val(inst, prev, "Price")
-        if abs(dp + cash) > jump:
-            bad.append(f"{d}: Price change {_fmt(dp)} with booked coupons {_fmt(cash)} -- a coupon-sized jump: Cashflows.payment_date must be the date Price drops the flow")
+        explained = _step_explained(env, inst, prev, d)
+        if abs(dp + cash - explained) > jump:
+            bad.append(f"{d}: Price change {_fmt(dp)} + booked coupons {_fmt(cash)} - the step's carry and yield move {_fmt(explained)} leaves a coupon-sized"
+                       " jump: Cashflows.payment_date must be the date Price drops the flow")
         total_cash, total_fin, prev = total_cash + cash, total_fin + fin, d
     total = bt.result_summary[bt.TOTAL_COLUMN].astype(float)
     dprice = env.val(inst, marks[-1], "Price") - env.val(inst, marks[0], "Price")

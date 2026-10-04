@@ -154,6 +154,12 @@ code: |
       trades GC). The repo source decides GC vs special; repo_term decides overnight vs locked (recipes below)."""
       _todo("lib_repo_rate(d, identifier)")
 
+  def lib_term_repo_rate(d, identifier):
+      """The TERM repo rate agreed on trade date d to finance this bond (repo_term: term), DECIMAL, simple in
+      REPO_BASIS: a term GC or special quote for your financing term, NOT the overnight fixing. resolve locks it
+      for the life of the position."""
+      _todo("lib_term_repo_rate(d, identifier): your term repo source (e.g. a 1M term GC / special quote)")
+
   def lib_pillars(m):
       """Curve pillar labels as plain tenors, e.g. ("2Y", "5Y", "10Y", "30Y"). For CRIFIRCurve each must be a SIMM
       tenor (2W 1M 3M 6M 1Y 2Y 3Y 5Y 10Y 15Y 20Y 30Y)."""
@@ -186,7 +192,8 @@ code: |
       """Runs ONCE on the trade date d: the identifier's static data as plain values, one signed face amount
       (buy_sell x sign(size); pricebt never reads buy_sell or size itself), the standard settlement date (a
       non-standard settlement_date kwarg is refused), and the financing terms: repo_term, the haircut, the term
-      rate (the trade date's repo rate) and the financed principal (1 - haircut) x Price(trade date)."""
+      rate (lib_term_repo_rate on the trade date, for repo_term: term) and the financed principal
+      (1 - haircut) x Price(trade date)."""
       ident = kw.get("identifier")
       if not ident:
           raise ValueError("a Bond needs an identifier")
@@ -203,7 +210,7 @@ code: |
       static = dict(lib_bond_static(m, ident, kw.get("identifier_type")))
       r = dict(static, identifier=ident, face=abs(size) * _side(kw.get("buy_sell", "Buy")) * (1.0 if size >= 0 else -1.0),
                trade_date=d, settlement_date=settle0, repo_term=term, haircut=haircut)
-      r["term_rate"] = lib_repo_rate(d, ident)
+      r["term_rate"] = lib_term_repo_rate(d, ident) if term == "term" else None
       r["principal"] = (1.0 - haircut) * lib_pv(m, lib_bond(m, r))
       return r
 

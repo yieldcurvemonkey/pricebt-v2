@@ -401,3 +401,76 @@ def test_bond_gamma_ratio_fits_the_delta_drift_per_settlement_day():
     ~1.8, a false WARN); per settlement day the ratio is ~1."""
     rows = _rows(check_asset.run_checks(ASSETS / "toy_usd_bond.yaml", dates=[date(2026, 6, 5), date(2026, 7, 6)], backtest=False))
     assert rows["ir_gamma_ratio"].status == check_asset.PASS, rows["ir_gamma_ratio"]
+
+
+# ------------------------------------------------------------------------------------ real-calendar bond cases
+# The toy is weekdays-only with unadjusted coupon dates; a real US Treasury library has holidays and pays a
+# weekend coupon on the next business day. fixtures/check_asset/holiday_bond_lib.py is the toy on such a
+# calendar: a correct config, so the bond pack must show no FAIL and no WARN on it.
+
+
+def _holiday_bond() -> dict:
+    raw = _load("toy_usd_bond.yaml")
+    raw.update(asset="toy_usd_bond_holiday", imports="import holiday_bond_lib as tb")
+    raw["market"]["key"] = "toy_usd_bond_holiday"
+    return raw
+
+
+@pytest.mark.parametrize("identifier,dates", [
+    # priced 2026-06-02: settlement 06-03, H = 07-03 + 0 = Independence Day observed, so H is Monday 07-06
+    ("TOY 4.25 2034-11-15", [date(2026, 5, 1), date(2026, 6, 2)]),
+    # the 2026-11-15 coupon is a Sunday, paid Monday 11-16, inside the horizon of 2026-10-30
+    ("TOY 3.5 2027-05-15", [date(2026, 10, 1), date(2026, 10, 5)]),
+])
+def test_a_holiday_calendar_treasury_has_no_fail_or_warn(identifier, dates):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # the smoke backtest drops the holidays
+        results = check_asset.run_checks(_holiday_bond(), dates=dates, sys_path=[FIXTURES], kwargs={"identifier": identifier})
+    bad = [r for r in results if r.status in (check_asset.FAIL, check_asset.WARN)]
+    assert not bad, bad
+    rows = _rows(results)
+    assert all(rows[n].status == check_asset.PASS for n in BOND_PASS), [rows[n] for n in BOND_PASS if rows[n].status != check_asset.PASS]
+    if identifier == "TOY 4.25 2034-11-15":
+        assert "to H 2026-07-06" in rows["bond_forward_parity"].detail and "settling on H" in rows["bond_carry_roll"].detail
+
+
+def test_a_coupon_date_one_day_off_is_within_a_day_of_repo():
+    """The plain toy forwards a Sunday coupon from its unadjusted date (the checker uses the Monday it is
+    paid): a day of reinvestment apart, inside the one-day-of-repo floor, even when Carry is small
+    (2026-10-30: ~128); the payment date the checker uses is shown."""
+    rows = _rows(check_asset.run_checks(ASSETS / "toy_usd_bond.yaml", dates=[date(2026, 10, 1), date(2026, 10, 5)], backtest=False,
+                                        kwargs={"identifier": "TOY 3.5 2027-05-15"}))
+    assert rows["bond_carry_roll"].status == check_asset.PASS, rows["bond_carry_roll"]
+    assert rows["bond_forward_parity"].status == check_asset.PASS and "paid 2026-11-16" in rows["bond_forward_parity"].detail
+
+
+_RATES_JUMP = ('(lambda m: m if m is None or pricebt_date < datetime.date(2024, 2, 13) else '
+               'tb.SimpleNamespace(curve=tri.bumped(m.curve, 0.0008), spread=m.spread, repo=m.repo))(tb.market(pricebt_date, "USD", pricebt_csa))')
+
+
+def test_holding_cash_jump_rule_allows_a_large_yield_move():
+    """A 30y position across its 2024-02-15 coupon (dropped 02-14) with an 8bp sell-off on 02-13: the
+    step's Price change (~ -13k on 1mm) exceeds half a coupon, but Theta and the yield move explain it."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("market",), {"expr": _RATES_JUMP, "key": "toy_usd_bond_jump"})
+    raw["imports"] = "import datetime\nimport toylib.bond as tb\nimport toylib.irrisk as tri\n"
+    rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False, kwargs={"identifier": "TOY 4.5 2054-02-15"}))
+    assert rows["bond_holding_cash"].status == check_asset.PASS, rows["bond_holding_cash"]
+
+
+def test_a_direction_dependent_repo_rate_folds():
+    """A short reverse-repos the bond at another rate than a long finances it: RepoRate (and the
+    financing measures built on it) are not required to fold, and the row says so."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("functions", "repo_rate", "expr"), 'tb.repo_rate(market, trade) + (0.0 if trade["face"] > 0 else 25.0)')
+    fold = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["bond_buy_sell_fold"]
+    assert fold.status == check_asset.PASS and "RepoRate depends on the direction" in fold.detail, fold
+
+
+def test_carry_reads_the_configs_own_accrued_at_the_horizon():
+    """A library whose accrued is not ACT/ACT in the period (here 1.05 x it, standing for another day
+    count), with Carry consistent with it: the checker reads AccruedInterest on the trade date settling
+    on H instead of recomputing ACT/ACT."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("functions", "accrued", "expr"), "1.05 * tb.accrued(market, trade, pricebt_date)")
+    _set(raw, ("functions", "carry", "expr"), "tb.carry(market, trade) + 0.05 * (tb._accrued_at(trade, tb.horizon(tb.settle(market.curve.ref_date)))"
+                                              " - tb._accrued_at(trade, tb.settle(market.curve.ref_date)))")
+    carry = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["bond_carry_roll"]
+    assert carry.status == check_asset.PASS and "the config's AccruedInterest" in carry.detail, carry
