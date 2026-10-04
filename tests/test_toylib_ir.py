@@ -28,7 +28,8 @@ from pricebt.session import PricebtSession
 
 ASSETS = Path(__file__).parent / "assets"
 CONFIGS = {"IRSwap": "toy_usd_irs_full.yaml", "IRSwaption": "toy_usd_swaption.yaml", "Bond": "toy_usd_bond.yaml"}
-# every toy config of a strict class (R3-0): each maps the whole contract on its own
+# every toy swap/swaption config (strict, R3-0): each maps the whole contract on its own. The strict
+# Bond config (toy_usd_bond.yaml) has its own quantity, direction and identity tests in test_toylib_bond.py
 STRICT_CONFIGS = {"toy_usd_irs.yaml": "IRSwap", "toy_eur_irs.yaml": "IRSwap", "toy_usd_irs_full.yaml": "IRSwap", "toy_usd_swaption.yaml": "IRSwaption"}
 D = date(2024, 3, 4)  # a Monday
 D2 = date(2024, 7, 15)
@@ -55,7 +56,7 @@ def _swaption(pay_or_receive="Pay", strike="ATM", expiration_date="1y", d=D):
 
 def _bond(identifier="TOY 4.25 2034-11-15", d=D, size=N):
     m = tb.market(d, "USD")
-    return m, tb.resolve_bond(m, dict(identifier=identifier, size=size, buy_sell="Buy"))
+    return m, tb.resolve_bond(m, dict(identifier=identifier, size=size, buy_sell="Buy", repo_term="overnight", repo_haircut=0.02))
 
 
 def _smkt(m, dz=0.0, dsigma=0.0):
@@ -63,7 +64,7 @@ def _smkt(m, dz=0.0, dsigma=0.0):
 
 
 def _bmkt(m, dz=0.0):
-    return SimpleNamespace(curve=_bump(m.curve, dz), spread=m.spread)
+    return SimpleNamespace(curve=_bump(m.curve, dz), spread=m.spread, repo=m.repo)
 
 
 def _fwd_bp(curve, trade):
@@ -410,17 +411,22 @@ def test_swap_after_its_final_date_is_dead_with_finite_levels():
 
 
 def test_bond_schedule_price_and_yield_round_trip():
+    """BOND_DESIGN 4.5: Price is the settlement-date (T+1, s = Tue 2024-03-05) value, and each
+    Cashflows payment_date is the trade date Price drops the flow: the last weekday before it."""
     m, b = _bond("TOY 3.5 2027-05-15")
+    s = date(2024, 3, 5)  # D is a Monday
     cf = tb.cashflows(m, b)
     pays = [date(2024, 5, 15), date(2024, 11, 15), date(2025, 5, 15), date(2025, 11, 15), date(2026, 5, 15), date(2026, 11, 15), date(2027, 5, 15)]
-    assert list(cf["payment_date"]) == pays + [date(2027, 5, 15)]
+    # Wed, Fri, Thu, Sat, Fri, Sun, Sat -> the weekday before each
+    drops = [date(2024, 5, 14), date(2024, 11, 14), date(2025, 5, 14), date(2025, 11, 14), date(2026, 5, 14), date(2026, 11, 13), date(2027, 5, 14)]
+    assert list(cf["payment_date"]) == drops + [date(2027, 5, 14)]
     assert list(cf["payment_amount"]) == [N * 0.0175] * 7 + [N]
     assert list(cf["payment_type"]) == ["Coupon"] * 7 + ["Principal"]
     y = tb.yield_bp(m, b) / 1e4
     assert y == pytest.approx(m.curve.zero_rate + m.spread, abs=1e-13)  # flat world: y = z + s
-    taus = [(p - D).days / 365 for p in cf["payment_date"]]
+    taus = [(p - s).days / 365 for p in pays + [date(2027, 5, 15)]]
     assert tb.npv(m, b) == pytest.approx(sum(a * math.exp(-y * tau) for a, tau in zip(cf["payment_amount"], taus)), rel=1e-12)
-    accrued = N * 0.0175 * (D - date(2023, 11, 15)).days / (date(2024, 5, 15) - date(2023, 11, 15)).days
+    accrued = N * 0.0175 * (s - date(2023, 11, 15)).days / (date(2024, 5, 15) - date(2023, 11, 15)).days  # at settlement
     assert tb.accrued(m, b) == pytest.approx(accrued, rel=1e-12)
     assert tb.clean_price(m, b) == pytest.approx(tb.dirty_price(m, b) - 100 * accrued / N, rel=1e-12)
     ann = sum(0.5 * math.exp(-y * tau) for tau in taus[:7]) * N
@@ -434,8 +440,11 @@ def test_bond_schedule_price_and_yield_round_trip():
 
 def test_bond_dv01_and_ladders():
     m, b = _bond("TOY 4.5 2054-02-15")
-    y, cf = tb.yield_bp(m, b) / 1e4, tb.cashflows(m, b)
-    pv = lambda yy: sum(a * math.exp(-yy * (p - D).days / 365) for p, a in zip(cf["payment_date"], cf["payment_amount"]))  # noqa: E731
+    y, s = tb.yield_bp(m, b) / 1e4, date(2024, 3, 5)  # settlement of Monday D
+    flows = [(date(yr, mo, 15), N * 0.0225) for yr in range(2024, 2055) for mo in (2, 8) if s < date(yr, mo, 15) <= date(2054, 2, 15)]
+    flows.append((date(2054, 2, 15), N))
+    pv = lambda yy: sum(a * math.exp(-yy * (p - s).days / 365) for p, a in flows)  # noqa: E731
+    assert pv(y) == pytest.approx(tb.npv(m, b), rel=1e-12)  # the hand schedule is the toy's
     fd = (pv(y + 0.5e-4) - pv(y - 0.5e-4)) / 1.0
     assert tb.yield_dv01(m, b) == pytest.approx(fd, rel=1e-6)
     assert tb.delta(m, b) == pytest.approx(fd, rel=1e-5) and tb.delta(m, b) < 0  # a long bond
@@ -450,11 +459,14 @@ def test_bond_dv01_and_ladders():
 
 
 def test_bond_after_maturity_is_dead_with_finite_levels():
+    """Dead once settlement reaches maturity (Sat 2027-05-15): from Friday 2027-05-14 on."""
     _, b = _bond("TOY 3.5 2027-05-15")
-    m = tb.market(date(2027, 5, 15), "USD")  # the maturity date: every flow paid
-    assert tb.npv(m, b) == 0.0 and tb.cashflows(m, b).empty and tb.annuity(m, b) == 0.0
-    assert tb.delta(m, b) == 0.0 and tb.gamma(m, b) == 0.0 and tb.theta_1d(m, b) == 0.0
-    assert tb.yield_bp(m, b) == pytest.approx((m.curve.zero_rate + m.spread) * 1e4, abs=1e-9)
+    assert tb.npv(tb.market(date(2027, 5, 13), "USD"), b) != 0.0  # Thursday: settles Friday, still live
+    for d in (date(2027, 5, 14), date(2027, 5, 17)):
+        m = tb.market(d, "USD")
+        assert tb.npv(m, b) == 0.0 and tb.cashflows(m, b).empty and tb.annuity(m, b) == 0.0, d
+        assert tb.delta(m, b) == 0.0 and tb.gamma(m, b) == 0.0 and tb.theta_1d(m, b) == 0.0, d
+        assert tb.yield_bp(m, b) == pytest.approx((m.curve.zero_rate + m.spread) * 1e4, abs=1e-9), d
 
 
 # ------------------------------------------------------------------------------------ Theta (R2-4): the frozen-world identity
@@ -504,13 +516,16 @@ def test_swaption_theta_onto_expiry_exercises_on_the_frozen_forward():
 
 
 def test_frozen_world_theta_identity_bond_including_a_coupon_step(frozen):
+    """Bond Theta x step days = Price(next weekday) + dropped flows - Price(t) when nothing moves.
+    The 2024-05-15 (Wed) coupon drops on Tue 05-14, so the Mon -> Tue step carries it as cash."""
     _, b = _bond("TOY 4.25 2034-11-15")
-    for t in (D, date(2024, 5, 14)):  # an ordinary day; the day before the 2024-05-15 coupon
-        m0, m1 = tb.market(t, "USD"), tb.market(t + timedelta(days=1), "USD")
-        cash = N * 0.0425 / 2 if t == date(2024, 5, 14) else 0.0
-        assert tb.theta_1d(m0, b) == pytest.approx(tb.npv(m1, b) + cash - tb.npv(m0, b), rel=1e-9)
-    m0 = tb.market(date(2024, 5, 14), "USD")
-    assert tb.npv(tb.market(date(2024, 5, 15), "USD"), b) < tb.npv(m0, b)  # the dirty PV drops the coupon
+    for t, nb in ((D, D + timedelta(days=1)), (date(2024, 5, 13), date(2024, 5, 14)), (date(2024, 5, 10), date(2024, 5, 13))):
+        m0, m1 = tb.market(t, "USD"), tb.market(nb, "USD")
+        cash = N * 0.0425 / 2 if nb == date(2024, 5, 14) else 0.0
+        days = (nb - t).days  # 3 over the weekend
+        assert tb.theta_1d(m0, b) * days == pytest.approx(tb.npv(m1, b) + cash - tb.npv(m0, b), rel=1e-9), t
+    m0 = tb.market(date(2024, 5, 13), "USD")
+    assert tb.npv(tb.market(date(2024, 5, 14), "USD"), b) < tb.npv(m0, b)  # the settlement value drops the coupon
 
 
 def test_frozen_world_pnl_explain_and_override_price_have_no_time_component(frozen):
@@ -519,7 +534,7 @@ def test_frozen_world_pnl_explain_and_override_price_have_no_time_component(froz
     target market moves nothing, so every row is 0 and npv on the target's market is npv on F's --
     across the bond's 2024-05-15 coupon too (valued on the target's own date, the coupon would
     drop and the discounting would carry)."""
-    f, t = date(2024, 5, 14), date(2024, 5, 16)
+    f, t = date(2024, 5, 13), date(2024, 5, 16)  # the bond's coupon drops on Tue 05-14 (T+1 settlement)
     _, s = _swap(fixed_rate=0.02, term="5y", d=f)
     _, o = _swaption(d=f)
     _, b = _bond("TOY 4.25 2034-11-15", d=f)

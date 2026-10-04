@@ -35,7 +35,7 @@ from pricebt.backtests.generic_engine import GenericEngine
 from pricebt.backtests.strategy import Strategy
 from pricebt.backtests.triggers import DateTrigger, DateTriggerRequirements, PeriodicTrigger, PeriodicTriggerRequirements
 from pricebt.common import AggregationLevel
-from pricebt.errors import ConfigError, UnsupportedMeasureError
+from pricebt.errors import ConfigError
 from pricebt.instrument import Bond, IRSwap, IRSwaption
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import (
@@ -62,9 +62,11 @@ HEDGE_END = date(2024, 3, 28)  # (c): <= 3 months of '1b' hedges (R2-19)
 SHORT_END = date(2024, 2, 1)  # (d): short runs compared row by row with (a)
 BOND_ID = "TOY 4.25 2034-11-15"
 BOND_START, BOND_END = date(2024, 5, 6), date(2024, 11, 22)
-# a Wednesday and a Friday: each coupon ends a one-day step, so Theta(t-1) (one calendar day,
-# the day's coupon counted as cash, DEV-I15) covers exactly the step it is attributed over
-COUPONS = (date(2024, 5, 15), date(2024, 11, 15))
+# the bond's 2024-05-15 (Wed) and 2024-11-15 (Fri) coupons, as the trade dates Price drops them
+# (T+1 settlement: the weekday before, BOND_DESIGN 4.5). Each ends a one-weekday step, which is
+# exactly the step Theta(t-1) spreads its carry over (Bond Theta, DEV-I15)
+COUPON_DATES = (date(2024, 5, 15), date(2024, 11, 15))
+COUPONS = (date(2024, 5, 14), date(2024, 11, 14))
 VOL_COLUMNS = ["VegaPnL", "PNL_vanna", "PNL_volga"]
 SIX = ["PNL_delta", "PNL_gamma", "VegaPnL", "PNL_vanna", "PNL_volga", "PNL_theta"]
 
@@ -401,7 +403,7 @@ def test_cross_term_known_answer_and_first_and_second_order_match_gs_s1_dev_e19(
     assert bt.pnl_explain() == {"delta": {D2: 100.0, D3: 300.0}, "gamma": {D2: 5.0, D3: 25.0}, "vanna": {D2: 6.0, D3: 0.0}}
     assert _assert_same_as_gs_loop(bt) == 2
     table = _table(bt)
-    fixed = ["actual_pnl", "cashflow_pnl", "economic_pnl"]
+    fixed = ["actual_pnl", "cashflow_pnl", "financing_pnl", "economic_pnl"]
     assert list(table.columns) == fixed + ["delta", "gamma", "vanna", "explained_pnl", "residual_pnl"]
     assert list(table["explained_pnl"]) == [111.0, 214.0]
     assert list(table["residual_pnl"]) == [-111.0, -214.0]  # Price is flat at 0 here
@@ -554,38 +556,52 @@ def test_a_volga_column_is_half_the_fd_volga_times_the_squared_vol_move(base):
 # =============================================================================== (b) bond across two coupons
 
 
-def _bond_bound(terms, quantity, d0, d1, y0, y1):
-    """R2-18 for a bond (no vol): W(y, t) = sum of the flows paid after t of cf exp(-y tau), y in bp,
-    tau = days/365 (on the flat toy world PV depends on z + s only, and delta bumps z with s
-    fixed, so y is the own rate). Theta_t is taken on the carry C(k) = W(y0, d0 + k) + the flows paid
-    in (d0, d0 + k], continuous across a coupon (the step's cash is in economic_pnl):
-      |resid| <= 2 (|W_yyy| |dy|^3/6 + |W_yt| |dy| dt + |Theta_t| dt^2/2) + 1e-9 |face|"""
+# TOY 4.25 2034-11-15 per unit face, written out: semiannual 2.125% coupons on May/Nov 15, principal at maturity
+_BOND_FLOWS = [(date(yr, mo, 15), 0.02125) for yr in range(2024, 2035) for mo in (5, 11)] + [(date(2034, 11, 15), 1.0)]
 
-    def w(dy, days=0):
-        d = d0 + timedelta(days=days)
-        y = (y0 + dy) * 1e-4
-        return sum(a * math.exp(-y * (p - d).days / 365.0) for p, a, *_ in tb._flows(terms, d))
 
-    def carry(days):
-        return w(0, days) + sum(a for p, a, *_ in tb._flows(terms, d0) if p <= d0 + timedelta(days=days))
+def _next_weekday(d):
+    d += timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d
 
-    dy, dt = y1 - y0, (d1 - d0).days
-    w_yyy = (w(2) - 2 * w(1) + 2 * w(-1) - w(-2)) / 2
-    charm = ((w(1, 1) - w(-1, 1)) - (w(1) - w(-1))) / 2
-    theta_t = carry(2) - 2 * carry(1) + carry(0)
-    per_unit = 2 * (abs(w_yyy) * abs(dy) ** 3 / 6 + abs(charm) * abs(dy) * dt + abs(theta_t) * dt**2 / 2)
-    return abs(quantity) * (per_unit + 1e-9 * abs(terms["face"]))
+
+def _bond_bound(face, quantity, d0, d1, y0, y1):
+    """R2-18 for a bond (no vol). W(y, t) = the settlement-date value at yield y (bp): the flows paid
+    after s(t) = the next weekday, each cf exp(-y tau(s, p)), tau = days/365 (on the flat toy world
+    Price depends on z + s only and delta bumps z with s fixed, so y is the own rate). On a
+    one-weekday step Bond Theta x days is exactly W(y0, d1) + the flows dropped - W(y0, d0) (DEV-I15),
+    so the residual is W(y1, d1) - W(y0, d1) - delta dy - gamma dy^2 / 2:
+      |resid| <= 2 (|W_yyy| |dy|^3/6 + |W_y(d1) - W_y(d0)| |dy| + |W_yy(d1) - W_yy(d0)| dy^2/2) + 1e-9 |face|
+    (the old calendar-day bound's |Theta_t| dt^2/2 term is gone: the carry is exact, not a Taylor term)."""
+    assert d1 == _next_weekday(d0), (d0, d1)  # the derivation's one-weekday step
+
+    def w(dy, d):
+        s, y = _next_weekday(d), (y0 + dy) * 1e-4
+        return face * sum(a * math.exp(-y * (p - s).days / 365.0) for p, a in _BOND_FLOWS if p > s)
+
+    w_y = lambda d: (w(1, d) - w(-1, d)) / 2  # noqa: E731  (per bp)
+    w_yy = lambda d: w(1, d) + w(-1, d) - 2 * w(0, d)  # noqa: E731
+    dy = y1 - y0
+    w_yyy = (w(2, d0) - 2 * w(1, d0) + 2 * w(-1, d0) - w(-2, d0)) / 2
+    per_unit = 2 * (abs(w_yyy) * abs(dy) ** 3 / 6 + abs(w_y(d1) - w_y(d0)) * abs(dy) + abs(w_yy(d1) - w_yy(d0)) * dy**2 / 2)
+    return abs(quantity) * (per_unit + 1e-9 * abs(face))
 
 
 def test_b_bond_cashflow_pnl_is_the_coupon_on_exactly_the_coupon_steps(bond):
+    """The engine books each coupon as holding cash on the trade date Price drops it (DEV-E22), and
+    the table reads it from there; financing_pnl is the repo interest, a long pays it every step."""
     _, table = bond
     coupon = N * 0.0425 / 2
     paid = table["cashflow_pnl"]
     assert set(paid[paid != 0].index) == set(COUPONS)
+    assert (table["financing_pnl"] < 0).all()
     for d in COUPONS:
         assert paid[d] == pytest.approx(coupon, rel=1e-12)
-        assert table.loc[d, "economic_pnl"] == pytest.approx(table.loc[d, "actual_pnl"] + coupon, rel=1e-12)
-        assert table.loc[d, "actual_pnl"] < -coupon / 2  # the dirty PV drops the paid coupon
+        row = table.loc[d]
+        assert row["economic_pnl"] == pytest.approx(row["actual_pnl"] + coupon + row["financing_pnl"], rel=1e-12)
+        assert row["actual_pnl"] < -coupon / 2  # the settlement-date value drops the paid coupon
 
 
 def test_b_bond_residual_within_the_taylor_bound_every_step(bond):
@@ -593,9 +609,10 @@ def test_b_bond_residual_within_the_taylor_bound_every_step(bond):
     steps = _steps(bt)
     assert [cur for _, cur in steps] == list(table.index)
     inst = bt.results[BOND_START].portfolio.all_instruments[0]
-    terms = inst.resolved_terms
-    ys = {d: tb.yield_bp(tb.market(d, "USD"), terms) for d in {d for s in steps for d in s}}
-    bounds = np.array([_bond_bound(terms, inst.quantity_, d0, d1, ys[d0], ys[d1]) for d0, d1 in steps])
+    face = inst.resolved_terms["face"]
+    # the own rate on the flat toy world: y = z + spread, read off the world's levels (bp)
+    ys = {d: (tr._zero_rate(d, "USD") + tb._spread(d, "USD")) * 1e4 for d in {d for s in steps for d in s}}
+    bounds = np.array([_bond_bound(face, inst.quantity_, d0, d1, ys[d0], ys[d1]) for d0, d1 in steps])
     residual = table["residual_pnl"].to_numpy()
     assert (np.abs(residual) <= bounds).all(), [(d1, r, b) for (d0, d1), r, b in zip(steps, residual, bounds) if abs(r) > b]
     assert (np.abs(residual + table["PNL_theta"].to_numpy()) > bounds).any()  # the bound has teeth
@@ -727,19 +744,18 @@ def test_g_an_irswap_config_without_the_explain_measures_fails_to_load_naming_th
         assert measure in str(err.value), measure
 
 
-def test_g_a_bond_config_that_declares_theta_raises_naming_it_in_the_explain():
-    """Bond keeps map-or-declare (R3-0), so the declared path still reaches the explain: the toy
-    bond with Theta declared under unsupported_measures: (instead of mapped) loads, and a backtest
-    with bond_pnl_definition() raises UnsupportedMeasureError naming Theta. The `bond` fixture is
-    the control (the same bond, Theta mapped, explains)."""
+def test_g_a_bond_config_that_declares_theta_fails_to_load_naming_the_declaration():
+    """Bond is strict (BOND_DESIGN decision 4.1): the toy bond with Theta declared under
+    unsupported_measures: (instead of mapped) no longer loads, so it never reaches the explain; the
+    ConfigError names the declaration and the unmapped row. The `bond` fixture is the control (the
+    same bond, Theta mapped, explains)."""
     cfg = yaml.safe_load((ASSETS / "toy_usd_bond.yaml").read_text(encoding="utf8"))
     del cfg["risk_measures"]["Theta"]
     cfg["unsupported_measures"] = {**(cfg.get("unsupported_measures") or {}), "Theta": "test: no carry model"}
-    b = Bond(identifier=BOND_ID, size=N, buy_sell="Buy", settlement_currency="USD", name="bond")
-    with pytest.raises(UnsupportedMeasureError) as err:
-        bt = _run([cfg], [_on(BOND_START, AddTradeAction(b, name="Add"))], date(2024, 6, 3), start=BOND_START, pnl_explain=bond_pnl_definition())
-        bt.pnl_explain_table()
-    assert err.value.measure == "Theta" and "Theta" in str(err.value)
+    with pytest.raises(ConfigError) as err:
+        PricebtSession.use(assets=[cfg])
+    assert "unsupported_measures declares Theta, a Bond contract measure" in str(err.value)
+    assert "Theta (scalar): not mapped" in str(err.value)
 
 
 # =============================================================================== (h) DEV-R11 views

@@ -1,12 +1,16 @@
 schema_version: 1
 asset: toy_usd_bond
 description: >
-  Toy USD fixed-coupon bond on the deterministic rates world (tests/toylib/bond.py): a tiny bond
-  master keyed by identifier, a flat curve plus a sinusoidal spread. Test-only fixture, never
-  shipped; maps the full IR measure contract (docs/v2/IR_RISK_DESIGN.md section 2, section 00).
-  Units: npv USD, the holder-signed dirty PV of the flows not yet paid (paid coupons drop out and
-  are listed by Cashflows); sensitivities USD per bp (bp^2) of the yield; yield and spreads in bp;
-  Theta USD per calendar day (same yield, the day's coupon counted as cash).
+  Toy USD fixed-coupon bond with repo financing on the deterministic rates world
+  (tests/toylib/bond.py): a tiny bond master keyed by identifier, a flat curve plus a sinusoidal
+  spread, GC repo = zero rate - 15bp (TOY 4.25 2034-11-15 trades 20bp special). Test-only fixture,
+  never shipped; maps the whole strict Bond contract (docs/v2/BOND_DESIGN.md section 3).
+  Weekdays only, standard settlement T+1. Units: Price USD, the holder-signed settlement-date
+  value of the flows paid after settlement (a flow drops the weekday before it is paid; Cashflows
+  lists the flows still in Price with that drop date); sensitivities USD per bp (bp^2) of the
+  yield; yield, spreads and repo rate in bp; prices per 100 face (pct); Theta USD per calendar day
+  at a constant yield over the step to the next weekday; repo simple ACT/360 on (1 - haircut) x
+  Price(trade date), overnight or locked for the term (repo_term, repo_haircut kwargs).
 instrument: Bond
 match: {settlement_currency: USD}
 currency: USD
@@ -15,6 +19,8 @@ defaults:
   identifier: TOY 4.25 2034-11-15
   size: 1.0e6
   settlement_currency: USD
+  repo_term: overnight
+  repo_haircut: 0.02
 imports: |
   import toylib.bond as tb
 market:
@@ -23,23 +29,36 @@ market:
 resolve:
   expr: 'tb.resolve_bond(market, kwargs)'
 functions:
-  npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # valued on the pricing date (a CloseMarket override passes no time)
+  npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # Price and FairPremium; valued on the pricing date (a CloseMarket override passes no time)
   delta:           {expr: 'tb.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
   yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
   gamma:           {expr: 'tb.gamma(market, trade)', unit: ccy_per_bp2}
-  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # no vol / basis / xccy exposure (R2-8)
+  zero_per_bp:     {expr: '0.0', unit: ccy_per_bp}    # ZERO_BY_CONVENTION: no vol / basis / xccy exposure
   zero_per_bp2:    {expr: '0.0', unit: ccy_per_bp2}
-  zero_vol:        {expr: '0.0', unit: bp}            # vol levels 0.0 by convention (R2-8)
+  zero_vol:        {expr: '0.0', unit: bp}            # ZERO_BY_CONVENTION: vol levels of a bullet bond
   yield_bp:        {expr: 'tb.yield_bp(market, trade)', unit: bp}
   spread_bp:       {expr: 'tb.spread_bp(market, trade)', unit: bp}
   theta_1d:        {expr: 'tb.theta_1d(market, trade)', unit: ccy}
   expiry_in_years: {expr: 'tb.expiry_in_years(market, trade)', unit: decimal}
   annuity:         {expr: 'tb.annuity(market, trade)', unit: ccy}
   cashflows:       {expr: 'tb.cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount, notional]}
-  dirty_price:     {expr: 'tb.dirty_price(market, trade)', unit: pct}   # per 100 face (measure_series extras)
-  clean_price:     {expr: 'tb.clean_price(market, trade)', unit: pct}
-  accrued:         {expr: 'tb.accrued(market, trade)', unit: ccy}
+  forward_price:   {expr: 'tb.forward_price(market, trade)', unit: ccy}
+  premium_cents:   {expr: 'tb.premium_cents(market, trade, pricebt_date)', unit: pct}   # Price / |face| per 100
+  local_annuity:   {expr: 'tb.local_annuity_in_cents(market, trade)', unit: decimal}
+  compounded_rate: {expr: 'tb.compounded_fixed_rate(trade)', unit: bp}
+  crif_ir_curve:   {expr: 'tb.crif_ir_curve(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}
+  dirty_price:     {expr: 'tb.dirty_price(market, trade, pricebt_date)', unit: pct}
+  clean_price:     {expr: 'tb.clean_price(market, trade, pricebt_date)', unit: pct}
+  accrued:         {expr: 'tb.accrued(market, trade, pricebt_date)', unit: ccy}
+  mod_duration:    {expr: 'tb.modified_duration(market, trade)', unit: decimal}
+  convexity:       {expr: 'tb.convexity(market, trade)', unit: decimal}
+  days_to_settle:  {expr: 'tb.days_to_settlement(market, trade)', unit: number, scale_with_quantity: false}
+  repo_rate:       {expr: 'tb.repo_rate(market, trade)', unit: bp}
+  repo_haircut:    {expr: 'tb.repo_haircut(market, trade)', unit: decimal}
+  financing:       {expr: 'tb.financing_to_date(market, trade)', unit: ccy}
+  carry:           {expr: 'tb.carry(market, trade)', unit: ccy}
+  roll_down:       {expr: 'tb.roll_down(market, trade)', unit: ccy}
 portfolio_functions:
   delta_ladder:
     expr: 'tb.delta_ladder(market, trades, weights, ("2Y", "5Y", "10Y", "30Y"))'
@@ -51,7 +70,7 @@ portfolio_functions:
     unit: ccy_per_bp2
     returns: buckets
     labels: {mkt_type: IR, mkt_asset: TOY-USD, mkt_class: OIS}
-  vega_cube:
+  vega_cube:   # ZERO_BY_CONVENTION: a bullet bond has no vol cube
     expr: '{}'
     unit: ccy_per_bp
     returns: buckets
@@ -63,6 +82,7 @@ portfolio_functions:
 attributes:
   notional_amount:  'abs(resolved["face"]) * pricebt_quantity'
   termination_date: 'resolved["maturity"]'
+  settlement_date:  'resolved["settle0"]'
 size_attribute: notional_amount
 risk_measures:
   Price: npv
@@ -84,7 +104,24 @@ risk_measures:
   ExpiryInYears: expiry_in_years
   Annuity: annuity
   Cashflows: cashflows
-  PnlExplain: pnl_explain
   LightningDV01: yield_dv01
   LightningOAS: spread_bp
   ParSpread: spread_bp
+  FairPremium: npv
+  ForwardPrice: forward_price
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+  CRIFIRCurve: crif_ir_curve
+  PnlExplain: pnl_explain
+  CleanPrice: clean_price
+  DirtyPrice: dirty_price
+  AccruedInterest: accrued
+  ModifiedDuration: mod_duration
+  Convexity: convexity
+  DaysToSettlement: days_to_settle
+  RepoRate: repo_rate
+  RepoHaircut: repo_haircut
+  FinancingToDate: financing
+  Carry: carry
+  RollDown: roll_down
