@@ -1,6 +1,6 @@
 # pricebt v2: interest-rate pricing and risk (swaps, swaptions, bonds): design and plan
 
-Status: **implemented** (design revision 2: §00 overrides §0-§12; revision 3, §000 and [`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md), overrides both for IRSwap/IRSwaption contracts). Branch `v2-ir-risk` (worktree `pricebt-ir`), based on `v2-skills` with `v2-redesign` merged. "What was built" (below the evidence table) maps each section to its commit, files and tests; text the implementation superseded is marked *(as built: ...)* in place.
+Status: **implemented** (design revision 2: §00 overrides §0-§12; revision 3, §000 and [`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md), overrides both for IRSwap/IRSwaption contracts; revision 4, [`BOND_DESIGN.md`](BOND_DESIGN.md), overrides all three for Bond: strict, widened to 40 rows, repo financing, engine holding cash). Branch `v2-ir-risk` (worktree `pricebt-ir`), based on `v2-skills` with `v2-redesign` merged. "What was built" (below the evidence table) maps each section to its commit, files and tests; text the implementation superseded is marked *(as built: ...)* in place.
 Author: Opus session, 2026-09-29, with full design authority from the user ("port all interest-rate related functionality from gs_quant's pricing and risk for backtest-related functionality ... require that the external library defines how to calculate all the IR derivative measures gs supports ... nearly 1:1 ... treat Portfolios with extra care ... swaptions and bonds").
 
 This document **extends** `DESIGN.md`; every MUST there still holds (MUST-1 no library in `src`, MUST-2 gs API parity with DEV ids, MUST-3 one config per asset, MUST-4 currency and bp units, MUST-5 adding an asset is config-only). Where this document changes a rule of `DESIGN.md`, it says so and gives the DEV id.
@@ -37,8 +37,9 @@ Commits on `v2-ir-risk` (design: `c38b91a`, `c2c6e63`). Every row's tests are in
 | §10 docs, merge notes; nested-scope evaluation (DESIGN §4.4); demo notebook | F (this phase) | `docs/v2/**`, `README.md`, `src/pricebt/assets/namespace.py`, `notebooks/src/ir_pricing_and_risk_toy.py` | `test_docs_links.py`, `test_docs_contract_tables.py`, `test_namespace_scopes.py`, `test_ir_pricing_and_risk_demo.py` |
 | §000 / R3-0 strict contracts: `STRICT_CLASSES`, `is_strict`, declarations of a contract measure rejected for IRSwap/IRSwaption, `mapping_skeleton` in the load error, `EXCLUDED`, `ZERO_BY_CONVENTION`, `SIMM_IR_TENORS` (DEV-I11 amended) | `v2-ir-required`, owner A | `src/pricebt/risk/contracts.py`, `src/pricebt/assets/config.py` (error composition) | `test_contracts.py` (strict cases, skeleton, EXCLUDED completeness), `test_unsupported_measures.py` (declaration cases moved to Bond), `test_registry.py` |
 | §000 / R3-1 eight new IRSwap/IRSwaption rows (`ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`), kind `notional_level` (DEV-I19) | `v2-ir-required`, owner A (contract); owners B-D (toys, ARBS, skills configs) | `src/pricebt/risk/contracts.py`; every IRSwap/IRSwaption yaml | `test_contracts.py` (one test per new row's rule), `test_docs_contract_tables.py`, `test_toylib_ir.py` |
+| Revision 4 (`BOND_DESIGN.md`): Bond strict and widened, `PRICEBT_MEASURES` (DEV-I20, DEV-I21), engine holding cash (DEV-E22), `pnl_explain_table` `financing_pnl` | `v2-bonds` | `src/pricebt/risk/contracts.py`, `src/pricebt/risk/__init__.py`, `src/pricebt/backtests/generic_engine.py`, `src/pricebt/backtests/backtest_objects.py`, `src/pricebt/assets/pricing.py`; `tests/toylib/bond.py`, `tests/assets/toy_usd_bond.yaml` | `test_contracts.py`, `test_holding_cash.py`, `test_toylib_bond.py`, `test_pnl_ir.py` |
 
-Merging the concurrent `v2-pnl-explain` branch: [`MERGE_NOTES_pnl_explain.md`](MERGE_NOTES_pnl_explain.md). Not built: §12.
+Merging the concurrent `v2-pnl-explain` branch: [`MERGE_NOTES_pnl_explain.md`](MERGE_NOTES_pnl_explain.md). Not built: §12 (engine coupon booking is done for financed positions, BOND_DESIGN §4).
 
 ---
 
@@ -163,7 +164,7 @@ FRAME_COLUMNS = {"Cashflows": ("payment_date", "payment_amount", "currency", "pa
 
 def contract_for(instrument: str) -> tuple[MeasureRequirement, ...]      # () for classes without a contract
 def check(instrument, mapped, unsupported) -> ContractCheck               # as built: (problems, warnings, missing)
-def unsupported_block(instrument, missing, reason="TODO: why your library cannot compute this") -> str  # paste-ready YAML
+def unsupported_block(instrument, missing, reason="TODO: why your library cannot compute this") -> str  # paste-ready YAML (as built R4: removed; every contract class is strict, the error ends with mapping_skeleton)
 def validate_frame(measure_name, frame) -> None                           # required columns; called by pricing
 def base_measure(key) -> tuple[str, str | None]                           # as built: R2-10 preset/fallback -> (base, form)
 def provided_forms(instrument, mapped) -> dict[(measure, form), key]      # as built: what a mapping slot serves (R2-10)

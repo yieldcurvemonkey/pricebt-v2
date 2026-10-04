@@ -223,7 +223,7 @@ class BackTest(BaseBacktest):
         # Empty when nothing was dropped/rolled.
         self.missing_market_dates = []
         self.missing_market_moves = []
-        # pricebt DEV-E22: {date: {position name: (currency, cashflow, financing)}}, the holding cash
+        # pricebt DEV-E22: {date: {position: (currency, cashflow, financing)}}, the holding cash
         # GenericEngine booked on that date for each financed position (empty without one)
         self.holding_cash = defaultdict(dict)
 
@@ -597,9 +597,9 @@ class BackTest(BaseBacktest):
                     prev, cur = prev_results[self.price_measure], cur_results()[self.price_measure]
                     units.update(getattr(prev, 'unit', None) or (), getattr(cur, 'unit', None) or ())
                     actual += float(cur) - float(prev)
-                    if inst.name in booked:
+                    if inst in booked:
                         # pricebt DEV-E22: what the engine booked for this financed position
-                        ccy, coupons, funding = booked[inst.name]
+                        ccy, coupons, funding = booked[inst]
                         cash += coupons
                         financing += funding
                         currencies.add(ccy)

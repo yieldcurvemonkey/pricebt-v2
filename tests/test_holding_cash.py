@@ -111,8 +111,8 @@ def test_each_mark_books_exactly_what_the_position_paid_since_the_previous_one()
     assert dates[0] > START and dates[-1] == EXIT  # nothing on the entry date; the exit date is booked
     prev = START
     for d in dates:
-        ((name, (ccy, cash, financing)),) = bt.holding_cash[d].items()
-        assert ccy == "USD" and name.startswith("add")
+        ((inst, (ccy, cash, financing)),) = bt.holding_cash[d].items()
+        assert ccy == "USD" and inst.name.startswith("add")
         assert cash == pytest.approx(_flows_in(prev, d), abs=1e-9), d
         assert financing == pytest.approx(_financing(prev, d), abs=1e-9), d
         prev = d
@@ -170,17 +170,69 @@ def test_result_ccy_converts_each_booking_at_its_date():
         n = sum(1 for k in range((d - date(2020, 1, 1)).days) if (date(2020, 1, 1) + timedelta(days=k)).weekday() < 5)
         return 1.0 / (1.10 + 0.01 * math.sin(2 * math.pi * n / 252))
 
+    def flows_eur(a, b):  # each flow at its own payment date's FX (BOND_DESIGN section 4), so the total is grid-independent
+        days = [a + timedelta(days=k) for k in range(1, (b - a).days + 1)]
+        return sum(FACE * FLOW * usd_eur(x) for x in days if x.weekday() == 2)
+
     prev, booked = START, 0.0
     for d in sorted(bt.holding_cash):
         ((_n, (ccy, cash, fin)),) = bt.holding_cash[d].items()
         assert ccy == "EUR"
-        assert cash + fin == pytest.approx((_flows_in(prev, d) + _financing(prev, d)) * usd_eur(d), rel=1e-12)
-        booked += (_flows_in(prev, d) + _financing(prev, d)) * usd_eur(d)
+        assert cash == pytest.approx(flows_eur(prev, d), rel=1e-12, abs=1e-9)
+        assert fin == pytest.approx(_financing(prev, d) * usd_eur(d), rel=1e-12)  # the financing change at the mark date's FX
+        booked += cash + fin
         prev = d
     want = _price(EXIT) * usd_eur(EXIT) - _price(START) * usd_eur(START) + booked
     assert _total(bt, EXIT) == pytest.approx(want, rel=1e-12)
 
 
+def test_converted_flows_do_not_depend_on_the_grid():
+    daily = _run(result_ccy="EUR", fx=ASSETS / "toy_fx.yaml")
+    weekly = _run(result_ccy="EUR", fx=ASSETS / "toy_fx.yaml", frequency="1w")
+    flows = [sum(c for day in bt.holding_cash.values() for _ccy, c, _f in day.values()) for bt in (daily, weekly)]
+    assert flows[0] == pytest.approx(flows[1], rel=1e-12)
+
+
+def _initial(*positions, extra_assets=()):
+    """Unnamed initial-portfolio positions: the engine names them all alike (`None_<date>`)."""
+    PricebtSession.use(assets=[_asset(), *extra_assets])
+    strategy = Strategy(initial_portfolio=list(positions), triggers=[])
+    return GenericEngine().run_backtest(strategy, start=START, end=EXIT, frequency="1b", show_progress=False,
+                                        risks=[FinancingToDate] if not extra_assets else None, pnl_explain=PnlDefinition(attributes=[]) if not extra_assets else None)
+
+
+def test_two_positions_with_the_same_name_keep_their_own_records():
+    """The record is keyed by the position, not its name: two unnamed initial positions (1x and 3x
+    face) share a name, and each keeps its own holding cash in the table."""
+    one, three = (ConfigInstrument(pricebt_asset="carry_note", face=f) for f in (FACE, 3 * FACE))
+    bt = _initial(one, three)
+    for day in bt.holding_cash.values():
+        assert len(day) == 2 and len({i.name for i in day}) == 1
+    table = bt.pnl_explain_table()
+    assert table["financing_pnl"].sum() == pytest.approx(_financing(START, EXIT, q=4.0), rel=1e-12)
+    assert table["cashflow_pnl"].sum() == pytest.approx(_flows_in(START, EXIT, q=4.0), rel=1e-12)
+    assert table["economic_pnl"].sum() == pytest.approx(_total(bt, EXIT) - _total(bt, START), rel=1e-12)
+
+
+def test_an_unfinanced_position_next_to_a_financed_one_is_unchanged():
+    """A mixed book: the unfinanced note's cash is gs's (entry and exit prices only); the financed
+    one adds exactly its own holding cash."""
+    plain = _asset("plain_note", financed=False)
+    financed = ConfigInstrument(pricebt_asset="carry_note", face=FACE)
+    unfinanced = ConfigInstrument(pricebt_asset="plain_note", face=2 * FACE)
+    bt = _initial(financed, unfinanced, extra_assets=[plain])
+    assert {i.pricebt_asset for day in bt.holding_cash.values() for i in day} == {"carry_note"}
+    want = _price(EXIT, q=3.0) - _price(START, q=3.0) + _flows_in(START, EXIT) + _financing(START, EXIT)
+    assert _total(bt, EXIT) - _total(bt, START) == pytest.approx(want, rel=1e-12)
+
+
 def test_a_cash_accrual_model_with_a_financed_position_warns():
     with pytest.warns(UserWarning, match="counted twice"):
         _run(cash_accrual=ConstantCashAccrualModel(0.01))
+
+
+def test_flows_and_financing_in_two_currencies_need_result_ccy():
+    asset = _asset("two_ccy_note")
+    asset["code"] = asset["code"].replace('"USD", "Coupon"', '"EUR", "Coupon"')
+    with pytest.raises(ValueError, match="Cashflows paid in EUR but FinancingToDate in USD"):
+        _run(asset=asset)

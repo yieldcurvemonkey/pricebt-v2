@@ -200,7 +200,7 @@ _BOND_EXTRA = (
          "the amount the holder pays at standard settlement for the position: Price itself, since Price is already the settlement-date value (DEV-I20). ccy."),
     _req("ForwardPrice", "value", "scalar",
          "the forward (financed) value at the horizon H = settlement + 1 calendar month (following business day): Price x (1 + RepoRate x tau(s, H)) - sum over flows c paid in (s, H] of C x (1 + RepoRate x tau(c, H)), "
-         "tau in the repo day count, RepoRate held flat to H; ccy, holder-signed. Dead (nothing left to pay): 0 (DEV-I21; the swap and swaption rows forward to expiry instead)."),
+         "tau in the repo day count, RepoRate held flat to H, the whole Price financed (a forward price does not depend on the haircut); ccy, holder-signed. Dead (nothing left to pay): 0 (DEV-I21; the swap and swaption rows forward to expiry instead)."),
     _req("PremiumCents", "notional_level", "scalar", "Price / |face| in the declared unit (pct: the dirty price per 100). Intensive (DEV-I19)."),
     _req("LocalAnnuityInCents", "notional_level", "scalar", "Annuity / |face|: the PV of 1.0 per annum per unit of face. Intensive (DEV-I19)."),
     _req("CompoundedFixedRate", "rate", "scalar", "the coupon restated as an annually compounded rate: (1 + c/f)^f - 1 for f coupons a year. A trade term, finite on every date. Intensive (DEV-I19)."),
@@ -232,7 +232,7 @@ _BOND_EXTRA = (
          "clean value now minus clean forward value at H: (Price - AccruedInterest) - (ForwardPrice - accrued at H) = coupon income over (s, H] minus financing at RepoRate; ccy, holder-signed; dead: 0 (DEV-I21)."),
     _req("RollDown", "value", "scalar",
          "clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now; on a flat curve, the pull to par at constant yield. "
-         "Carry + RollDown is the financed P&L to H if the curve does not move. ccy, holder-signed; dead: 0 (DEV-I21)."),
+         "Carry + RollDown is the P&L to H, the whole Price financed at RepoRate, if the curve does not move (with a haircut h the backtest finances (1 - h) of it: FinancingToDate). ccy, holder-signed; dead: 0 (DEV-I21)."),
 )
 
 CONTRACTS: Dict[str, Tuple[MeasureRequirement, ...]] = {

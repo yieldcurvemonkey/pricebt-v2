@@ -1372,3 +1372,83 @@ ladder; the `IRGamma` diagonal may be a Hessian diagonal or the parallel gamma a
 pillar; `PnlExplain` may include the carry between the two dates for a library whose markets carry
 their own valuation date. `ZERO_BY_CONVENTION` is now pinned exactly in
 `tests/test_contracts.py::test_strict_classes_and_shared_constants`.
+
+## 2026-10-03 — v2-bonds: cash bonds (US Treasuries first), strict Bond contract and repo financing (revision 4)
+
+**Situation:** the user asked to implement cash bonds, US Treasuries first, end to end and autonomously, with full
+design authority: all math through the asset config, Bond a strict contract class, repo financing required in the
+config, financing reaching backtest results, a toy with known-answer tests, ARBS as a live test case, and the skills
+updated. The specification is [`BOND_DESIGN.md`](BOND_DESIGN.md) (decisions 4.1-4.10, the 40-row contract in §3, the
+engine extension in §4).
+
+**Decisions (pointers, not restatements):**
+- **Bond is strict** (decision 4.1): every class with a contract is strict, `STRICT_CLASSES = frozenset(CONTRACTS)`.
+  `unsupported_measures:` stays only for classes without a contract (ConfigInstrument), where pricing still raises
+  `UnsupportedMeasureError` and R2-9's mapping-wins warning still applies. `contracts.unsupported_block` and the
+  "a declaration satisfies a row" branch were deleted, not kept as dead code; the declaration tests moved to a
+  ConfigInstrument asset (`tests/test_unsupported_measures.py`).
+- **The Bond contract is widened to 40 rows** (decisions 4.2-4.4): the gs measures a cash bond can answer, with Bond
+  text; pricebt-only analytics (DEV-I20) and the financing contract (DEV-I21), listed in `pricebt.risk.PRICEBT_MEASURES`
+  and allowed by the parity test as exactly that list (decision 4.10). `LightningDV01`/`LightningOAS` left `EXCLUDED`
+  (they are Bond rows; the completeness test now runs over the union of the contracts).
+- **No second yield measure.** The user listed "yield to maturity"; it is `IRFwdRate` (DEV-I12), in the library's
+  quoting convention. A second name for the same number would let two configs, or one config's two functions,
+  drift apart.
+- **`Price` is the settlement-date market value** (decision 4.5): clean + accrued at standard settlement, not
+  discounted to the pricing date, the way a desk marks a bond. `FairPremium == Price`; `Cashflows.payment_date` is
+  the trade date `Price` drops the flow.
+- **Bond `Theta` is spread over the step to the next business day.** With a T+1 settlement-date `Price`, one calendar
+  day moves settlement by 0 or 3 days, so a plain one-day Theta attributes three days of accrual to a Thursday step
+  and none to a Friday step. `Theta = [Price(nb, same yield) + flows dropped − Price(t)] / (nb − t).days` makes
+  `Theta × step days` exact on a business-day grid (the rule DEV-I15 already applies to the swap schedule roll).
+- **The carry horizon is settlement + 1 calendar month** for `ForwardPrice`, `Carry`, `RollDown`: one fixed horizon
+  makes the numbers comparable across bonds, and one month matches the swap config's `carry_1m`/`roll_1m`. A horizon
+  parameter would need a new pass-through parameter class for one use (rejected).
+- **Financing reaches results through engine holding cash (DEV-E22, decision 4.6)**: the engine books, for positions
+  whose asset maps `FinancingToDate`, the `Cashflows` dropped since the previous mark plus the change of
+  `FinancingToDate`. Rejected (BOND_DESIGN §2.1): a financed total-return `Price` (it stops being a market value and
+  depends on history the market does not hold); coupons plus a `DataCashAccrualModel` at the repo rate (the rate would
+  not come from the bond config, one rate for the book, no special or haircut, and gs re-samples it only on payment
+  dates); a per-day financing measure times the step's days (not exact: repo accrues between settlement dates).
+  `FinancingToDate` is a cumulative level on a principal pinned at resolve, so the booking telescopes exactly on any
+  grid; overnight re-margining of the loan is not modelled (documented).
+- **`pnl_explain_table`** (decision 4.7): `financing_pnl` is explained (known cash, not a market move), so the
+  residual is unchanged and a financed book's `economic_pnl` sums to the change in `Total`.
+- **The asset-agnostic guard** now forbids bond and financing words in its scope and scans `generic_engine.py`
+  (decision 4.9). `accrued` alone is not in the list: the ported engine calls `get_accrued_value`; `accrued_interest`
+  is. Source files cite the design as "DESIGN.md section 11" where the guard would see the doc's file name.
+
+**Evidence:** `tests/test_contracts.py`, `tests/test_unsupported_measures.py`, `tests/test_gs_api_parity.py`,
+`tests/test_holding_cash.py` (engine mechanics on a synthetic financed ConfigInstrument), `tests/test_toylib_bond.py`
+(the toy's known answers), the guard twins; the mutations are listed in BOND_DESIGN §8.
+
+## 2026-10-03 — US Treasury live tier blocked: no store-only ARBS path for prices or repo (v2-bonds)
+
+**Situation:** the task required a store-only access path and a safe date cap for ARBS Treasury prices and repo,
+probed only with the network blocked, and said: if none exists, do not work around it; document it, keep the live
+tier blocked, and finish everything else.
+
+**Finding (read from source, verified twice: once by a read-only research sweep, once by reading the cited lines
+again):** every `FixedRateBondsMDP` price path calls `update_reference_data(source="fiscaldata")`, which keys on
+today's date, runs `mkdir` inside the ARBS repository, downloads from fiscaldata on a miss and deletes older cached
+directories. `bulk_get_data` has no store-only flag. ARBS has no repo series (no TGCR/BGCR; the Citi repo store's
+parquet does not exist). Details: [`LIVE_ARBS_REPORT.md`](LIVE_ARBS_REPORT.md) "US Treasury bonds".
+
+**Decision:** the live tier is blocked; no ARBS bond config and no `tests/test_live_arbs_bond*.py` ship. Not even a
+network-blocked probe of the MDP was run, because its first step writes into the read-only ARBS repository before
+the network is reached. The unblock path (a direct immutable read of the FedInvest diskcache and the reference
+parquet, priced with ARBS's `QLFixedRateBondPricer`, financed at the SOFR fixing as a GC proxy, capped at
+2026-08-21) bypasses the MDP, which the R06 research note already classed as needing the user's approval; it is
+written up in the report, not built.
+
+**Alternatives rejected:** monkeypatching `update_reference_data` and the fetchers (a workaround the task forbids);
+reading the stores directly without approval (the same); shipping a config whose market function goes through the
+MDP (it would hit the network on first use).
+
+## 2026-10-03 — merge target for v2-bonds (orchestrator)
+
+The task said to open the PR against `v2-ir-required`; mid-task the user added "merge changes into the default
+branch". The repository's default branch is `v2-redesign`, which already points at the same commit as
+`v2-ir-required` (`54df01a`; PR #2 is still open only as a record). So the PR is opened from `v2-bonds` into
+`v2-redesign`: its diff is exactly the bond work, the same diff a PR into `v2-ir-required` would show, and merging it
+updates the default branch as asked. PR #2 is left as it is.

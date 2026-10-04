@@ -31,6 +31,8 @@ from collections import defaultdict
 from functools import reduce
 from typing import Iterable, Optional, Union
 
+import pandas as pd
+
 from ..common import Currency, ParameterisedRiskMeasure, RiskMeasure
 from ..datetime.relative_date import RelativeDateSchedule
 from ..errors import ConfigError, MarketDataUnavailable, PricebtError
@@ -1049,7 +1051,8 @@ class _HoldingCash:
             self.warned = True
             warnings.warn(
                 "a cash_accrual model accrues the whole cash balance, which for a financed position already holds its"
-                " funding loan (-Price at entry): its FinancingToDate is booked as cash too, so the funding is counted twice"
+                " funding loan (-Price at entry): its FinancingToDate is booked as cash too, so the funding is counted twice;"
+                " and each booking moves the accrual anchor, so a DataCashAccrualModel re-reads its rate on every mark"
                 " (pricebt DEV-E22)",
                 UserWarning,
             )
@@ -1064,17 +1067,21 @@ class _HoldingCash:
             prev = self.marks.pop(inst, None)
             if prev is not None:
                 p, prev_frame, prev_fin = prev
-                ccy = next(iter(fin.unit))
+                ccy, change = self._convert(float(fin) - float(prev_fin), next(iter(fin.unit)), d)
                 cash = 0.0
                 if prev_frame is not None:
                     due = _cash_due(prev_frame, p, d)
-                    for row_ccy, amount in zip(due['currency'], due['payment_amount']):
-                        row_ccy, amount = self._convert(float(amount), row_ccy, d)
-                        out[row_ccy] += amount
+                    for row_ccy, amount, paid in zip(due['currency'], due['payment_amount'], due['payment_date']):
+                        # each flow at its own payment date's FX, so the booked total is grid-independent
+                        row_ccy, amount = self._convert(float(amount), row_ccy, pd.Timestamp(paid).date())
+                        if row_ccy != ccy:
+                            raise ValueError(
+                                f"{inst.name}: Cashflows paid in {row_ccy} but FinancingToDate in {ccy} on {d};"
+                                " run with result_ccy to book them in one currency (pricebt DEV-E22)"
+                            )
                         cash += amount
-                ccy, change = self._convert(float(fin) - float(prev_fin), ccy, d)
-                out[ccy] += change
-                self.backtest.holding_cash[d][inst.name] = (ccy, cash, change)
+                out[ccy] += cash + change
+                self.backtest.holding_cash[d][inst] = (ccy, cash, change)
             if inst in present:
                 self.marks[inst] = (d, frame, fin)
         return dict(out)

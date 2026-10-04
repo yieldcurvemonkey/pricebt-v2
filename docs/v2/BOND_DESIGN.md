@@ -1,6 +1,7 @@
 # Cash bonds (US Treasuries first): the strict Bond contract and repo financing (revision 4)
 
-Status: specification for branch `v2-bonds` (worktree `pricebt-bond`), based on `v2-ir-required`. Author: Opus session,
+Status: **implemented** on branch `v2-bonds` (worktree `pricebt-bond`), based on `v2-ir-required`. The live ARBS
+tier for US Treasuries is **blocked** (§7). Author: Opus session,
 2026-10-03, with full design and implementation authority from the user ("implement cash bonds (US Treasuries first)
 ... all math and pricing comes from the external library, through the asset config ... Bond becomes a strict contract
 class ... repo and financing logic is REQUIRED in the config YAML").
@@ -62,6 +63,7 @@ summarised in §1.
 | 4.8 | **Bond `ZERO_BY_CONVENTION`**: `IRVega`, `IRVanna`, `IRVolga`, `IRAnnualImpliedVol`, `IRAnnualATMImpliedVol`, `IRDailyImpliedVol` (a bullet bond has no optionality), `IRBasis` (one discount curve), `IRXccyDelta` (one currency). `ZERO_BY_CONVENTION` becomes `{class: {measure: reason}}` so every entry carries its reason. | "Anything zero by convention for a bullet Treasury goes in ZERO_BY_CONVENTION, with the reason." |
 | 4.9 | **The asset-agnostic guard grows**: bond and financing words (`bond`, `coupon`, `repo`, `haircut`, `accrued`, `cusip`, `treasury`, `clean_price`, `dirty_price`) join its pattern, and `backtests/generic_engine.py` joins its scope. | The holding-cash extension lives in the engine; the guard should prove it names no asset class. |
 | 4.10 | **pricebt-only measures are a declared list**: `pricebt.risk.PRICEBT_MEASURES` (a tuple of names). The parity test allows exactly these extras, each must cite a DEV id in its contract text, and none may shadow a gs name. | Keeps "the catalogue is gs's" checkable while allowing the measures the user asked for. |
+| 4.11 | **Settlement is pinned.** A config pins the standard settlement date of the trade date in `resolve` and exposes it as `attributes: settlement_date` (the gs `Bond` field); a non-standard `settlement_date` kwarg is refused. `DaysToSettlement` is the per-date numeric measure. | gs parity for the field, and a direct T+1 assertion for the checker and live tests. |
 
 ### 2.1 How financing reaches results: the alternatives
 
@@ -80,23 +82,24 @@ haircut capital funded at the cash rate models that in `FinancingToDate`.
 ## 3. The Bond contract (holder-signed, per unit trade; pricebt applies quantity)
 
 Rows are in contract order. "as base" = the shared IR base text; the other rows have Bond text. Units are the kinds of
-`contracts.KINDS`; two kinds are new: `days` (`number`, intensive) and the existing `time` kind is reused for
-duration and convexity (decimal or number, intensive).
+`contracts.KINDS`; one kind is new, `days` (`number`, intensive), and the existing `time` kind is reused for duration
+and convexity (decimal or number, intensive).
 
 | Measure | Kind | Forms | Bond contract text (summary; the code holds the exact text) |
 |---|---|---|---|
 | `Price` | value | s | **Bond text.** Settlement-date market value: (clean + accrued at standard settlement) × face / 100, holder-signed, not discounted to the pricing date (DEV-I20). It drops each flow on the first trade date whose settlement is on or after the flow's payment date (`Cashflows` lists the flows still to drop). |
-| `IRDelta` … `IRDailyImpliedVol`, `Theta`, `ExpiryInYears`, `Annuity` | | | as base (own rate = the yield to maturity; vol rows 0 by convention, 4.8) |
+| `IRDelta` … `IRDailyImpliedVol`, `ExpiryInYears`, `Annuity` | | | as base (own rate = the yield to maturity; vol rows 0 by convention, 4.8) |
+| `Theta` | theta | s | **Bond text.** Carry per calendar day with the yield fixed over the step to the next business day nb: `[Price(nb, same yield) + flows dropped in (t, nb] − Price(t)] / (nb − t).days`. One calendar day moves a T+1 settlement by 0 or 3 days; spreading the step makes `Theta × step days` exact on a business-day grid (the DEV-I15 rule for the swap schedule roll). Financing is not in `Theta`. |
 | `Cashflows` | table | frame | **Bond text.** One row per flow still in `Price`, holder-signed, `payment_date` = the trade date on which `Price` drops it (a T+1 bond: the business day before a business-day coupon date). |
 | `LightningDV01`, `LightningOAS`, `ParSpread` | | | unchanged |
 | `FairPremium` | value | s | the amount the holder pays at standard settlement for the position: `Price` (4.5). |
-| `ForwardPrice` | value | s | the forward value at the **horizon H = settlement + 1 calendar month** (following business day): `Price·(1 + RepoRate·τ(s,H)) − Σ_{s<c≤H} C·(1 + RepoRate·τ(c,H))`, τ in the repo day count, `RepoRate` held flat to H. ccy. Dead: 0. (DEV-I21; gs's swap/swaption text forwards to expiry.) |
+| `ForwardPrice` | value | s | the forward value at the **horizon H = settlement + 1 calendar month** (following business day): `Price·(1 + RepoRate·τ(s,H)) − Σ_{s<c≤H} C·(1 + RepoRate·τ(c,H))`, τ in the repo day count, `RepoRate` held flat to H, the whole `Price` financed. ccy. Dead: 0. (DEV-I21; gs's swap/swaption text forwards to expiry.) |
 | `PremiumCents` | notional_level | s | `Price / |face|` in the declared unit (pct: the dirty price per 100). |
 | `LocalAnnuityInCents` | notional_level | s | `Annuity / |face|`. |
 | `CompoundedFixedRate` | rate | s | the coupon restated annually compounded, `(1 + c/f)^f − 1`. |
 | `CRIFIRCurve` | table | frame | as the swap row: one SIMM row per ladder pillar, Σ `Amount` = Σ `IRDelta` ladder; dead: empty. |
 | `PnlExplain` | value | b | Price(market_to) − Price(market) by risk factor (`IR`, and e.g. `CREDIT` for the spread). |
-| `CleanPrice` | notional_level | s | DEV-I20. The quoted clean price per 100 face for standard settlement; `CleanPrice = DirtyPrice − 100 · AccruedInterest / face`. Dead: the last value (finite). |
+| `CleanPrice` | notional_level | s | DEV-I20. The quoted clean price per 100 face for standard settlement; `CleanPrice = DirtyPrice − 100 · AccruedInterest / face`. Dead (Price 0): 0. |
 | `DirtyPrice` | notional_level | s | DEV-I20. `100 · Price / face` (signed face, so the same for long and short). |
 | `AccruedInterest` | value | s | DEV-I20. The coupon accrued from the last coupon date to the settlement date in the bond's accrual convention (UST: ACT/ACT ICMA), holder-signed ccy. 0 on a coupon settlement date and after maturity. |
 | `ModifiedDuration` | time | s | DEV-I20. `−(1/P)·dP/dy` in years per unit (decimal) yield, y the `IRFwdRate` convention, P the dirty price. 0 when dead. |
@@ -109,10 +112,10 @@ duration and convexity (decimal or number, intensive).
 | `RollDown` | value | s | DEV-I21. Clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now. On a flat curve: the pull to par at constant yield. `Carry + RollDown` = the financed P&L to H if the curve does not move. Dead: 0. |
 
 **Identities** (the toy tests and the checker rows): `CleanPrice + 100·AccruedInterest/face = DirtyPrice`;
-`DirtyPrice·face/100 = Price = FairPremium`; `PremiumCents` (pct) `= DirtyPrice`; price ↔ yield round trip;
+`DirtyPrice·face/100 = Price = FairPremium`; `PremiumCents` (pct) `= sign(face)·DirtyPrice` (`PremiumCents` divides by |face|, so it carries the holder's sign; `DirtyPrice` does not); price ↔ yield round trip;
 `ModifiedDuration ≈ −1e4·IRDelta/Price`; `Convexity` ≈ the finite-difference second derivative in yield;
 `ForwardPrice` parity; `Carry + RollDown = 0` on a flat curve when the repo matches the yield (same compounding, a
-horizon with no coupon); `ΔFinancingToDate` over one day = `−(1 − h)·Price(t₀)·RepoRate·days/basis`.
+horizon with no coupon); `ΔFinancingToDate` over a step = `−(1 − h)·Price(t₀)·Σ RepoRate(day)/basis` over the calendar days between the two settlement dates (each day at the rate fixed on its last business day). `ForwardPrice` and `Carry` finance the whole `Price` (a forward price does not depend on the haircut), so `Carry + RollDown` matches a backtest's financed P&L only for a zero haircut.
 
 ## 4. The engine extension (DEV-E22) and the table (4.7)
 
@@ -130,7 +133,9 @@ In `GenericEngine._handle_cash`, inside the cash walk, after DEV-R1's off-grid p
 4. A present position's mark becomes `d`; an exiting one's is dropped.
 
 So a position held over grid dates t₀ < t₁ < … < tₙ with exit e books, on each tᵢ and on e, exactly what it paid since
-the previous mark. Positions held to the end of the run stop at the last date. The ledger (`trade_ledger`) is
+the previous mark. Under `result_ccy`, each flow converts at its own payment date's FX (so the converted flows do not
+depend on the grid either) and the financing change at the mark date's FX. Flows and financing in two currencies
+without `result_ccy` raise `ValueError`. The record is keyed by the position object (two positions may share a name). Positions held to the end of the run stop at the last date. The ledger (`trade_ledger`) is
 unchanged (it pairs the price legs).
 
 `pnl_explain_table`: per held instrument, if `holding_cash[cur_date]` has its name, `cashflow_pnl += cashflow` and
@@ -165,10 +170,35 @@ Gates: the full non-live suite green; `tools/sync_agent_skills.py --check`; guar
 every Bond config; the live ARBS bond file green or documented as blocked; every new rule has a named mutation that
 fails a named test (listed in §8); LF line endings; no new absolute user paths outside `configs/assets`.
 
-## 7. ARBS (US Treasuries)
+## 7. ARBS (US Treasuries): blocked
 
-Filled in after the store-only probe; see [`LIVE_ARBS_REPORT.md`](LIVE_ARBS_REPORT.md) "US Treasury bonds".
+**There is no store-only access path through ARBS for Treasury prices or for repo**, so, as the task instructs, the
+live tier is blocked and no ARBS bond config ships. Every `FixedRateBondsMDP` price path refreshes the fiscaldata
+reference data keyed on today's date: it runs `mkdir` inside the ARBS repository, downloads on a miss and deletes
+older cached directories, before any requested date is read. `bulk_get_data` has no store-only flag. ARBS has no
+repo series (no TGCR/BGCR; the Citi repo store's file does not exist). The full write-up, with file and line
+citations and the unblock path that needs the user's approval (a direct immutable read of the stores, bypassing the
+MDP), is [`LIVE_ARBS_REPORT.md`](LIVE_ARBS_REPORT.md) "US Treasury bonds". Everything else (contract, financing,
+engine, toy, skills) is built and tested on the toy library.
 
 ## 8. Mutations run
 
-Filled in per phase.
+Each one-line mutation was applied, the named test run and seen to fail, and the mutation reverted.
+
+**Phase S (src contract and financing, commit `37bf3d5`):**
+
+| # | Mutation | Failing test |
+|---|---|---|
+| M1 | `STRICT_CLASSES = frozenset({"IRSwap", "IRSwaption"})` (Bond not strict) | `tests/test_contracts.py::test_a_declaration_never_satisfies_a_strict_row[Bond]` |
+| M2 | a contract-measure declaration allowed on a Bond (`if base in reqs and instrument != "Bond"`) | `tests/test_contracts.py::test_strict_class_rejects_every_declaration_of_a_contract_measure` |
+| M3 | financing change not booked (`out[ccy] += 0.0`) | `tests/test_holding_cash.py::test_financed_total_is_pv_change_plus_flows_plus_financing` |
+| M4 | flows read from the frame on `d` instead of the previous mark | `tests/test_holding_cash.py::test_each_mark_books_exactly_what_the_position_paid_since_the_previous_one` |
+| M5 | the mark not moved after a booking | same |
+| M6 | `PricingService.maps` always True | `tests/test_holding_cash.py::test_maps_is_the_opt_in` |
+| M7 | `financing_pnl` left out of `explained_pnl` | `tests/test_holding_cash.py::test_pnl_explain_table_economic_pnl_sums_to_the_total_change` |
+| M8 | no `result_ccy` conversion of holding cash | `tests/test_holding_cash.py::test_result_ccy_converts_each_booking_at_its_date` |
+| M9 | `repo` dropped from the asset-agnostic guard | `tests/guards/test_twins.py::test_twin_asset_agnostic_scan_must_fail_every_listed_word[repo]` |
+| M10 | `generic_engine.py` dropped from the guard's scope | `tests/guards/test_twins.py::test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_three_risk_files_and_the_engine` |
+| M11 | `"Price"` added to `PRICEBT_MEASURES` (a pricebt measure shadowing gs) | `tests/test_gs_api_parity.py::test_no_unexpected_extra_risk_measures` |
+| M12 | `Carry` added to `ZERO_BY_CONVENTION["Bond"]` | `tests/test_contracts.py::test_strict_classes_and_shared_constants` |
+| M13 | the `days` kind made non-intensive | `tests/test_contracts.py::test_new_bond_rows_units_and_intensivity` |
