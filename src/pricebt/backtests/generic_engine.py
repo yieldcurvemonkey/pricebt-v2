@@ -15,7 +15,7 @@ under the License.
 """
 # Ported to pricebt from gs_quant 2.1.17 (Apache-2.0); see NOTICE. Changes: DEV-E1, DEV-E2, DEV-E3,
 # DEV-E4, DEV-E8, DEV-E11, DEV-E13, DEV-E14, DEV-E15, DEV-E16, DEV-T2, DEV-T4, DEV-T10, DEV-T11,
-# DEV-T16, DEV-R1
+# DEV-T16, DEV-R1, DEV-E22
 #
 # GenericEngine, GenericEngineActionFactory (DESIGN.md section 9.3): the integration point that
 # calls every other backtests/ module. gs's server-only tracing (`Tracer`/`self._trace`) and
@@ -38,7 +38,7 @@ from ..instrument import Instrument
 from ..markets import HistoricalPricingContext, PricingContext
 from ..markets.portfolio import Portfolio
 from ..progress import ProgressBar
-from ..risk import Price
+from ..risk import Cashflows, FinancingToDate, Price
 from ..risk.results import PortfolioRiskResult
 from ..session import PricebtSession
 from .action_handler import ActionHandler, ActionHandlerBaseFactory
@@ -54,7 +54,7 @@ from .actions import (
     RebalanceAction,
 )
 from .backtest_engine import BacktestBaseEngine
-from .backtest_objects import _BACKTEST_END, _RESULT_CCY, BackTest, CashPayment, PnlDefinition
+from .backtest_objects import _BACKTEST_END, _RESULT_CCY, BackTest, CashPayment, PnlDefinition, _cash_due
 from .backtest_utils import CalcType, clear_final_date_cache, get_final_date, make_list
 from .generic_engine_action_impls import (
     AddScaledTradeActionImpl,
@@ -506,6 +506,7 @@ class GenericEngine(BacktestBaseEngine):
                     calc_risk_at_trade_exits,
                     strategy.cash_accrual,
                     bar,
+                    result_ccy,
                 )
 
             backtest.transaction_costs = {
@@ -890,6 +891,7 @@ class GenericEngine(BacktestBaseEngine):
         calc_risk_at_trade_exits,
         cash_accrual,
         bar,
+        result_ccy=None,
     ):
         logger.info("Calculating prices for cash payments")
         # gs parity (generic_engine.py:679): see _price_semi_det_triggers.
@@ -929,6 +931,7 @@ class GenericEngine(BacktestBaseEngine):
             ccy0 = _initial_value_ccy(backtest)
             backtest.cash_dict[grid_first] = {ccy0: initial_value}
             current_value = (backtest.cash_dict[grid_first], grid_first)
+        holding = _HoldingCash(backtest, result_ccy, cash_accrual)  # pricebt DEV-E22
         for d in sorted(set(strategy_pricing_dates + list(backtest.cash_payments.keys()))):
             if d <= strategy_end_date:
                 # pricebt DEV-R1: on a non-grid date that is NOT flat (a continuing position with a
@@ -951,6 +954,14 @@ class GenericEngine(BacktestBaseEngine):
                     backtest.cash_dict[d] = (
                         current_value[0] if cash_accrual is None else cash_accrual.get_accrued_value(current_value, d)
                     )
+                # pricebt DEV-E22: a financed position's coupons and repo interest since its previous
+                # mark, booked as cash on d like a payment (gs books only entry and exit prices)
+                booked = holding.book(d)
+                if booked:
+                    day_cash = backtest.cash_dict.setdefault(d, {})
+                    for ccy, amount in booked.items():
+                        day_cash[ccy] = day_cash.get(ccy, 0.0) + amount
+                    current_value = day_cash, d
                 if d in backtest.cash_payments:
                     for cp in backtest.cash_payments[d]:
                         trades = cp.trade.all_instruments if isinstance(cp.trade, Portfolio) else [cp.trade]
@@ -993,6 +1004,80 @@ class GenericEngine(BacktestBaseEngine):
 
                 current_value = _deepcopy(current_value)
             bar.update(1)
+
+
+class _HoldingCash:
+    """pricebt DEV-E22 (docs/v2/DESIGN.md section 11): the cash a held position pays its holder
+    between its entry and exit prices, for every position whose asset maps `FinancingToDate`. On
+    each date `d` of the cash walk the position is marked (it is in `results[d]`) or exits (an exit
+    payment on `d`), `book(d)` returns, per currency, the `Cashflows` rows it dropped since its
+    previous mark `p` (`p < payment_date <= d`, read from the frame on `p`) plus the change of
+    `FinancingToDate` from `p` to `d`, and records each position's part in `backtest.holding_cash`.
+    Both telescope, so the booked total is exact on any grid. Assets that do not map
+    `FinancingToDate` book nothing (gs parity). Asset-agnostic: it names only catalogue measures."""
+
+    def __init__(self, backtest: BackTest, result_ccy, cash_accrual):
+        self.backtest, self.result_ccy, self.cash_accrual = backtest, result_ccy, cash_accrual
+        self.pricing = PricebtSession.current.pricing
+        self.maps = {}  # (asset name, measure name) -> bool
+        self.marks = {}  # instrument -> (date, Cashflows frame or None, FinancingToDate value)
+        self.exits = defaultdict(list)
+        for d, payments in backtest.cash_payments.items():
+            for cp in payments:
+                if cp.direction == 1:
+                    self.exits[d] += cp.trade.all_instruments if isinstance(cp.trade, Portfolio) else [cp.trade]
+        self.warned = False
+
+    def _maps(self, inst, risk) -> bool:
+        key = (self.pricing.asset_for(inst).name, risk.name)
+        if key not in self.maps:
+            self.maps[key] = self.pricing.maps(inst, risk)
+        return self.maps[key]
+
+    def _convert(self, amount: float, ccy: str, d: dt.date):
+        if self.result_ccy is None or ccy == self.result_ccy:
+            return ccy, amount
+        return self.result_ccy, amount * self.pricing.fx(ccy, self.result_ccy, d)
+
+    def book(self, d: dt.date) -> dict:
+        present = list(self.backtest.results[d].portfolio.all_instruments) if d in self.backtest.results else []
+        exiting = self.exits.get(d, [])
+        insts = [i for i in dict.fromkeys(present + exiting) if self._maps(i, FinancingToDate)]
+        if not insts:
+            return {}
+        if self.cash_accrual is not None and not self.warned:
+            self.warned = True
+            warnings.warn(
+                "a cash_accrual model accrues the whole cash balance, which for a financed position already holds its"
+                " funding loan (-Price at entry): its FinancingToDate is booked as cash too, so the funding is counted twice"
+                " (pricebt DEV-E22)",
+                UserWarning,
+            )
+        with_flows = [i for i in insts if self._maps(i, Cashflows)]
+        with PricingContext(d):
+            financing = Portfolio(insts).calc(FinancingToDate)
+            flows = Portfolio(with_flows).calc(Cashflows) if with_flows else None
+        out = defaultdict(float)
+        for inst in insts:
+            fin = financing[inst]
+            frame = flows[inst] if inst in with_flows else None
+            prev = self.marks.pop(inst, None)
+            if prev is not None:
+                p, prev_frame, prev_fin = prev
+                ccy = next(iter(fin.unit))
+                cash = 0.0
+                if prev_frame is not None:
+                    due = _cash_due(prev_frame, p, d)
+                    for row_ccy, amount in zip(due['currency'], due['payment_amount']):
+                        row_ccy, amount = self._convert(float(amount), row_ccy, d)
+                        out[row_ccy] += amount
+                        cash += amount
+                ccy, change = self._convert(float(fin) - float(prev_fin), ccy, d)
+                out[ccy] += change
+                self.backtest.holding_cash[d][inst.name] = (ccy, cash, change)
+            if inst in present:
+                self.marks[inst] = (d, frame, fin)
+        return dict(out)
 
 
 def _initial_value_ccy(backtest: BackTest) -> str:

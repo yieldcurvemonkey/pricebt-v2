@@ -178,6 +178,19 @@ __all__ = [
     "ResolvedInstrumentValues",
     "Theta",
     "USDOisDomRate",
+    # pricebt DEV-I20/DEV-I21 measures (PRICEBT_MEASURES; not gs)
+    "PRICEBT_MEASURES",
+    "AccruedInterest",
+    "Carry",
+    "CleanPrice",
+    "Convexity",
+    "DaysToSettlement",
+    "DirtyPrice",
+    "FinancingToDate",
+    "ModifiedDuration",
+    "RepoHaircut",
+    "RepoRate",
+    "RollDown",
 ]
 
 
@@ -530,6 +543,27 @@ IRDeltaLocalCcy = IRDelta(currency="local", name="IRDeltaLocalCcy")
 IRXccyDeltaParallel = IRXccyDelta(aggregation_level=AggregationLevel.Type, name="IRXccyDeltaParallel")
 IRVegaParallel = IRVega(aggregation_level=AggregationLevel.Asset, name="IRVegaParallel")
 IRVegaLocalCcy = IRVega(currency="local", name="IRVegaLocalCcy")
+
+# --------------------------------------------------------------------------------- pricebt measures
+# pricebt DEV-I20 (bond analytics) and DEV-I21 (financing): gs has no clean price, accrued, duration,
+# convexity, settlement, repo, financing or carry measure (docs/v2/BOND_DESIGN.md section 1). These
+# are pricebt's own, data like the rest (an asset config maps each one); PRICEBT_MEASURES lists them
+# and tests/test_gs_api_parity.py allows exactly these extras. Amounts take a currency parameter.
+AccruedInterest = RiskMeasureWithCurrencyParameter(name="AccruedInterest", measure_type="Accrued Interest")
+Carry = RiskMeasureWithCurrencyParameter(name="Carry", measure_type="Carry")
+CleanPrice = RiskMeasure(name="CleanPrice", measure_type="Clean Price")
+Convexity = RiskMeasure(name="Convexity", measure_type="Convexity")
+DaysToSettlement = RiskMeasure(name="DaysToSettlement", measure_type="Days To Settlement")
+DirtyPrice = RiskMeasure(name="DirtyPrice", measure_type="Dirty Price")
+FinancingToDate = RiskMeasureWithCurrencyParameter(name="FinancingToDate", measure_type="Financing To Date")
+ModifiedDuration = RiskMeasure(name="ModifiedDuration", measure_type="Modified Duration")
+RepoHaircut = RiskMeasure(name="RepoHaircut", measure_type="Repo Haircut")
+RepoRate = RiskMeasure(name="RepoRate", measure_type="Repo Rate")
+RollDown = RiskMeasureWithCurrencyParameter(name="RollDown", measure_type="Roll Down")
+PRICEBT_MEASURES = (
+    "AccruedInterest", "Carry", "CleanPrice", "Convexity", "DaysToSettlement", "DirtyPrice",
+    "FinancingToDate", "ModifiedDuration", "RepoHaircut", "RepoRate", "RollDown",
+)
 
 # pricebt DEV-I16: pricebt prices every measure in the instrument's own currency (DESIGN.md decision
 # 0.5), so the two plain LocalCcy measures are their base measure; base_name lets a config mapping

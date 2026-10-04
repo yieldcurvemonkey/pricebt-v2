@@ -170,6 +170,15 @@ class PricingService:
         inst._matched_asset = cfg.name
         return cfg
 
+    def maps(self, inst: Instrument, risk) -> bool:
+        """True if `inst`'s asset has a mapping that serves `risk`: the lookup `value` makes (its
+        name, its `base_name`, then a preset/fallback key `provided_forms` counts toward it in any
+        form). Asset-agnostic: the engine asks it before booking holding cash (DEV-E22)."""
+        asset = self.asset_for(inst)
+        base = risk.base_name or risk.name
+        return (risk.name in asset.risk_measures or base in asset.risk_measures
+                or any((base, f) in asset.provided_forms for f in contracts.FORMS))
+
     # ------------------------------------------------------------------------------ market (section 6.2/6.3)
 
     def _get_market_raw(self, asset, d: _date, csa: Optional[str]) -> Any:

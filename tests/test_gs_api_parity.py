@@ -405,10 +405,15 @@ def test_2_1_17_only_risk_measures_exist_in_pricebt(name):
 def test_no_unexpected_extra_risk_measures():
     """pricebt.risk's RiskMeasure instances are exactly the ported gs catalogue (IR_RISK_DESIGN.md
     section 1): every 1.5.4-present name plus the 2.1.17-only ones the snapshot tool requested but
-    did not find (RISK_2_1_17_ONLY, six today). No other extras (DESIGN.md section 12.3)."""
+    did not find (RISK_2_1_17_ONLY, six today), plus exactly the pricebt-only measures
+    `pricebt.risk.PRICEBT_MEASURES` (DEV-I20/DEV-I21, docs/v2/BOND_DESIGN.md decision 4.10), none of
+    which may shadow a gs name. No other extras (DESIGN.md section 12.3)."""
     scope = {k.rsplit(".", 1)[-1] for k in SYMBOLS if k.startswith("gs_quant.risk.")} | set(RISK_2_1_17_ONLY)
     actual = {n for n in pb_risk.__all__ if dataclasses.is_dataclass(getattr(pb_risk, n)) and not isinstance(getattr(pb_risk, n), type)}
-    assert actual - scope == set(), f"unexpected extra pricebt risk measures: {sorted(actual - scope)}"
+    pricebt_only = set(pb_risk.PRICEBT_MEASURES)
+    assert pricebt_only & scope == set(), f"a pricebt-only measure shadows a gs name: {sorted(pricebt_only & scope)}"
+    assert pricebt_only <= actual, f"PRICEBT_MEASURES names that are not exported measures: {sorted(pricebt_only - actual)}"
+    assert actual - scope - pricebt_only == set(), f"unexpected extra pricebt risk measures: {sorted(actual - scope - pricebt_only)}"
 
 
 def test_risk_measure_exception_expect_is_enforced(monkeypatch):

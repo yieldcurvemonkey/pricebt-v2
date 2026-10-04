@@ -205,6 +205,7 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `time` | `decimal`, `number` | yes |
 | `prob` | `decimal`, `number` | yes |
 | `notional_level` | `bp`, `decimal`, `number`, `pct` | yes |
+| `days` | `number` | yes |
 | `table` | frame (`returns: frame`) | - |
 
 **`IRSwap`** (27 measures)
@@ -272,11 +273,11 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `PnlExplain` | `value` | bucketed | as `IRSwap` |
 | `ProbabilityOfExercise` | `prob` | scalar | probability (0..1) of finishing in the money under the annuity measure. Intensive. |
 
-**`Bond`** (22 measures)
+**`Bond`** (40 measures)
 
 | Measure | Kind | Forms | Contract |
 |---|---|---|---|
-| `Price` | `value` | scalar | as `IRSwap` |
+| `Price` | `value` | scalar | the position's settlement-date market value: (clean price + accrued interest at standard settlement) per 100 face x face / 100, holder-signed (a long is positive), not discounted from the settlement date to the pricing date (DEV-I20). It drops a flow on the first trade date whose standard settlement is on or after the flow's payment date; Cashflows lists the flows still to drop. |
 | `IRDelta` | `sens1` | scalar, bucketed | as `IRSwap` |
 | `IRDiscountDeltaParallel` | `sens1` | scalar | as `IRSwap` |
 | `IRGammaParallel` | `sens2` | scalar | as `IRSwap` |
@@ -291,13 +292,31 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `IRAnnualImpliedVol` | `vol` | scalar | as `IRSwap` |
 | `IRAnnualATMImpliedVol` | `vol` | scalar | as `IRSwap` |
 | `IRDailyImpliedVol` | `vol` | scalar | as `IRSwap` |
-| `Theta` | `theta` | scalar | as `IRSwap` |
+| `Theta` | `theta` | scalar | carry per calendar day with the yield (IRFwdRate) held fixed, over the step to the next business day nb: [Price(nb, same yield) + flows Price drops in (t, nb] - Price(t)] / (nb - t).days, ccy per day (DEV-I15). Price is a settlement-date value, so one calendar day can move settlement by 0 or 3 days; spreading the next-business-day step makes Theta x step days exact on a business-day grid. Financing is not in Theta (FinancingToDate). |
 | `ExpiryInYears` | `time` | scalar | as `IRSwap` |
 | `Annuity` | `annuity` | scalar | as `IRSwap` |
-| `Cashflows` | `table` | frame | as `IRSwap` |
+| `Cashflows` | `table` | frame | the flows still included in Price, one row each, holder-signed; payment_date is the trade date on which Price drops the flow: the first date whose standard settlement is on or after the flow's payment date (T+1: the business day before a business-day coupon date). Required columns payment_date, payment_amount, currency, payment_type; returns: frame with scale_columns including payment_amount. A financed position's engine books these rows as cash on payment_date (DEV-E22). |
 | `LightningDV01` | `sens1` | scalar | yield DV01: Price change for +1bp of yield (= the IRDelta scalar for a bond). |
 | `LightningOAS` | `rate` | scalar | option-adjusted spread over the library's reference curve (a bullet bond: its Z-spread). Intensive. |
 | `ParSpread` | `rate` | scalar | par asset-swap spread (or the library's par spread) in the declared unit. Intensive. |
+| `FairPremium` | `value` | scalar | the amount the holder pays at standard settlement for the position: Price itself, since Price is already the settlement-date value (DEV-I20). ccy. |
+| `ForwardPrice` | `value` | scalar | the forward (financed) value at the horizon H = settlement + 1 calendar month (following business day): Price x (1 + RepoRate x tau(s, H)) - sum over flows c paid in (s, H] of C x (1 + RepoRate x tau(c, H)), tau in the repo day count, RepoRate held flat to H; ccy, holder-signed. Dead (nothing left to pay): 0 (DEV-I21; the swap and swaption rows forward to expiry instead). |
+| `PremiumCents` | `notional_level` | scalar | Price / \|face\| in the declared unit (pct: the dirty price per 100). Intensive (DEV-I19). |
+| `LocalAnnuityInCents` | `notional_level` | scalar | Annuity / \|face\|: the PV of 1.0 per annum per unit of face. Intensive (DEV-I19). |
+| `CompoundedFixedRate` | `rate` | scalar | the coupon restated as an annually compounded rate: (1 + c/f)^f - 1 for f coupons a year. A trade term, finite on every date. Intensive (DEV-I19). |
+| `CRIFIRCurve` | `table` | frame | as `IRSwap` |
+| `PnlExplain` | `value` | bucketed | the change in value from market to market_to by risk factor, no time component (IR_RISK_DESIGN section 8): a returns: buckets portfolio function receiving market_to and pricebt_to_date, rows labelled by mkt_type (IR for the curve, e.g. CREDIT for the bond's spread to it), summing to Price(market_to) - Price(market), ccy. PnlExplainClose resolves here. |
+| `CleanPrice` | `notional_level` | scalar | the quoted clean price per 100 face for standard settlement: DirtyPrice - 100 x AccruedInterest / face (signed face). Dead (Price 0): 0. Intensive (DEV-I20). |
+| `DirtyPrice` | `notional_level` | scalar | 100 x Price / face (signed face): the invoice price per 100, the same for a long and a short. Dead (Price 0): 0. Intensive (DEV-I20). |
+| `AccruedInterest` | `value` | scalar | the coupon accrued from the last coupon date to the standard settlement date in the bond's accrual convention (US Treasuries: ACT/ACT ICMA), holder-signed, ccy; 0 when settlement is a coupon date and after maturity (DEV-I20). |
+| `ModifiedDuration` | `time` | scalar | -(1/P) dP/dy in years per unit of decimal yield, y in the IRFwdRate convention, P the dirty price; 0 when dead. Intensive (DEV-I20). |
+| `Convexity` | `time` | scalar | (1/P) d2P/dy2 in years^2, y and P as ModifiedDuration; 0 when dead. Intensive (DEV-I20). |
+| `DaysToSettlement` | `days` | scalar | calendar days from the pricing date to the standard settlement date (US Treasuries T+1: 1, or 3 over a weekend or a holiday). Intensive (DEV-I20). |
+| `RepoRate` | `rate` | scalar | the funding rate in force on the pricing date for this position: overnight general collateral or special, or a term rate locked at the trade date; the library or the data decides. Simple interest in the config's repo day count (USD: ACT/360). Finite on every held date. Intensive (DEV-I21). |
+| `RepoHaircut` | `rate` | scalar | the fraction of the settlement value not financed, in the declared unit (decimal 0.02 = 2%). Intensive (DEV-I21). |
+| `FinancingToDate` | `value` | scalar | cumulative repo interest on the position's funding leg from the settlement of its trade date to the settlement of the pricing date (or maturity, if earlier), holder-signed: a long pays (<= 0), a short lends the cash and receives (>= 0). Principal (1 - RepoHaircut) x Price on the trade date (pinned by resolve); simple interest at each calendar day's RepoRate (the last business day's fixing over weekends and holidays); 0 on the trade date. The engine books its change over each step as cash (DEV-E22). ccy (DEV-I21). |
+| `Carry` | `value` | scalar | clean value now minus clean forward value at H: (Price - AccruedInterest) - (ForwardPrice - accrued at H) = coupon income over (s, H] minus financing at RepoRate; ccy, holder-signed; dead: 0 (DEV-I21). |
+| `RollDown` | `value` | scalar | clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now; on a flat curve, the pull to par at constant yield. Carry + RollDown is the financed P&L to H if the curve does not move. ccy, holder-signed; dead: 0 (DEV-I21). |
 
 Required frame columns: `Cashflows`: `payment_date`, `payment_amount`, `currency`, `payment_type` (scale columns must include `payment_amount`); `CRIFIRCurve`: `RiskType`, `Qualifier`, `Bucket`, `Label1`, `Label2`, `Amount`, `AmountCurrency` (scale columns must include `Amount`).
 <!-- END generated contract tables -->

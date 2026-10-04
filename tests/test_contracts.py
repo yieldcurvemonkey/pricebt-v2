@@ -1,9 +1,9 @@
 """pricebt.risk.contracts and the asset-config schema around it (docs/v2/IR_RISK_DESIGN.md section 2,
-section 00 R2-9..R2-12; docs/v2/IR_STRICT_CONTRACT.md R3-0/R3-1; pricebt DEV-I11, DEV-I19):
-per-instrument measure contracts checked at load time, `unsupported_measures:` declarations (Bond
-only: IRSwap/IRSwaption must map every contract measure), `returns: frame` / `scale_columns`,
-`instrument:` validation, `UnsupportedMeasureError`, the paste-ready declaration block and the
-mapping skeleton.
+section 00 R2-9..R2-12; docs/v2/IR_STRICT_CONTRACT.md R3-0/R3-1; docs/v2/BOND_DESIGN.md decisions
+4.1-4.4; pricebt DEV-I11, DEV-I19, DEV-I20, DEV-I21): per-instrument measure contracts checked at
+load time (every contract class, Bond, IRSwap and IRSwaption, must map every contract measure),
+`unsupported_measures:` declarations (classes without a contract only), `returns: frame` /
+`scale_columns`, `instrument:` validation, `UnsupportedMeasureError` and the mapping skeleton.
 
 Configs are self-contained dicts with stdlib expressions (nothing is evaluated: load_asset only
 compiles), in test_asset_config.py's `_minimal()` style.
@@ -48,32 +48,19 @@ IR_CONFIGS = [
     "skills/pricebt-connect-pricing-library/references/config-template-swaption.yaml",
     "skills/pricebt-connect-pricing-library/references/config-template-bond.yaml",
 ]
-STRICT = ("IRSwap", "IRSwaption")
-STRICT_MSG = "IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them"
-NOT_MAPPED = "not mapped (IRSwap/IRSwaption require a mapping for every contract measure)"
-
-
-def _declare_all(instrument, except_=("Price",), reason="test: not computed"):
-    return {r.measure: reason for r in contracts.contract_for(instrument) if r.measure not in except_}
+STRICT = ("Bond", "IRSwap", "IRSwaption")
+STRICT_MSG = "Bond/IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them"
+NOT_MAPPED = "not mapped (Bond/IRSwap/IRSwaption require a mapping for every contract measure)"
 
 
 def _all_forms(instrument, except_=("Price",)):
     return [(r.measure, f) for r in contracts.contract_for(instrument) for f in r.forms if r.measure not in except_]
 
 
-def _bond(**overrides):
-    """A minimal Bond config that satisfies its (map-or-declare) contract: Price mapped, everything
-    else declared."""
-    cfg = {
-        "schema_version": 1,
-        "asset": "bond_asset",
-        "instrument": "Bond",
-        "currency": "USD",
-        "market": {"expr": "1"},
-        "functions": {"npv": {"expr": "0.0", "unit": "ccy"}},
-        "risk_measures": {"Price": "npv"},
-        "unsupported_measures": _declare_all("Bond"),
-    }
+def _free(**overrides):
+    """A minimal ConfigInstrument config: no contract, so `unsupported_measures:` is legal here."""
+    cfg = {"schema_version": 1, "asset": "free_asset", "instrument": "ConfigInstrument", "currency": "USD", "market": {"expr": "1"},
+           "functions": {"npv": {"expr": "0.0", "unit": "ccy"}}, "risk_measures": {"Price": "npv"}}
     cfg.update(overrides)
     return cfg
 
@@ -98,6 +85,13 @@ def _strict(instrument="IRSwap", **overrides):
         "portfolio_functions": filled["portfolio_functions"],
         "risk_measures": {"Price": "npv", **filled["risk_measures"]},
     }
+    cfg.update(overrides)
+    return cfg
+
+
+def _bond(**overrides):
+    """A minimal Bond config mapping the whole (strict, BOND_DESIGN decision 4.1) contract."""
+    cfg = _strict("Bond", asset="bond_asset")
     cfg.update(overrides)
     return cfg
 
@@ -152,14 +146,32 @@ def test_contract_table_shape():
     swap = {r.measure for r in contracts.contract_for("IRSwap")}
     bond = {r.measure for r in contracts.contract_for("Bond")}
     assert {r.measure for r in contracts.contract_for("IRSwaption")} - swap == {"ProbabilityOfExercise"}
-    assert bond - swap == {"LightningDV01", "LightningOAS"}
-    # R3-1: the seven strict-only rows (ParSpread is in both, with each class's own text)
-    assert swap - bond == {"FairPremium", "ForwardPrice", "PremiumCents", "LocalAnnuityInCents", "CompoundedFixedRate", "CRIFIRCurve", "PnlExplain"}
+    # BOND_DESIGN decisions 4.2-4.4: Bond has every swap row (some with Bond text), the Lightning
+    # rows, and the pricebt-only analytics and financing measures
+    assert swap <= bond
+    assert bond - swap == {"LightningDV01", "LightningOAS", *risk.PRICEBT_MEASURES}
+    assert len(bond) == 40 and [r.measure for r in contracts.contract_for("Bond")][:19] == [r.measure for r in contracts.contract_for("IRSwap")][:19]
     assert len(swap) == 27 and [r.measure for r in contracts.contract_for("IRSwap")][-8:] == [
         "ParSpread", "FairPremium", "ForwardPrice", "PremiumCents", "LocalAnnuityInCents", "CompoundedFixedRate", "CRIFIRCurve", "PnlExplain"]
     assert set(contracts.FRAME_COLUMNS) == {r.measure for reqs in contracts.CONTRACTS.values() for r in reqs if r.kind == "table"}
     assert set(contracts.FRAME_SCALE_COLUMNS) == set(contracts.FRAME_COLUMNS)
     assert all(set(contracts.FRAME_SCALE_COLUMNS[m]) <= set(cols) for m, cols in contracts.FRAME_COLUMNS.items())
+
+
+def test_pricebt_measures_are_bond_rows_citing_their_dev_id():
+    """BOND_DESIGN decision 4.10: each pricebt-only measure is a catalogue instance, a Bond contract
+    row, and its contract text cites DEV-I20 (analytics) or DEV-I21 (financing)."""
+    bond = {r.measure: r for r in contracts.contract_for("Bond")}
+    assert len(set(risk.PRICEBT_MEASURES)) == len(risk.PRICEBT_MEASURES) == 11
+    for name in risk.PRICEBT_MEASURES:
+        assert isinstance(getattr(risk, name), risk.RiskMeasure) and getattr(risk, name).name == name
+        assert name in risk.__all__ and name in bond, name
+        assert "DEV-I20" in bond[name].doc or "DEV-I21" in bond[name].doc, name
+    # the Bond rows whose meaning differs from the swap's carry Bond text
+    swap = {r.measure: r for r in contracts.contract_for("IRSwap")}
+    for name in ("Price", "Theta", "Cashflows", "ParSpread", "FairPremium", "ForwardPrice", "PremiumCents", "LocalAnnuityInCents", "CompoundedFixedRate", "PnlExplain"):
+        assert bond[name] != swap[name] and bond[name].kind == swap[name].kind and bond[name].forms == swap[name].forms, name
+    assert bond["CRIFIRCurve"] == swap["CRIFIRCurve"]
 
 
 def test_every_contract_measure_is_a_catalogue_name():
@@ -174,6 +186,7 @@ def test_every_contract_measure_is_a_catalogue_name():
 def test_kinds_intensive_flag_semantics():
     assert contracts.KINDS["rate"] == (frozenset({"bp", "pct", "decimal"}), True)
     assert contracts.KINDS["notional_level"] == (frozenset({"bp", "pct", "decimal", "number"}), True)
+    assert contracts.KINDS["days"] == (frozenset({"number"}), True)  # DaysToSettlement (DEV-I20)
     assert contracts.KINDS["value"][1] is False  # R2-11: False = no constraint, not "must be extensive"
 
 
@@ -190,15 +203,18 @@ def test_classes_without_a_contract_are_unaffected():
 
 
 def test_strict_classes_and_shared_constants():
-    assert contracts.STRICT_CLASSES == frozenset({"IRSwap", "IRSwaption"})
-    assert contracts.is_strict("IRSwap") and contracts.is_strict("IRSwaption") and not contracts.is_strict("Bond")
+    # BOND_DESIGN decision 4.1: every class with a contract is strict
+    assert contracts.STRICT_CLASSES == frozenset({"Bond", "IRSwap", "IRSwaption"}) == frozenset(contracts.CONTRACTS)
+    assert all(contracts.is_strict(c) for c in ("Bond", "IRSwap", "IRSwaption"))
     assert set(contracts.ZERO_BY_CONVENTION) == contracts.STRICT_CLASSES
     for cls, names in contracts.ZERO_BY_CONVENTION.items():
-        assert names <= {r.measure for r in contracts.contract_for(cls)}, cls
+        assert set(names) <= {r.measure for r in contracts.contract_for(cls)}, cls
+        assert all(isinstance(why, str) and why.strip() for why in names.values()), cls  # decision 4.8: each with its reason
     # pinned exactly: a literal 0 is honest only where the contract text defines the value as 0
-    assert contracts.ZERO_BY_CONVENTION["IRSwap"] == {
-        "IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol", "IRBasis", "IRXccyDelta"}
-    assert contracts.ZERO_BY_CONVENTION["IRSwaption"] == {"IRBasis", "IRXccyDelta"}
+    no_vol = {"IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol"}
+    assert set(contracts.ZERO_BY_CONVENTION["IRSwap"]) == no_vol | {"IRBasis", "IRXccyDelta"}
+    assert set(contracts.ZERO_BY_CONVENTION["IRSwaption"]) == {"IRBasis", "IRXccyDelta"}
+    assert set(contracts.ZERO_BY_CONVENTION["Bond"]) == no_vol | {"IRBasis", "IRXccyDelta"}  # a bullet bond, one curve, one currency
     assert contracts.SIMM_IR_TENORS == ("2w", "1m", "3m", "6m", "1y", "2y", "3y", "5y", "10y", "15y", "20y", "30y")
     crif = next(r for r in contracts.contract_for("IRSwap") if r.measure == "CRIFIRCurve")
     assert " ".join(contracts.SIMM_IR_TENORS) in crif.doc  # the contract text and the constant agree
@@ -218,10 +234,10 @@ def _ir_relevant_names():
 
 
 def test_excluded_is_exactly_what_the_strict_contract_leaves_out():
-    """R3-1: "all the IRSwap- and IRSwaption-related measures" made checkable. Every IR-relevant
-    catalogue name is a contract measure, a preset/fallback of one, or EXCLUDED with a reason; and
-    EXCLUDED lists nothing else (no stale entries)."""
-    contract = {r.measure for r in contracts.contract_for("IRSwaption")}
+    """R3-1 (BOND_DESIGN decision 4.2): "all the related measures" made checkable. Every IR-relevant
+    catalogue name is a measure of some contract, a preset/fallback of one, or EXCLUDED with a
+    reason; and EXCLUDED lists nothing else (no stale entries)."""
+    contract = {r.measure for reqs in contracts.CONTRACTS.values() for r in reqs}
     names = _ir_relevant_names()
     assert {"PnlExplain", "PnlExplainClose", "PnlExplainLive", "PnlPredictLive", "IRDeltaParallel", "BaseCPI"} <= set(names)  # the filter sees them
     uncovered = {n for n in names if n not in contract and contracts.base_measure(n)[0] not in contract}
@@ -229,104 +245,113 @@ def test_excluded_is_exactly_what_the_strict_contract_leaves_out():
     assert all(reason.strip() for reason in contracts.EXCLUDED.values())
 
 
-# ------------------------------------------------------------------------------------ check(): error paths (Bond: map or declare)
+# ------------------------------------------------------------------------------------ check(): error paths (on Bond)
+
+
+def _bond_without(*names, **override):
+    """`_all_mapped("Bond")` minus `names`, then `override`."""
+    out = {k: v for k, v in _all_mapped("Bond").items() if k not in names}
+    out.update(override)
+    return out
 
 
 def test_missing_measure_is_a_problem_and_listed_as_missing():
     problems, _, missing = _check("Bond", {"Price": (_fn("npv", "ccy"), None)}, {})
-    assert ("IRGammaParallel", "scalar") in missing and ("Cashflows", "frame") in missing
+    assert ("IRGammaParallel", "scalar") in missing and ("Cashflows", "frame") in missing and ("FinancingToDate", "scalar") in missing
     assert ("Price", "scalar") not in missing
-    assert any(p.startswith("IRGammaParallel (scalar): neither mapped nor declared") for p in problems)
+    assert any(p.startswith(f"IRGammaParallel (scalar): {NOT_MAPPED}") for p in problems)
     assert len(problems) == len(contracts.contract_for("Bond")) - 1  # one line per measure (IRDelta: both forms on one line)
 
 
 def test_missing_form_is_a_problem():
-    unsupported = _declare_all("Bond", except_=("Price", "IRDelta"))
-    problems, _, missing = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDelta": (_fn("dv01", "ccy_per_bp"), None)}, unsupported)
+    problems, _, missing = _check("Bond", _bond_without(IRDelta=(_fn("dv01", "ccy_per_bp"), None)), {})
     assert missing == [("IRDelta", "bucketed")]
-    assert len(problems) == 1 and problems[0].startswith("IRDelta (bucketed):")
-    # declaring just that form satisfies it
-    assert _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDelta": (_fn("dv01", "ccy_per_bp"), None)}, {**unsupported, "IRDelta": {"bucketed": "no ladder"}}).problems == []
+    assert len(problems) == 1 and problems[0].startswith(f"IRDelta (bucketed): {NOT_MAPPED}")
 
 
 def test_wrong_unit_is_a_problem():
-    problems, _, missing = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDelta": (_fn("dv01", "ccy"), _fn("ladder", "ccy_per_bp", returns="buckets"))}, _declare_all("Bond", except_=("Price", "IRDelta")))
+    problems, _, missing = _check("Bond", _bond_without(IRDelta=(_fn("dv01", "ccy"), _fn("ladder", "ccy_per_bp", returns="buckets"))), {})
     assert missing == []
     assert problems == ["IRDelta (scalar): function 'dv01' has unit 'ccy'; allowed ['ccy_per_bp']"]
 
 
 def test_rate_level_must_be_intensive():
-    unsupported = _declare_all("Bond", except_=("Price", "IRFwdRate"))
-    ok = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRFwdRate": (_fn("par", "bp"), None)}, unsupported)
-    assert ok.problems == []
-    bad = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRFwdRate": (_fn("par", "bp", swq=True), None)}, unsupported)
+    assert _check("Bond", _bond_without(IRFwdRate=(_fn("par", "bp"), None)), {}).problems == []
+    bad = _check("Bond", _bond_without(IRFwdRate=(_fn("par", "bp", swq=True), None)), {})
     assert len(bad.problems) == 1 and "must be intensive" in bad.problems[0]
     # `number` is extensive by default: a time level in `number` must say scale_with_quantity false
-    unsupported = _declare_all("Bond", except_=("Price", "ExpiryInYears"))
-    assert "must be intensive" in _check("Bond", {"Price": (_fn("npv", "ccy"), None), "ExpiryInYears": (_fn("t", "number"), None)}, unsupported).problems[0]
-    assert _check("Bond", {"Price": (_fn("npv", "ccy"), None), "ExpiryInYears": (_fn("t", "number", swq=False), None)}, unsupported).problems == []
+    assert "must be intensive" in _check("Bond", _bond_without(ExpiryInYears=(_fn("t", "number"), None)), {}).problems[0]
+    assert _check("Bond", _bond_without(ExpiryInYears=(_fn("t", "number", swq=False), None)), {}).problems == []
+
+
+def test_new_bond_rows_units_and_intensivity():
+    """DEV-I20/DEV-I21 rows: prices are intensive notional levels, durations intensive times, the
+    settlement lag an intensive day count, repo levels intensive rates, the amounts ccy values."""
+    for m in ("CleanPrice", "DirtyPrice"):
+        assert _check("Bond", _bond_without(**{m: (_fn("p", "pct"), None)}), {}).problems == []
+        assert "allowed" in _check("Bond", _bond_without(**{m: (_fn("p", "ccy"), None)}), {}).problems[0]
+    for m in ("ModifiedDuration", "Convexity"):
+        assert _check("Bond", _bond_without(**{m: (_fn("d", "decimal"), None)}), {}).problems == []
+        assert "must be intensive" in _check("Bond", _bond_without(**{m: (_fn("d", "number"), None)}), {}).problems[0]
+    assert _check("Bond", _bond_without(DaysToSettlement=(_fn("n", "number", swq=False), None)), {}).problems == []
+    assert "must be intensive" in _check("Bond", _bond_without(DaysToSettlement=(_fn("n", "number"), None)), {}).problems[0]
+    assert "allowed ['number']" in _check("Bond", _bond_without(DaysToSettlement=(_fn("n", "decimal"), None)), {}).problems[0]
+    for m in ("RepoRate", "RepoHaircut"):
+        assert _check("Bond", _bond_without(**{m: (_fn("r", "bp"), None)}), {}).problems == []
+        assert "must be intensive" in _check("Bond", _bond_without(**{m: (_fn("r", "bp", swq=True), None)}), {}).problems[0]
+    for m in ("AccruedInterest", "FinancingToDate", "Carry", "RollDown"):
+        assert _check("Bond", _bond_without(**{m: (_fn("v", "ccy"), None)}), {}).problems == []
+        assert _check("Bond", _bond_without(**{m: (_fn("v", "bp", swq=False), None)}), {}).problems == [f"{m} (scalar): function 'v' has unit 'bp'; allowed ['ccy']"]
 
 
 def test_extensive_price_marked_non_scaling_still_loads():
     # R2-11: `value` has no intensivity constraint, so a checker fixture with a non-scaling npv
     # loads and fails at its checker row instead
-    cfg = _bond(functions={"npv": {"expr": "0.0", "unit": "ccy", "scale_with_quantity": False}})
+    cfg = _bond()
+    cfg["functions"]["npv"]["scale_with_quantity"] = False
     assert load_asset(cfg).functions["npv"].scale_with_quantity is False
 
 
 def test_frame_required_for_a_table_measure():
-    unsupported = _declare_all("Bond", except_=("Price", "Cashflows"))
-    base = {"Price": (_fn("npv", "ccy"), None)}
-    problems, _, missing = _check("Bond", {**base, "Cashflows": (_fn("cf", "ccy"), None)}, unsupported)
+    problems, _, missing = _check("Bond", _bond_without(Cashflows=(_fn("cf", "ccy"), None)), {})
     assert missing == []  # a shape mismatch is one problem, not also a "missing" one
     assert len(problems) == 1 and "returns: frame" in problems[0]
     good = _fn("cf", "ccy", returns="frame", cols=("payment_amount", "notional"))
-    assert _check("Bond", {**base, "Cashflows": (good, None)}, unsupported).problems == []
+    assert _check("Bond", _bond_without(Cashflows=(good, None)), {}).problems == []
     no_amount = _fn("cf", "ccy", returns="frame", cols=("notional",))
-    assert "must include ['payment_amount']" in _check("Bond", {**base, "Cashflows": (no_amount, None)}, unsupported).problems[0]
+    assert "must include ['payment_amount']" in _check("Bond", _bond_without(Cashflows=(no_amount, None)), {}).problems[0]
     not_scaling = _fn("cf", "ccy", swq=False, returns="frame", cols=("payment_amount",))
-    assert "must scale with the position" in _check("Bond", {**base, "Cashflows": (not_scaling, None)}, unsupported).problems[0]
+    assert "must scale with the position" in _check("Bond", _bond_without(Cashflows=(not_scaling, None)), {}).problems[0]
 
 
 def test_frame_for_a_number_measure_is_a_problem():
-    problems = _check("Bond", {"Price": (_fn("npv", "ccy", returns="frame", cols=("x",)), None)}, _declare_all("Bond")).problems
+    problems = _check("Bond", _bond_without(Price=(_fn("npv", "ccy", returns="frame", cols=("x",)), None)), {}).problems
     assert problems == ["Price (scalar): function 'npv' returns a frame; this measure needs a number"]
 
 
-def test_mapped_and_declared_is_a_warning_not_a_problem():
-    unsupported = _declare_all("Bond", except_=("Price",))  # IRDelta declared as a whole...
-    res = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDelta": (_fn("dv01", "ccy_per_bp"), None)}, unsupported)  # ...but its scalar is mapped
-    assert res.problems == []
-    assert res.warnings == ["IRDelta is declared unsupported (every form) but mapped (scalar); the mapping is used -- remove or narrow the stale declaration"]
-    # and a non-contract measure behaves the same way (R2-9 is generic)
+def test_mapped_and_declared_is_a_warning_on_a_class_without_a_contract():
+    """R2-9 survives where declarations are legal (a class without a contract): the mapping wins."""
     res = _check("ConfigInstrument", {"Price": (_fn("f", "ccy"), None), "IRTheta": (_fn("th", "ccy"), None)}, {"IRTheta": {"scalar": "old"}})
-    assert len(res.warnings) == 1 and res.warnings[0].startswith("IRTheta is declared unsupported (scalar)")
-
-
-def test_mapped_and_declared_warns_at_load():
-    cfg = _bond(functions={"npv": {"expr": "0.0", "unit": "ccy"}, "dv01": {"expr": "1.0", "unit": "ccy_per_bp"}}, risk_measures={"Price": "npv", "IRDelta": "dv01"})
-    with pytest.warns(UserWarning, match=r"asset bond_asset: IRDelta is declared unsupported \(every form\) but mapped \(scalar\)"):
-        loaded = load_asset(cfg)
-    assert loaded.risk_measures["IRDelta"].scalar == "dv01"  # the mapping wins
-    assert loaded.unsupported_measures["IRDelta"] == {"*": "test: not computed"}
+    assert res.problems == [] and res.missing == []
+    assert res.warnings == ["IRTheta is declared unsupported (scalar) but mapped (scalar); the mapping is used -- remove or narrow the stale declaration"]
+    with pytest.warns(UserWarning, match=r"asset free_asset: Price is declared unsupported \(every form\) but mapped \(scalar\)"):
+        loaded = load_asset(_free(unsupported_measures={"Price": "old"}))
+    assert loaded.unsupported_measures["Price"] == {"*": "old"}
 
 
 def test_preset_key_counts_toward_its_base():
-    unsupported = {**_declare_all("Bond", except_=("Price", "IRDelta")), "IRDelta": {"bucketed": "no ladder"}}
-    res = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDeltaParallel": (_fn("dv01", "ccy_per_bp"), None)}, unsupported)
+    ladder = _fn("ladder", "ccy_per_bp", returns="buckets")
+    mapped = _bond_without("IRDelta", IRDeltaParallel=(_fn("dv01", "ccy_per_bp"), None), IRDeltaLocalCcy=(None, ladder))
+    res = _check("Bond", mapped, {})
     assert res.problems == [] and res.missing == []
     # its unit is checked against the base's kind, and the message names the key used
-    bad = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDeltaParallel": (_fn("dv01", "bp"), None)}, unsupported)
+    bad = _check("Bond", {**mapped, "IRDeltaParallel": (_fn("dv01", "bp"), None)}, {})
     assert bad.problems == ["IRDelta (scalar, via IRDeltaParallel): function 'dv01' has unit 'bp'; allowed ['ccy_per_bp']"]
-    # a stale declaration of the base is flagged through the preset too
-    stale = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDeltaParallel": (_fn("dv01", "ccy_per_bp"), None)}, {**unsupported, "IRDelta": "no delta"})
-    assert stale.warnings and "scalar via IRDeltaParallel" in stale.warnings[0]
 
 
 def test_preset_bucketed_slot_does_not_provide_the_base_bucketed_form():
     # pricing never routes a bare IRDelta (bucketed) request to the IRDeltaParallel key
-    unsupported = {**_declare_all("Bond", except_=("Price", "IRDelta")), "IRDelta": {"scalar": "no scalar"}}
-    res = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "IRDeltaParallel": (None, _fn("ladder", "ccy_per_bp", returns="buckets"))}, unsupported)
+    res = _check("Bond", _bond_without(IRDelta=(_fn("dv01", "ccy_per_bp"), None), IRDeltaParallel=(None, _fn("ladder", "ccy_per_bp", returns="buckets"))), {})
     assert res.missing == [("IRDelta", "bucketed")]
 
 
@@ -345,18 +370,12 @@ def test_provided_forms_is_what_the_contract_counts():
 
 
 def _declaration_warnings(**extra):
-    return _check("Bond", {"Price": (_fn("npv", "ccy"), None)}, {**_declare_all("Bond"), **extra}).warnings
+    return _check("Bond", _all_mapped("Bond"), extra).warnings
 
 
-def test_declaring_a_preset_name_warns_to_declare_the_base():
-    assert _declaration_warnings(IRDeltaParallel="old") == [
-        "IRDeltaParallel is a preset or fallback of IRDelta; declare IRDelta instead (the contract counts only IRDelta, and a request for IRDeltaParallel falls back to IRDelta's mapping or declaration)"
-    ]
-
-
-def test_declaring_a_form_outside_the_contract_row_warns():
-    assert _declaration_warnings(IRFwdRate={"scalar": "x", "bucketed": "y"}) == [
-        "IRFwdRate declares ['bucketed'] unsupported but its Bond contract row has only ['scalar']; remove the extra form(s)"
+def test_declaring_a_preset_of_a_non_contract_measure_warns_to_declare_the_base():
+    assert _declaration_warnings(InflationDeltaParallel="old") == [
+        "InflationDeltaParallel is a preset or fallback of InflationDelta; declare InflationDelta instead (a request for InflationDeltaParallel falls back to InflationDelta's mapping or declaration)"
     ]
 
 
@@ -369,8 +388,8 @@ def test_declaring_an_unknown_name_warns_with_a_suggestion():
 
 
 def test_undeclarable_names_warn_at_load():
-    with pytest.warns(UserWarning, match="asset bond_asset: IRVegaParallel is a preset or fallback of IRVega"):
-        load_asset(_bond(unsupported_measures={**_declare_all("Bond"), "IRVegaParallel": "old"}))
+    with pytest.warns(UserWarning, match="asset bond_asset: InflationDeltaParallel is a preset or fallback of InflationDelta"):
+        load_asset(_bond(unsupported_measures={"InflationDeltaParallel": "old"}))
 
 
 def test_base_measure():
@@ -388,12 +407,12 @@ def test_base_measure():
 
 def test_bond_and_swaption_extras():
     assert ("ProbabilityOfExercise", "scalar") in _check("IRSwaption", {"Price": (_fn("npv", "ccy"), None)}, {}).missing
-    res = _check("Bond", {"Price": (_fn("npv", "ccy"), None), "LightningOAS": (_fn("oas", "bp", swq=True), None)}, _declare_all("Bond", except_=("Price", "LightningDV01", "LightningOAS", "ParSpread")))
+    res = _check("Bond", _bond_without("LightningDV01", "ParSpread", LightningOAS=(_fn("oas", "bp", swq=True), None)), {})
     assert res.missing == [("LightningDV01", "scalar"), ("ParSpread", "scalar")]
     assert any("LightningOAS (scalar)" in p and "must be intensive" in p for p in res.problems)
 
 
-# ------------------------------------------------------------------------------------ R3-0: strict classes (IRSwap, IRSwaption)
+# ------------------------------------------------------------------------------------ R3-0: strict classes (Bond, IRSwap, IRSwaption)
 
 
 @pytest.mark.parametrize("instrument", STRICT)
@@ -416,8 +435,8 @@ def test_fully_mapped_strict_config_loads_without_warnings(instrument):
     ({"PnlExplainClose": "old"}, "PnlExplainClose (a preset or fallback of PnlExplain)"),
 ], ids=["measure", "form", "crif", "IRDeltaParallel", "IRGammaParallelLocalCcy", "PnlExplainClose"])
 def test_strict_class_rejects_every_declaration_of_a_contract_measure(instrument, declaration, shown):
-    """Fully mapped, so for Bond each of these would be a stale-declaration warning (R2-9); for a
-    strict class it is a load error, and no warning is issued instead."""
+    """Fully mapped, so on a class without a contract each would only be a stale-declaration
+    warning (R2-9); on a contract class it is a load error, and no warning is issued instead."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         err = _load_error(_strict(instrument, unsupported_measures=declaration))
@@ -429,17 +448,14 @@ def test_strict_class_rejects_every_declaration_of_a_contract_measure(instrument
 
 @pytest.mark.parametrize("instrument", STRICT)
 def test_a_declaration_never_satisfies_a_strict_row(instrument):
-    """IRVega's bucketed form is not mapped and is declared: for Bond the declaration satisfies it;
-    for a strict class the form stays missing (in the skeleton) and the declaration is a second problem."""
+    """IRVega's bucketed form is not mapped and is declared: the form stays missing (in the
+    skeleton) and the declaration is a second problem (Bond too, BOND_DESIGN decision 4.1)."""
     mapped = _all_mapped(instrument, IRVega=(_fn("vega", "ccy_per_bp"), None))
     res = _check(instrument, mapped, {"IRVega": {"bucketed": "no cube"}})
     assert res.missing == [("IRVega", "bucketed")]
     assert res.problems[0].startswith(f"IRVega (bucketed): {NOT_MAPPED} -- ")
     assert len(res.problems) == 2 and STRICT_MSG in res.problems[1]
     assert res.warnings == []
-    # the same declaration satisfies Bond's row
-    bond = _check("Bond", _all_mapped("Bond", IRVega=(_fn("vega", "ccy_per_bp"), None)), {"IRVega": {"bucketed": "no cube"}})
-    assert bond == ([], [], [])
 
 
 def test_strict_class_keeps_the_warnings_for_names_outside_the_contract():
@@ -590,40 +606,7 @@ def test_pnl_explain_is_a_bucketed_ccy_value(instrument):
     assert load_asset(cfg).risk_measures["PnlExplain"].bucketed == "pnl_explain"
 
 
-# ------------------------------------------------------------------------------------ load_asset: contract errors (Bond)
-
-
-def test_one_config_error_lists_every_problem_and_ends_with_the_block():
-    cfg = _bond(unsupported_measures={}, functions={"npv": {"expr": "0.0", "unit": "ccy"}, "par": {"expr": "1.0", "unit": "ccy"}}, risk_measures={"Price": "npv", "IRFwdRate": "par"})
-    err = _load_error(cfg)
-    msg = str(err)
-    assert err.asset == "bond_asset" and err.key == "risk_measures"
-    assert "IRFwdRate (scalar): function 'par' has unit 'ccy'" in msg
-    assert "IRGammaParallel (scalar): neither mapped nor declared" in msg
-    assert msg.rstrip().splitlines()[-1].startswith("  ParSpread: ")  # the paste-ready block is last
-    assert "\nunsupported_measures:\n" in msg
-
-
-def test_paste_ready_block_makes_the_config_load(tmp_path):
-    cfg = _bond(unsupported_measures={}, functions={"npv": {"expr": "0.0", "unit": "ccy"}, "dv01": {"expr": "1.0", "unit": "ccy_per_bp"}}, risk_measures={"Price": "npv", "IRDelta": "dv01"})
-    msg = str(_load_error(copy.deepcopy(cfg)))
-    lines = msg.splitlines()
-    block = "\n".join(lines[lines.index("unsupported_measures:"):]) + "\n"
-    assert '  IRDelta: {bucketed: "TODO: why your library cannot compute this"}' in block
-    del cfg["unsupported_measures"]
-    path = tmp_path / "pasted.yaml"
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False) + block, encoding="utf8")  # through pricebt's strict loader
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        loaded = load_asset(path)
-    assert loaded.unsupported_measures["IRDelta"] == {"bucketed": "TODO: why your library cannot compute this"}  # R2-12: TODO reasons load
-    assert loaded.unsupported_measures["Theta"] == {"*": "TODO: why your library cannot compute this"}
-
-
-def test_unsupported_block_quotes_reasons_and_orders_by_contract():
-    block = contracts.unsupported_block("IRSwaption", [("ProbabilityOfExercise", "scalar"), ("IRVega", "bucketed"), ("IRDelta", "scalar"), ("IRDelta", "bucketed")], reason='a: "b"')
-    assert block == 'unsupported_measures:\n  IRDelta: "a: \\"b\\""\n  IRVega: {bucketed: "a: \\"b\\""}\n  ProbabilityOfExercise: "a: \\"b\\""\n'
-    assert yaml.safe_load(block)["unsupported_measures"]["IRVega"] == {"bucketed": 'a: "b"'}
+# ------------------------------------------------------------------------------------ load_asset: declarations (classes without a contract)
 
 
 @pytest.mark.parametrize("value, key", [
@@ -636,17 +619,17 @@ def test_unsupported_block_quotes_reasons_and_orders_by_contract():
     ({"scalar": "  \t"}, "unsupported_measures.Theta.scalar"),
 ])
 def test_empty_or_blank_reasons_are_rejected(value, key):
-    err = _load_error(_bond(unsupported_measures={**_declare_all("Bond"), "Theta": value}))
+    err = _load_error(_free(unsupported_measures={"Theta": value}))
     assert err.key == key
 
 
 def test_unknown_declared_form_is_rejected_with_a_suggestion():
-    err = _load_error(_bond(unsupported_measures={**_declare_all("Bond"), "IRDelta": {"scalr": "x", "bucketed": "y"}}))
+    err = _load_error(_free(unsupported_measures={"IRDelta": {"scalr": "x", "bucketed": "y"}}))
     assert err.key == "unsupported_measures.IRDelta.scalr" and "did you mean 'scalar'" in str(err)
 
 
 def test_unsupported_measures_must_be_a_mapping():
-    assert _load_error(_bond(unsupported_measures=["IRDelta"])).key == "unsupported_measures"
+    assert _load_error(_free(unsupported_measures=["IRDelta"])).key == "unsupported_measures"
 
 
 def test_custom_measure_names_load_freely_with_any_unit():
@@ -696,9 +679,10 @@ def test_instrument_base_class_is_not_a_config_instrument():
 
 
 def test_frame_function_with_scale_columns_loads():
-    fns = {"npv": {"expr": "0.0", "unit": "ccy"}, "cf": {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_columns": ["payment_amount", "notional"]}}
-    unsupported = _declare_all("Bond", except_=("Price", "Cashflows"))
-    cfg = load_asset(_bond(functions=fns, risk_measures={"Price": "npv", "Cashflows": "cf"}, unsupported_measures=unsupported))
+    raw = _bond()
+    raw["functions"]["cf"] = {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_columns": ["payment_amount", "notional"]}
+    raw["risk_measures"]["Cashflows"] = "cf"
+    cfg = load_asset(raw)
     spec = cfg.functions["cf"]
     assert spec.returns == "frame" and spec.scale_columns == ("payment_amount", "notional")
     assert cfg.functions["npv"].returns == "scalar" and cfg.functions["npv"].scale_columns == ()
@@ -714,12 +698,15 @@ def test_frame_function_with_scale_columns_loads():
     ({"expr": "0.0", "unit": "ccy", "returns": "buckets"}, "functions.g.returns"),  # buckets are portfolio functions only
 ])
 def test_frame_schema_errors(fn, key):
-    assert _load_error(_bond(functions={"npv": {"expr": "0.0", "unit": "ccy"}, "g": fn})).key == key
+    cfg = _bond()
+    cfg["functions"]["g"] = fn
+    assert _load_error(cfg).key == key
 
 
 def test_non_scaling_frame_needs_no_scale_columns():
-    fns = {"npv": {"expr": "0.0", "unit": "ccy"}, "g": {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_with_quantity": False}}
-    assert load_asset(_bond(functions=fns)).functions["g"].scale_columns == ()
+    cfg = _bond()
+    cfg["functions"]["g"] = {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_with_quantity": False}
+    assert load_asset(cfg).functions["g"].scale_columns == ()
 
 
 @pytest.mark.parametrize("pf, key", [
@@ -727,7 +714,9 @@ def test_non_scaling_frame_needs_no_scale_columns():
     ({"expr": "1.0", "unit": "ccy", "scale_columns": ["a"]}, "portfolio_functions.pg.scale_columns"),
 ])
 def test_portfolio_functions_keep_scalar_and_buckets_only(pf, key):
-    assert _load_error(_bond(portfolio_functions={"pg": pf})).key == key
+    cfg = _bond()
+    cfg["portfolio_functions"]["pg"] = pf
+    assert _load_error(cfg).key == key
 
 
 # ------------------------------------------------------------------------------------ validate_frame

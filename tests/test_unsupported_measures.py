@@ -1,9 +1,9 @@
 """Requesting a measure an asset config declares under `unsupported_measures:` (docs/v2/IR_RISK_DESIGN.md
 sections 0 R2-9/R2-13, 2.4 and 3.1; pricebt DEV-I11): `PricingService.value` raises
 `UnsupportedMeasureError` -- a `ConfigError` and a `NotSupportedError` naming the measure and the
-reason -- but only when the requested mapping slot is empty (a mapping always wins). Only Bond (and
-classes without a contract) can declare: IRSwap/IRSwaption must map every contract measure
-(docs/v2/IR_STRICT_CONTRACT.md R3-0)."""
+reason -- but only when the requested mapping slot is empty (a mapping always wins). Only classes
+without a contract (e.g. ConfigInstrument) can declare: Bond, IRSwap and IRSwaption must map every
+contract measure (docs/v2/IR_STRICT_CONTRACT.md R3-0, docs/v2/BOND_DESIGN.md decision 4.1)."""
 from __future__ import annotations
 
 from datetime import date
@@ -11,7 +11,7 @@ from datetime import date
 import pytest
 
 from pricebt.errors import ConfigError, NotSupportedError, UnsupportedMeasureError
-from pricebt.instrument import Bond, ConfigInstrument
+from pricebt.instrument import ConfigInstrument
 from pricebt.risk import (
     Cashflows,
     IRDelta,
@@ -25,32 +25,10 @@ from pricebt.risk import (
     IRVegaParallel,
     Theta,
 )
-from pricebt.risk import contracts
 from pricebt.risk.results import FloatWithInfo, LazyFuture
 from pricebt.session import PricebtSession
 
 D = date(2024, 3, 4)
-
-
-def _bond_asset(declared):
-    """A Bond asset (map-or-declare contract): Price mapped, every other contract measure declared
-    with a generic reason, `declared` overriding. IRSwap/IRSwaption can no longer declare
-    (docs/v2/IR_STRICT_CONTRACT.md R3-0), so Bond carries the declaration cases."""
-    unsupported = {r.measure: "test: not computed" for r in contracts.contract_for("Bond") if r.measure != "Price"}
-    return {
-        "schema_version": 1,
-        "asset": "bond_decl",
-        "instrument": "Bond",
-        "currency": "USD",
-        "market": {"expr": "1"},
-        "functions": {"npv": {"expr": "1.0", "unit": "ccy"}},
-        "risk_measures": {"Price": "npv"},
-        "unsupported_measures": {**unsupported, **declared},
-    }
-
-
-def _bond():
-    return Bond(pricebt_asset="bond_decl", name="b")
 
 
 def _asset(risk_measures, unsupported, **extra):
@@ -73,38 +51,39 @@ def _inst():
     return ConfigInstrument(pricebt_asset="decl", name="x")
 
 
-# ------------------------------------------------------------------------------------ declarations on a Bond config
+# ------------------------------------------------------------------------------------ declarations (a class without a contract)
 
 
 def test_declared_whole_measure_raises_naming_measure_and_reason():
-    session = PricebtSession.use(assets=[_bond_asset({"Theta": "the per-year IRTheta is mapped; Theta (per day) is not wired"})])
+    session = PricebtSession.use(assets=[_asset({}, {"Theta": "the per-year IRTheta is mapped; Theta (per day) is not wired"})])
     with pytest.raises(UnsupportedMeasureError) as info:
-        session.pricing.value(_bond(), D, Theta, None)
+        session.pricing.value(_inst(), D, Theta, None)
     err = info.value
     assert isinstance(err, ConfigError) and isinstance(err, NotSupportedError)
-    assert (err.measure, err.form, err.asset, err.key) == ("Theta", "*", "bond_decl", "unsupported_measures.Theta")
+    assert (err.measure, err.form, err.asset, err.key) == ("Theta", "*", "decl", "unsupported_measures.Theta")
     assert "the per-year IRTheta is mapped; Theta (per day) is not wired" in str(err)
 
 
 def test_declared_fd_measure_raises_in_its_scalar_form_too():
-    session = PricebtSession.use(assets=[_bond_asset({"IRVanna": "no vol model"})])
+    session = PricebtSession.use(assets=[_asset({}, {"IRVanna": "no vol model"})])
     with pytest.raises(UnsupportedMeasureError, match="'IRVanna' is declared unsupported"):
-        session.pricing.value(_bond(), D, IRVanna(aggregation_level="Type"), None)
+        session.pricing.value(_inst(), D, IRVanna(aggregation_level="Type"), None)
 
 
 def test_declaration_is_found_through_base_name():
-    """IRDiscountDeltaParallelLocalCcy has base_name IRDiscountDeltaParallel (DEV-I16); the Bond
-    asset declares the base."""
-    session = PricebtSession.use(assets=[_bond_asset({"IRDiscountDeltaParallel": "single-curve pricing; no discount-only bump"})])
+    """IRDiscountDeltaParallelLocalCcy has base_name IRDiscountDeltaParallel (DEV-I16); the asset
+    declares the base."""
+    session = PricebtSession.use(assets=[_asset({}, {"IRDiscountDeltaParallel": "single-curve pricing; no discount-only bump"})])
     with pytest.raises(UnsupportedMeasureError) as info:
-        session.pricing.value(_bond(), D, IRDiscountDeltaParallelLocalCcy, None)
+        session.pricing.value(_inst(), D, IRDiscountDeltaParallelLocalCcy, None)
     assert info.value.measure == "IRDiscountDeltaParallel"
 
 
-def test_a_strict_class_cannot_declare_so_never_raises_unsupported_measure_error():
-    """R3-0: an IRSwap config that declares a contract measure does not load, so a request can never
-    reach a declaration."""
-    cfg = {**_bond_asset({}), "asset": "swap_decl", "instrument": "IRSwap", "unsupported_measures": {"Theta": "not wired"}}
+@pytest.mark.parametrize("instrument", ["Bond", "IRSwap", "IRSwaption"])
+def test_a_contract_class_cannot_declare_so_never_raises_unsupported_measure_error(instrument):
+    """R3-0 and BOND_DESIGN decision 4.1: a contract-class config that declares a contract measure
+    does not load, so a request can never reach a declaration."""
+    cfg = {**_asset({}, {"Theta": "not wired"}), "asset": "strict_decl", "instrument": instrument}
     with pytest.raises(ConfigError, match="unsupported_measures cannot satisfy them") as info:
         PricebtSession.use(assets=[cfg])
     assert not isinstance(info.value, UnsupportedMeasureError)

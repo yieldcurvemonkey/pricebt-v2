@@ -3,11 +3,13 @@
 gs_quant answers every IR measure on every IR instrument (a swap's vega is 0) and silently returns
 `UnsupportedValue` for what it cannot compute. pricebt has no server behind it, so an asset config
 whose `instrument:` has a contract here must, for every measure and form of that contract, map it
-to a function with an allowed unit. For `Bond` a reasoned declaration under
-`unsupported_measures:` also satisfies a row; for the strict classes (`STRICT_CLASSES`: IRSwap,
-IRSwaption; docs/v2/IR_STRICT_CONTRACT.md R3-0) only a mapping does, and declaring a contract
-measure is itself an error. `assets.config` calls `check` at load time; the pricing layer calls
-`validate_frame` on frame results.
+to a function with an allowed unit. Every class with a contract is strict (`STRICT_CLASSES`:
+Bond, IRSwap, IRSwaption; docs/v2/IR_STRICT_CONTRACT.md R3-0, docs/v2/BOND_DESIGN.md decision
+4.1): only a mapping satisfies a row, and declaring a contract measure under
+`unsupported_measures:` is itself an error. `unsupported_measures:` remains for classes without a
+contract (e.g. ConfigInstrument), where the pricing layer raises `UnsupportedMeasureError` on
+request. `assets.config` calls `check` at load time; the pricing layer calls `validate_frame` on
+frame results.
 
 This module holds data and pure functions only. It never imports `pricebt.assets` or
 `pricebt.instrument`: `assets.config` hands it a plain summary of the mappings (`MappedFunction`).
@@ -17,7 +19,6 @@ time, so a name the catalogue does not (yet) export simply has no fallback.
 from __future__ import annotations
 
 import difflib
-import json
 import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, NamedTuple, Optional, Tuple
@@ -56,6 +57,7 @@ KINDS: Dict[str, Tuple[Optional[frozenset], Optional[bool]]] = {
     "time": (frozenset({"decimal", "number"}), True),
     "prob": (frozenset({"decimal", "number"}), True),
     "notional_level": (frozenset({"bp", "pct", "decimal", "number"}), True),  # a value per unit of notional (R3-1)
+    "days": (frozenset({"number"}), True),  # a count of calendar days (BOND_DESIGN DaysToSettlement)
     "table": (None, None),
 }
 
@@ -65,16 +67,20 @@ FRAME_COLUMNS: Dict[str, Tuple[str, ...]] = {
 }
 FRAME_SCALE_COLUMNS: Dict[str, Tuple[str, ...]] = {"Cashflows": ("payment_amount",), "CRIFIRCurve": ("Amount",)}  # must scale with quantity
 
-# R3-0: for these classes only a mapping satisfies a contract row; declaring a contract measure
-# (or a preset/fallback of one) under unsupported_measures: is a load error
-STRICT_CLASSES = frozenset({"IRSwap", "IRSwaption"})
-
 # R3-0: contract measures whose contract text defines them as 0 for the class, so a literal 0.0
-# function is the correct computation (a vol measure on a swap, R2-8; IRBasis for a single-curve
-# library; IRXccyDelta for a single-currency instrument). The checker skill imports this.
-ZERO_BY_CONVENTION: Dict[str, frozenset] = {
-    "IRSwap": frozenset({"IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol", "IRBasis", "IRXccyDelta"}),
-    "IRSwaption": frozenset({"IRBasis", "IRXccyDelta"}),
+# function is the correct computation; each with the reason. The checker skill imports this.
+_NO_VOL = "no optionality: the contract defines vol exposure and vol levels as 0 (R2-8)"
+_ONE_CURVE = "single curve: the contract defines the basis delta as 0 for a single-curve library"
+_ONE_CCY = "single currency: the contract defines the cross-currency delta as 0"
+ZERO_BY_CONVENTION: Dict[str, Dict[str, str]] = {
+    "IRSwap": {**dict.fromkeys(("IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol"), _NO_VOL),
+               "IRBasis": _ONE_CURVE, "IRXccyDelta": _ONE_CCY},
+    "IRSwaption": {"IRBasis": _ONE_CURVE, "IRXccyDelta": _ONE_CCY},
+    # BOND_DESIGN decision 4.8: a bullet (non-callable) bond discounted on one curve in its own currency
+    "Bond": {**dict.fromkeys(("IRVega", "IRVanna", "IRVolga", "IRAnnualImpliedVol", "IRAnnualATMImpliedVol", "IRDailyImpliedVol"),
+                             "a bullet bond has no optionality: vol exposure and vol levels are 0 (R2-8)"),
+             "IRBasis": "a bullet bond is discounted on one curve: no projection-vs-discount basis",
+             "IRXccyDelta": "a bond pays in one currency: no cross-currency basis"},
 }
 
 # ISDA SIMM IR tenors: the allowed CRIFIRCurve Label1 values (lower case)
@@ -169,17 +175,77 @@ _IR_STRICT_EXTRA = (
          "rows labelled by mkt_type (IR, IR VOL, ...), ccy. Swaps: one IR row = Price(market_to) - Price(market), plus an optional IR VOL row of 0. Allowed caveat: a library whose market objects carry their own valuation date (it cannot value a later market from the pricing date) includes the carry between the two dates. PnlExplainClose resolves here."),
 )
 
+# docs/v2/BOND_DESIGN.md (revision 4): the Bond contract. A bond's Price is its settlement-date
+# market value, so Price, Theta and Cashflows get Bond text; the gs measures a cash bond can answer
+# get Bond text; pricebt DEV-I20 (bond analytics) and DEV-I21 (financing) name the pricebt-only
+# measures (pricebt.risk.PRICEBT_MEASURES). H, the carry horizon, is the settlement date plus one
+# calendar month, rolled to the following business day of the bond's calendar.
+_BOND_BASE_OVERRIDES = {
+    "Price": _req("Price", "value", "scalar",
+                  "the position's settlement-date market value: (clean price + accrued interest at standard settlement) per 100 face x face / 100, holder-signed (a long is positive), "
+                  "not discounted from the settlement date to the pricing date (DEV-I20). It drops a flow on the first trade date whose standard settlement is on or after the flow's payment date; Cashflows lists the flows still to drop."),
+    "Theta": _req("Theta", "theta", "scalar",
+                  "carry per calendar day with the yield (IRFwdRate) held fixed, over the step to the next business day nb: [Price(nb, same yield) + flows Price drops in (t, nb] - Price(t)] / (nb - t).days, ccy per day (DEV-I15). "
+                  "Price is a settlement-date value, so one calendar day can move settlement by 0 or 3 days; spreading the next-business-day step makes Theta x step days exact on a business-day grid. Financing is not in Theta (FinancingToDate)."),
+    "Cashflows": _req("Cashflows", "table", "frame",
+                      "the flows still included in Price, one row each, holder-signed; payment_date is the trade date on which Price drops the flow: the first date whose standard settlement is on or after the flow's payment date (T+1: the business day before a business-day coupon date). "
+                      "Required columns payment_date, payment_amount, currency, payment_type; returns: frame with scale_columns including payment_amount. A financed position's engine books these rows as cash on payment_date (DEV-E22)."),
+}
+_SWAP_ROWS = {r.measure: r for r in _IR_STRICT_EXTRA}
+_BOND_EXTRA = (
+    _req("LightningDV01", "sens1", "scalar", "yield DV01: Price change for +1bp of yield (= the IRDelta scalar for a bond)."),
+    _req("LightningOAS", "rate", "scalar", "option-adjusted spread over the library's reference curve (a bullet bond: its Z-spread). Intensive."),
+    _req("ParSpread", "rate", "scalar", "par asset-swap spread (or the library's par spread) in the declared unit. Intensive."),
+    _req("FairPremium", "value", "scalar",
+         "the amount the holder pays at standard settlement for the position: Price itself, since Price is already the settlement-date value (DEV-I20). ccy."),
+    _req("ForwardPrice", "value", "scalar",
+         "the forward (financed) value at the horizon H = settlement + 1 calendar month (following business day): Price x (1 + RepoRate x tau(s, H)) - sum over flows c paid in (s, H] of C x (1 + RepoRate x tau(c, H)), "
+         "tau in the repo day count, RepoRate held flat to H; ccy, holder-signed. Dead (nothing left to pay): 0 (DEV-I21; the swap and swaption rows forward to expiry instead)."),
+    _req("PremiumCents", "notional_level", "scalar", "Price / |face| in the declared unit (pct: the dirty price per 100). Intensive (DEV-I19)."),
+    _req("LocalAnnuityInCents", "notional_level", "scalar", "Annuity / |face|: the PV of 1.0 per annum per unit of face. Intensive (DEV-I19)."),
+    _req("CompoundedFixedRate", "rate", "scalar", "the coupon restated as an annually compounded rate: (1 + c/f)^f - 1 for f coupons a year. A trade term, finite on every date. Intensive (DEV-I19)."),
+    _SWAP_ROWS["CRIFIRCurve"],
+    _req("PnlExplain", "value", "bucketed",
+         "the change in value from market to market_to by risk factor, no time component (IR_RISK_DESIGN section 8): a returns: buckets portfolio function receiving market_to and pricebt_to_date, rows labelled by mkt_type "
+         "(IR for the curve, e.g. CREDIT for the bond's spread to it), summing to Price(market_to) - Price(market), ccy. PnlExplainClose resolves here."),
+    # pricebt DEV-I20: bond analytics gs has no measure for
+    _req("CleanPrice", "notional_level", "scalar",
+         "the quoted clean price per 100 face for standard settlement: DirtyPrice - 100 x AccruedInterest / face (signed face). Dead (Price 0): 0. Intensive (DEV-I20)."),
+    _req("DirtyPrice", "notional_level", "scalar", "100 x Price / face (signed face): the invoice price per 100, the same for a long and a short. Dead (Price 0): 0. Intensive (DEV-I20)."),
+    _req("AccruedInterest", "value", "scalar",
+         "the coupon accrued from the last coupon date to the standard settlement date in the bond's accrual convention (US Treasuries: ACT/ACT ICMA), holder-signed, ccy; 0 when settlement is a coupon date and after maturity (DEV-I20)."),
+    _req("ModifiedDuration", "time", "scalar",
+         "-(1/P) dP/dy in years per unit of decimal yield, y in the IRFwdRate convention, P the dirty price; 0 when dead. Intensive (DEV-I20)."),
+    _req("Convexity", "time", "scalar", "(1/P) d2P/dy2 in years^2, y and P as ModifiedDuration; 0 when dead. Intensive (DEV-I20)."),
+    _req("DaysToSettlement", "days", "scalar",
+         "calendar days from the pricing date to the standard settlement date (US Treasuries T+1: 1, or 3 over a weekend or a holiday). Intensive (DEV-I20)."),
+    # pricebt DEV-I21: the financing contract
+    _req("RepoRate", "rate", "scalar",
+         "the funding rate in force on the pricing date for this position: overnight general collateral or special, or a term rate locked at the trade date; the library or the data decides. "
+         "Simple interest in the config's repo day count (USD: ACT/360). Finite on every held date. Intensive (DEV-I21)."),
+    _req("RepoHaircut", "rate", "scalar", "the fraction of the settlement value not financed, in the declared unit (decimal 0.02 = 2%). Intensive (DEV-I21)."),
+    _req("FinancingToDate", "value", "scalar",
+         "cumulative repo interest on the position's funding leg from the settlement of its trade date to the settlement of the pricing date (or maturity, if earlier), holder-signed: a long pays (<= 0), a short lends the cash and receives (>= 0). "
+         "Principal (1 - RepoHaircut) x Price on the trade date (pinned by resolve); simple interest at each calendar day's RepoRate (the last business day's fixing over weekends and holidays); 0 on the trade date. "
+         "The engine books its change over each step as cash (DEV-E22). ccy (DEV-I21)."),
+    _req("Carry", "value", "scalar",
+         "clean value now minus clean forward value at H: (Price - AccruedInterest) - (ForwardPrice - accrued at H) = coupon income over (s, H] minus financing at RepoRate; ccy, holder-signed; dead: 0 (DEV-I21)."),
+    _req("RollDown", "value", "scalar",
+         "clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now; on a flat curve, the pull to par at constant yield. "
+         "Carry + RollDown is the financed P&L to H if the curve does not move. ccy, holder-signed; dead: 0 (DEV-I21)."),
+)
+
 CONTRACTS: Dict[str, Tuple[MeasureRequirement, ...]] = {
     "IRSwap": _IR_BASE + _IR_STRICT_EXTRA,
     "IRSwaption": _IR_BASE + _IR_STRICT_EXTRA + (
         _req("ProbabilityOfExercise", "prob", "scalar", "probability (0..1) of finishing in the money under the annuity measure. Intensive."),
     ),
-    "Bond": _IR_BASE + (
-        _req("LightningDV01", "sens1", "scalar", "yield DV01: Price change for +1bp of yield (= the IRDelta scalar for a bond)."),
-        _req("LightningOAS", "rate", "scalar", "option-adjusted spread over the library's reference curve (a bullet bond: its Z-spread). Intensive."),
-        _req("ParSpread", "rate", "scalar", "par asset-swap spread (or the library's par spread) in the declared unit. Intensive."),
-    ),
+    "Bond": tuple(_BOND_BASE_OVERRIDES.get(r.measure, r) for r in _IR_BASE) + _BOND_EXTRA,
 }
+
+# every class with a contract (BOND_DESIGN decision 4.1; R3-0): only a mapping satisfies a row, and
+# declaring a contract measure (or a preset/fallback of one) under unsupported_measures: is a load error
+STRICT_CLASSES = frozenset(CONTRACTS)
 
 
 class MappedFunction(NamedTuple):
@@ -194,21 +260,20 @@ class MappedFunction(NamedTuple):
 
 
 class ContractCheck(NamedTuple):
-    """`check`'s result: `problems` make the config invalid; `warnings` are stale declarations
-    (R2-9: the mapping wins) and declarations the contract cannot count; `missing` are the
-    `(measure, form)` pairs not provided, in contract order: neither mapped nor declared, or, for a
-    strict class, not mapped (feed them to `mapping_skeleton` for a strict class, else to
-    `unsupported_block`)."""
+    """`check`'s result: `problems` make the config invalid; `warnings` are declarations of names
+    outside the contract that cannot mean what they say (a preset name, an unknown name); `missing`
+    are the `(measure, form)` pairs no mapping provides, in contract order (feed them to
+    `mapping_skeleton`)."""
 
     problems: List[str]
     warnings: List[str]
     missing: List[Tuple[str, str]]
 
 
-# docs/v2/IR_STRICT_CONTRACT.md R3-1: the IR-relevant pricebt.risk names (asset_class Rates or
-# None, plus the relative-measure classes) deliberately outside the strict contract, with the
-# reason. tests/test_contracts.py checks this list is exactly what is neither a contract measure
-# nor a preset/fallback of one.
+# docs/v2/IR_STRICT_CONTRACT.md R3-1 (BOND_DESIGN decision 4.2): the IR-relevant pricebt.risk names
+# (asset_class Rates or None, plus the relative-measure classes) deliberately outside every
+# contract, with the reason. tests/test_contracts.py checks this list is exactly what is neither a
+# measure of some contract nor a preset/fallback of one.
 _INFLATION = "inflation instruments"
 EXCLUDED: Dict[str, str] = {
     "DollarPrice": "the engine maps it to Price(currency='USD')",
@@ -218,8 +283,6 @@ EXCLUDED: Dict[str, str] = {
     "Market": "non-numeric gs server metadata",
     "MarketData": "non-numeric gs server metadata",
     "MarketDataAssets": "non-numeric gs server metadata",
-    "LightningDV01": "bond analytics (the Bond contract)",
-    "LightningOAS": "bond analytics (the Bond contract)",
     "BaseCPI": _INFLATION,
     "InflMaturityCPI": _INFLATION,
     "Infl_CompPeriod": _INFLATION,
@@ -242,7 +305,8 @@ def contract_for(instrument: str) -> Tuple[MeasureRequirement, ...]:
 
 
 def is_strict(instrument: str) -> bool:
-    """True for a class whose contract rows only a mapping satisfies (R3-0: IRSwap, IRSwaption)."""
+    """True for a class whose contract rows only a mapping satisfies: every class with a contract
+    (R3-0; BOND_DESIGN decision 4.1)."""
     return instrument in STRICT_CLASSES
 
 
@@ -333,21 +397,23 @@ def provided_forms(instrument: str, mapped: Mapping[str, Mapping[str, Optional[M
 
 
 def check(instrument: str, mapped: Mapping[str, Mapping[str, Optional[MappedFunction]]], unsupported: Mapping[str, Mapping[str, str]]) -> ContractCheck:
-    """Check an asset's mappings against its instrument's contract (IR_RISK_DESIGN section 2.1).
+    """Check an asset's mappings against its instrument's contract (IR_RISK_DESIGN section 2.1,
+    R3-0, BOND_DESIGN decision 4.1).
 
     `mapped` is `{risk_measures key: {"scalar": MappedFunction | None, "bucketed": ... | None}}`;
     `unsupported` is `{measure: {form or "*": reason}}` (`AssetConfig.unsupported_measures`; a bare
-    reason string, the YAML shape, also means "*"). A form is satisfied iff a mapping slot
-    provides it (`provided_forms`: preset keys count toward their base, `base_measure`) or it is
-    declared. A frame is a scalar-slot function with `returns: frame`. Every mapped slot of a
-    contract measure is also checked for unit, intensivity and shape; measure names outside the
-    contract are unrestricted. Declarations that cannot mean what they say (a preset name, a form
-    outside the contract row, an unknown name) are warnings.
+    reason string, the YAML shape, also means "*"). A form is satisfied iff a mapping slot provides
+    it (`provided_forms`: preset keys count toward their base, `base_measure`). A frame is a
+    scalar-slot function with `returns: frame`. Every mapped slot of a contract measure is also
+    checked for unit, intensivity and shape; measure names outside the contract are unrestricted.
 
-    For a strict class (`is_strict`, R3-0) only a mapping satisfies a form, and declaring a
-    contract measure, one of its forms, or a preset/fallback resolving to one is a problem (so the
-    R2-9 "mapping wins" warning never applies to a contract measure there); declarations of names
-    outside the contract keep the warnings above.
+    Every class with a contract is strict: declaring a contract measure, one of its forms, or a
+    preset/fallback resolving to one is a problem, mapped or not. Any other declaration that is also
+    mapped loads with a warning (R2-9: the mapping wins; this is how a class without a contract,
+    e.g. ConfigInstrument, meets it). On a contract class, a declaration of a name outside the
+    contract that cannot mean what it says (a preset of a non-contract measure, an unknown name) is
+    a warning too. A class without a contract has no rows: its declarations raise
+    `UnsupportedMeasureError` when requested.
     """
     reqs = {r.measure: r for r in contract_for(instrument)}
     unsupported = {m: ({"*": v} if isinstance(v, str) else v) for m, v in unsupported.items()}
@@ -357,72 +423,36 @@ def check(instrument: str, mapped: Mapping[str, Mapping[str, Optional[MappedFunc
             problems += _slot_problems(req, key, form, fn)
     provided = provided_forms(instrument, mapped)
 
-    strict = is_strict(instrument)
     strict_names = "/".join(sorted(STRICT_CLASSES))
-    forbidden: List[str] = []
-    if strict:
-        # R3-0: a declaration of a contract measure never satisfies its row
-        forbidden = [m for m in unsupported if base_measure(m)[0] in reqs]
-        unsupported = {m: d for m, d in unsupported.items() if m not in forbidden}
-
     missing: List[Tuple[str, str]] = []
     for req in reqs.values():
-        declared = unsupported.get(req.measure, {})
-        gaps = [f for f in req.forms if (req.measure, f) not in provided and "*" not in declared and f not in declared]
+        gaps = [f for f in req.forms if (req.measure, f) not in provided]
         if gaps:
             missing += [(req.measure, f) for f in gaps]
-            why = f"not mapped ({strict_names} require a mapping for every contract measure)" if strict else "neither mapped nor declared under unsupported_measures"
-            problems.append(f"{req.measure} ({', '.join(gaps)}): {why} -- {req.doc}")
-    for measure in forbidden:
-        base = base_measure(measure)[0]
-        what = measure if base == measure else f"{measure} (a preset or fallback of {base})"
-        problems.append(f"unsupported_measures declares {what}, a {instrument} contract measure: {strict_names} configs must map every contract measure; unsupported_measures cannot satisfy them -- map it and remove the declaration")
-
-    # pricebt DEV-I11 (R2-9): a mapping wins over a stale declaration, with a warning
+            problems.append(f"{req.measure} ({', '.join(gaps)}): not mapped ({strict_names} require a mapping for every contract measure) -- {req.doc}")
     warnings: List[str] = []
     for measure, declared in unsupported.items():
+        base = base_measure(measure)[0]
+        if base in reqs:
+            what = measure if base == measure else f"{measure} (a preset or fallback of {base})"
+            problems.append(f"unsupported_measures declares {what}, a {instrument} contract measure: {strict_names} configs must map every contract measure; unsupported_measures cannot satisfy them -- map it and remove the declaration")
+            continue
+        # pricebt DEV-I11 (R2-9): a mapping wins over a stale declaration, with a warning
+        stale = False
         for form in declared:
             hits = sorted(f"{f} via {k}" if k != measure else f for (m, f), k in provided.items() if m == measure and form in ("*", f))
             if hits:
-                shown = "every form" if form == "*" else form
-                warnings.append(f"{measure} is declared unsupported ({shown}) but mapped ({', '.join(hits)}); the mapping is used -- remove or narrow the stale declaration")
-
-    # declarations the contract cannot count: a form outside the row, a preset key, an unknown name
-    if reqs:
-        for measure, declared in unsupported.items():
-            req, base = reqs.get(measure), base_measure(measure)[0]
-            if req is not None:
-                outside = sorted(f for f in declared if f != "*" and f not in req.forms)
-                if outside:
-                    warnings.append(f"{measure} declares {outside} unsupported but its {instrument} contract row has only {list(req.forms)}; remove the extra form(s)")
-            elif base != measure:
-                warnings.append(f"{measure} is a preset or fallback of {base}; declare {base} instead (the contract counts only {base}, and a request for {measure} falls back to {base}'s mapping or declaration)")
-            elif not _is_catalogue_name(measure):
-                close = difflib.get_close_matches(measure, list(reqs), n=1)
-                hint = f" (did you mean {close[0]!r}?)" if close else ""
-                warnings.append(f"{measure} is neither in the {instrument} contract nor a pricebt.risk measure{hint}; if misspelt it declares nothing (it only affects a request named exactly {measure})")
+                stale = True
+                warnings.append(f"{measure} is declared unsupported ({'every form' if form == '*' else form}) but mapped ({', '.join(hits)}); the mapping is used -- remove or narrow the stale declaration")
+        if stale or not reqs:
+            continue
+        if base != measure:
+            warnings.append(f"{measure} is a preset or fallback of {base}; declare {base} instead (a request for {measure} falls back to {base}'s mapping or declaration)")
+        elif not _is_catalogue_name(measure):
+            close = difflib.get_close_matches(measure, list(reqs), n=1)
+            hint = f" (did you mean {close[0]!r}?)" if close else ""
+            warnings.append(f"{measure} is neither in the {instrument} contract nor a pricebt.risk measure{hint}; if misspelt it declares nothing (it only affects a request named exactly {measure})")
     return ContractCheck(problems, warnings, missing)
-
-
-def unsupported_block(instrument: str, missing: Iterable[Tuple[str, str]], reason: str = "TODO: why your library cannot compute this") -> str:
-    """Paste-ready YAML declaring every `(measure, form)` in `missing` unsupported: a measure whose
-    every contract form is missing gets one reason, otherwise a `{form: reason}` mapping. Measures
-    follow the contract's order. Replace each reason with an honest, specific one (the checker
-    skill flags reasons that still start with TODO, R2-12)."""
-    by_measure: Dict[str, List[str]] = {}
-    for measure, form in missing:
-        by_measure.setdefault(measure, []).append(form)
-    order = [r.measure for r in contract_for(instrument)]
-    forms_of = {r.measure: r.forms for r in contract_for(instrument)}
-    quoted = json.dumps(reason)  # a JSON string is a valid double-quoted YAML scalar
-    lines = ["unsupported_measures:"]
-    for measure in sorted(by_measure, key=lambda m: (order.index(m) if m in order else len(order), m)):
-        forms = by_measure[measure]
-        if measure in forms_of and set(forms) == set(forms_of[measure]):
-            lines.append(f"  {measure}: {quoted}")
-        else:
-            lines.append(f"  {measure}: {{{', '.join(f'{f}: {quoted}' for f in forms)}}}")
-    return "\n".join(lines) + "\n"
 
 
 # the stub expression of mapping_skeleton: deliberately a syntax error, so a pasted skeleton cannot
