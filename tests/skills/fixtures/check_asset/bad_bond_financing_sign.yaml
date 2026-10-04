@@ -1,8 +1,9 @@
-# Broken on purpose (check_asset fixture): the bond's IRDelta is the library's risk per -1bp (positive for a long bond) mapped without
-# negating. Must FAIL bond_dv01_sign.
+# Broken on purpose (check_asset fixture): FinancingToDate reported as the interest amount (positive for a long that PAYS the repo)
+# instead of holder-signed. Must FAIL bond_financing and nothing else (the engine books the config's own
+# numbers consistently, so bond_holding_cash passes).
 # Copy of tests/assets/toy_usd_bond.yaml with ONE thing broken: regenerate_bond_fixtures.py rewrites it from the toy.
 schema_version: 1
-asset: bad_bond_dv01_positive
+asset: bad_bond_financing_sign
 description: >
   Toy USD fixed-coupon bond with repo financing on the deterministic rates world
   (tests/toylib/bond.py): a tiny bond master keyed by identifier, a flat curve plus a sinusoidal
@@ -33,7 +34,7 @@ resolve:
   expr: 'tb.resolve_bond(market, kwargs)'
 functions:
   npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # Price and FairPremium; valued on the pricing date (a CloseMarket override passes no time)
-  delta:           {expr: '-tb.delta(market, trade)', unit: ccy_per_bp}   # MISTAKE: per -1bp (long bond > 0)
+  delta:           {expr: 'tb.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
   yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
   gamma:           {expr: 'tb.gamma(market, trade)', unit: ccy_per_bp2}
@@ -59,7 +60,7 @@ functions:
   days_to_settle:  {expr: 'tb.days_to_settlement(market, trade)', unit: number, scale_with_quantity: false}
   repo_rate:       {expr: 'tb.repo_rate(market, trade)', unit: bp}
   repo_haircut:    {expr: 'tb.repo_haircut(market, trade)', unit: decimal}
-  financing:       {expr: 'tb.financing_to_date(market, trade)', unit: ccy}
+  financing:       {expr: '-tb.financing_to_date(market, trade)', unit: ccy}   # MISTAKE: interest paid as a positive number
   carry:           {expr: 'tb.carry(market, trade)', unit: ccy}
   roll_down:       {expr: 'tb.roll_down(market, trade)', unit: ccy}
 portfolio_functions:

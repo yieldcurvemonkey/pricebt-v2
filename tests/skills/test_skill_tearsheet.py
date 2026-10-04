@@ -172,3 +172,19 @@ def test_attribution_section_only_when_supplied(tmp_path):
     unexplained = table.assign(residual_pnl=table["economic_pnl"])
     page = Path(tearsheet.build_tearsheet(bt, tmp_path / "bad", "Toy", attribution=unexplained)["html"]).read_text(encoding="utf-8")
     assert "FAIL: unexplained 110.31% (worst of residual variance share 100.00%" in page and "diagnosing-residuals.md" in page
+
+
+def test_attribution_section_shows_financing_for_a_financed_bond(tmp_path):
+    """A financed bond (pricebt DEV-E22): financing_pnl is a component row and a stacked series, so the
+    stack sums to the economic P&L; a swaption book has no financing row."""
+    sys.path.insert(0, str(ROOT / "skills" / "pricebt-pnl-attribution" / "scripts"))
+    import attribution
+
+    bt = attribution.demo_backtest("bond", end=date(2024, 5, 31))
+    table = bt.pnl_explain_table()
+    assert table["financing_pnl"].sum() < 0
+    page = Path(tearsheet.build_tearsheet(bt, tmp_path / "bond", "Toy bond", attribution=table)["html"]).read_text(encoding="utf-8")
+    assert "<td>financing_pnl</td>" in page and "<td>cashflow_pnl</td>" in page and '<td class="PASS">PASS</td>' in page
+    swaption = attribution.demo_backtest("swaption", end=date(2024, 1, 31))
+    page = Path(tearsheet.build_tearsheet(swaption, tmp_path / "opt", "Toy", attribution=swaption.pnl_explain_table())["html"]).read_text(encoding="utf-8")
+    assert "<td>financing_pnl</td>" not in page

@@ -81,7 +81,7 @@ Behavioural differences from gs carry DEV ids: `docs/v2/DEVIATIONS.md`, and DESI
 
 | Request | Form asked | Served by |
 |---|---|---|
-| `IRDelta(aggregation_level='Type')`, `IRDeltaParallel` (`Asset`) | scalar | the `IRDelta` scalar slot. With only a ladder mapped, pricebt sums the buckets, but only for classes **without** a contract (`ConfigInstrument`, FX, ...): an `IRSwap` or `IRSwaption` config must map the scalar (it cannot load otherwise), and a Bond's declared scalar raises `UnsupportedMeasureError` instead of summing. Map the scalar (`implementing-measures.md` section 1, Shape B) |
+| `IRDelta(aggregation_level='Type')`, `IRDeltaParallel` (`Asset`) | scalar | the `IRDelta` scalar slot. With only a ladder mapped, pricebt sums the buckets, but only for classes **without** a contract (`ConfigInstrument`, FX, ...): an `IRSwap`, `IRSwaption` or `Bond` config must map the scalar (it cannot load otherwise), and a declared scalar on a class without a contract raises `UnsupportedMeasureError` instead of summing. Map the scalar (`implementing-measures.md` section 1, Shape B) |
 | bare `IRDelta`, `IRDelta(aggregation_level='Point')` | bucketed | the `IRDelta` bucketed slot |
 | `IRVanna(aggregation_level='Type')`, `IRVolga(...)`, `IRBasis(...)`, `IRXccyDelta(...)` | scalar | their scalar slot. The bare name asks for a ladder they do not have, and the error says to add `aggregation_level='Type'` (R2-13) |
 | `IRVegaParallel`, `IRBasisParallel`, `IRXccyDeltaParallel`, `IRDeltaLocalCcy`, `IRVegaLocalCcy` | the preset's form | the base measure's mapping (`base_name`) |
@@ -89,7 +89,7 @@ Behavioural differences from gs carry DEV ids: `docs/v2/DEVIATIONS.md`, and DESI
 | a plain measure (`Theta`, `IRFwdRate`, `Cashflows`) | whatever is mapped | its only slot |
 | `PnlExplain(CloseMarket(...))`, `PnlExplainClose()` | bucketed | the `PnlExplain` mapping (a `returns: buckets` portfolio function) |
 
-A config may map a preset key (for example `IRDeltaParallel: dv01`), and the contract counts it toward the base (R2-10). On a Bond, **declare the base measure, never a preset:** a declared preset name loads with a warning and declares nothing the contract counts. On an `IRSwap` or `IRSwaption` any declaration of a contract measure or its preset is a load error.
+A config may map a preset key (for example `IRDeltaParallel: dv01`), and the contract counts it toward the base (R2-10). On an `IRSwap`, `IRSwaption` or `Bond` any declaration of a contract measure or its preset is a load error. On a class without a contract, declare the base measure, never a preset: a request for the preset falls back to the base's mapping or declaration.
 
 ## 5. Finite-difference parameters (DEV-I10)
 
@@ -111,16 +111,16 @@ functions:
 
 Honour the value your library receives. A bump size in bp must still return **per 1bp** (divide by the bump); `scale_factor` multiplies the result. Mismatched units are your function's bug, not pricebt's.
 
-## 6. Declared-unsupported measures (Bond only)
+## 6. Declared-unsupported measures (classes without a contract)
 
-Only a `Bond` (or a class without a contract) can declare a measure: an `IRSwap` or `IRSwaption` config that declares a contract measure does not load (`docs/v2/IR_STRICT_CONTRACT.md`), so this never happens on a swap or swaption. A request for a declared measure or form raises `pricebt.errors.UnsupportedMeasureError`. It is both a `ConfigError` and a `NotSupportedError`, and carries `.measure`, `.form` (`scalar`, `bucketed`, `frame` or `*`) and `.reason`. The message starts with the generic "asset A has no mapping for risk measure X". A mapping always wins over a stale declaration of the same form: the config loads with a `UserWarning` (R2-9).
+Only a class without a contract (for example `ConfigInstrument`) can declare a measure: an `IRSwap`, `IRSwaption` or `Bond` config that declares a contract measure does not load (`docs/v2/IR_STRICT_CONTRACT.md`, `docs/v2/BOND_DESIGN.md` decision 4.1), so this never happens on a swap, swaption or bond. A request for a declared measure or form raises `pricebt.errors.UnsupportedMeasureError`. It is both a `ConfigError` and a `NotSupportedError`, and carries `.measure`, `.form` (`scalar`, `bucketed`, `frame` or `*`) and `.reason`. The message starts with the generic "asset A has no mapping for risk measure X". A mapping always wins over a stale declaration of the same form: the config loads with a `UserWarning` (R2-9).
 
 ## 7. `CloseMarket` and `PnlExplain` (`pricebt.markets`, `pricebt.risk`)
 
 - `PricingContext(pricing_date=d, market=CloseMarket(date=t))`: every function sees `market` = the market of `t`, while `pricebt_date` stays `d`, and `resolve` still uses `d`'s own market (DEV-M1). Any other `market=` raises `NotSupportedError`.
 - `PnlExplain(CloseMarket(date=t))` priced at `d` is the change in value from `d`'s market to `t`'s, by risk factor, **with no time component**. gs 030007 adds time separately as `price(d, market t) − price(t)`. The target lives in the measure's parameters, so two targets never share a cache entry (DEV-M2).
 - Map it in the config as a `returns: buckets` **portfolio function** that names `market_to` or `pricebt_to_date` (a function naming neither is refused). It returns row dicts by `mkt_type`, e.g. `IR`, `IR VOL`, `CROSSES`.
-- It **is** in the `IRSwap` and `IRSwaption` contracts (form bucketed, `PnlExplainClose` resolving to it), so those configs must map it; a Bond config without it is fine.
+- It **is** in the `IRSwap`, `IRSwaption` and `Bond` contracts (form bucketed, `PnlExplainClose` resolving to it), so those configs must map it. A Bond's rows are labelled by factor, e.g. `IR` for the curve and `CREDIT` for its spread.
 - `PnlExplainClose()` explains to the pricing date's own close, so it raises unless it is priced under `PricingContext(market=CloseMarket(date=<another date>))`. `PnlExplainLive` and `PnlPredictLive` always raise (they are live GS server features).
 
 ## 8. Runnable tour
@@ -131,21 +131,19 @@ This block runs as-is from the repository root with `PYTHONPATH=src;tests`. `tes
 # runnable: a nested book of toy swaps and a toy swaption (PYTHONPATH=src;tests, repository root)
 import datetime as dt
 
-from pricebt.assets import yamlio
 from pricebt.errors import NotSupportedError, UnsupportedMeasureError
-from pricebt.instrument import Bond, IRSwap, IRSwaption
+from pricebt.instrument import ConfigInstrument, IRSwap, IRSwaption
 from pricebt.markets import CloseMarket, HistoricalPricingContext, PricingContext
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import IRDelta, IRDeltaParallel, PnlExplain, Price, Theta, aggregate_risk
 from pricebt.risk.results import DataFrameWithInfo, FloatWithInfo, MultipleRiskMeasureResult, SeriesWithInfo
 from pricebt.session import PricebtSession
 
-# a toy bond whose config declares Theta (only a Bond may declare: an IRSwap/IRSwaption config maps every measure)
-bond_no_theta = yamlio.load_file("tests/assets/toy_usd_bond.yaml")
-bond_no_theta["asset"] = "toy_usd_bond_no_theta"
-del bond_no_theta["risk_measures"]["Theta"]
-bond_no_theta["unsupported_measures"] = {"Theta": "this bond library has no carry call"}
-PricebtSession.use(assets=["tests/assets/toy_usd_swaption.yaml", "tests/assets/toy_usd_irs_full.yaml", bond_no_theta])
+# a class without a contract (ConfigInstrument) may declare a measure; IRSwap, IRSwaption and Bond configs map every one
+no_theta = {"schema_version": 1, "asset": "toy_no_theta", "instrument": "ConfigInstrument", "currency": "USD",
+            "market": {"expr": "1"}, "functions": {"pv": {"expr": "1.0", "unit": "ccy"}},
+            "risk_measures": {"Price": "pv"}, "unsupported_measures": {"Theta": "this library has no carry call"}}
+PricebtSession.use(assets=["tests/assets/toy_usd_swaption.yaml", "tests/assets/toy_usd_irs_full.yaml", no_theta])
 d, d_later = dt.date(2024, 3, 4), dt.date(2024, 3, 8)
 swaps = Portfolio([IRSwap("Pay", "5y", "USD", notional_amount=1e6, name="5y", pricebt_asset="toy_usd_irs_full"),
                    IRSwap("Pay", "10y", "USD", notional_amount=1e6, name="10y", pricebt_asset="toy_usd_irs_full")], name="swaps")
@@ -193,10 +191,10 @@ with PricingContext(pricing_date=d):
     except NotSupportedError as exc:
         assert "pricebt_bump_size" in str(exc)
 
-# a declared-unsupported measure raises with the config's own reason (the bond declares Theta)
+# a declared-unsupported measure raises with the config's own reason (the ConfigInstrument declares Theta)
 with PricingContext(pricing_date=d):
     try:
-        Bond(identifier="TOY 4.25 2034-11-15", size=1e6, buy_sell="Buy", settlement_currency="USD", pricebt_asset="toy_usd_bond_no_theta").calc(Theta).result()
+        ConfigInstrument(pricebt_asset="toy_no_theta", name="x").calc(Theta).result()
         raise AssertionError("expected UnsupportedMeasureError")
     except UnsupportedMeasureError as exc:
         assert exc.measure == "Theta" and exc.reason  # the reason written in the config

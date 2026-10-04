@@ -119,6 +119,23 @@ def resolve_path(p: Union[str, Path]) -> Path:
     return p if p.is_absolute() or p.exists() else REPO_ROOT / p
 
 
+def _config_kwargs(assets) -> dict:
+    """{instrument class: the `defaults:` keys of the spec's asset configs for it}: kwargs a config
+    reads beyond the gs fields (a bond config's repo terms, e.g. repo_term overnight|term and
+    repo_haircut). A config that does not parse is skipped (the assets check reports a missing file)."""
+    from pricebt.assets import yamlio
+
+    out: dict = {}
+    for a in assets:
+        try:
+            raw = yamlio.load_file(resolve_path(a))
+        except Exception:
+            continue
+        if isinstance(raw, dict) and raw.get("instrument"):
+            out.setdefault(raw["instrument"], set()).update(raw.get("defaults") or {})
+    return out
+
+
 def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
@@ -155,6 +172,7 @@ def validate_spec(spec: dict) -> "list[str]":
     # --- instruments
     from pricebt import instrument as _instrument_mod
 
+    config_kwargs = _config_kwargs(spec.get("assets") or [])
     insts = spec["instruments"]
     if "primary" not in insts:
         err("instruments: a 'primary' instrument is required")
@@ -170,7 +188,7 @@ def validate_spec(spec: dict) -> "list[str]":
             err(f"instruments.{key}.kwargs: must be a mapping")
             continue
         if hasattr(_instrument_mod, str(inst["class"])):
-            errors.extend(f"instruments.{key}.kwargs: {p}" for p in terms.kwarg_problems(inst["class"], kw))
+            errors.extend(f"instruments.{key}.kwargs: {p}" for p in terms.kwarg_problems(inst["class"], kw, config_kwargs.get(inst["class"], ())))
         if kw.get("notional_currency"):
             ccys.add(str(kw["notional_currency"]).split(".")[-1].upper())
     if len(ccys) > 1 and not spec.get("result_ccy"):
@@ -287,6 +305,10 @@ def validate_spec(spec: dict) -> "list[str]":
     rate = spec["financing"].get("cash_accrual_rate")
     if rate is not None and not _num(rate):
         err("financing.cash_accrual_rate: must be a number")
+    elif rate and any(isinstance(i, dict) and i.get("class") == "Bond" for i in insts.values()):
+        err("financing.cash_accrual_rate: a Bond is financed in repo by its asset config (FinancingToDate, booked as cash by the "
+            "engine, pricebt DEV-E22); accruing the cash balance too would charge its funding twice -- set it to 0 and put the "
+            "repo terms (GC or special, overnight or term, haircut) in the bond's kwargs or its asset config")
     if not _num(spec.get("initial_value", 0)):
         err("initial_value: must be a number")
 

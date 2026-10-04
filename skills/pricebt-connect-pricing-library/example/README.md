@@ -111,7 +111,7 @@ is 0 (`Annuity` and `DV01` are 0 by themselves; gamma and Theta guard), the fram
 | `LocalAnnuityInCents` | `Annuity / abs(notional)` | decimal |
 | `CompoundedFixedRate` | `(1 + K/f)^f - 1` with `f = 1` (annual fixed leg): `K` | bp |
 
-`measures.py matrix --strict` passes (every row MAPPED). The checker has no FAIL; its WARNs, also in
+`measures.py matrix` passes (every row MAPPED). The checker has no FAIL; its WARNs, also in
 the config's `description:`: `swap_bucket_sum` / `ir_ladder_sum[IRDelta]` (the zero-pillar ladder
 sums to the curve DV01, dr/ds times the own-rate `IRDelta`, R2-2), `ir_theta` (the curve also
 changes **shape** every day, which the own-rate delta does not explain, so the one-day implied carry

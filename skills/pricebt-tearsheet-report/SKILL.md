@@ -65,8 +65,18 @@ Every section answers a decision question. If a section does not change what som
 | **What does it cost?** | Key metrics | Total Transaction Costs, Gross PnL, Cost Drag (share of gross P&L eaten by costs), Trades per Year. High cost drag means the edge depends on the cost assumption. Run the costs-doubled check. |
 | **How much risk does it use?** | Risk and P&L in bp | Max/Mean Abs Risk (dv01), Risk Turnover per Year, Total PnL (bp), PnL / Mean Abs Risk (bp). P&L in bp of rate move is comparable across notionals and currencies. |
 | **How does it fail?** | Key metrics, charts | Max Drawdown and its duration, worst five days, Sortino, skew/kurtosis, drawdown chart, daily P&L histogram. The worst days tell you which market move breaks it. |
-| **Is it tradeable as modelled?** | Caveats, spot checks | Same-close execution, costs and financing as modelled, coupons between marks not booked, missing-market dates dropped, open-at-end positions. |
-| **What was it paid for?** | P&L attribution (when `attribution=` is given) | component totals (delta, gamma, vega, vanna, volga, theta), the graded unexplained share and r2. A carry or vol thesis must show up in its own component, with a small residual next to it. |
+| **Is it tradeable as modelled?** | Caveats, spot checks | Same-close execution, costs and financing as modelled, coupons between marks not booked (swaps and swaptions only; a bond's are, below), missing-market dates dropped, open-at-end positions. |
+| **What was it paid for?** | P&L attribution (when `attribution=` is given) | component totals (delta, gamma, vega, vanna, volga, theta, plus coupons and financing), the graded unexplained share and r2. A carry or vol thesis must show up in its own component, with a small residual next to it. |
+| **What did funding cost?** (financed books) | your narrative, from `backtest.holding_cash` and the attribution's `cashflow_pnl` / `financing_pnl` totals | coupons received, repo interest paid, and the financed carry (`PNL_theta + financing_pnl`). A bond carry trade that only works before repo is not a carry trade. |
+
+### Financed positions: holding cash and the Total identity
+
+Every `Bond` config maps `FinancingToDate` (the strict Bond contract), so the engine books, on every date it marks or exits a bond position, the coupons the position dropped since its previous mark plus the change of `FinancingToDate`, as cash (DEV-E22). Swaps and swaptions are unchanged (gs parity: only entry and exit prices reach cash).
+
+- **Where to read it.** `backtest.holding_cash[d][position] = (ccy, cashflow, financing)`: per date and per financed position, the coupons and the repo interest booked on d (`ccy` is `result_ccy` when the run sets one). Sum it over dates for the report's coupon and financing totals; with `attribution=`, the same numbers are the `cashflow_pnl` and `financing_pnl` component totals.
+- **The identity to state.** For a book of financed positions bought at PV, with no transaction costs and no cash accrual: change in `Total` = ΔPV + coupons + ΔFinancingToDate, i.e. ΔPV + coupons − repo interest for a long (a short receives the repo interest). It holds exactly on any grid: `tests/test_holding_cash.py` proves it on a synthetic financed instrument, and the bond attribution demo (`attribution.py --demo bond`) shows `Σ economic_pnl` equal to the change in `Total` on the toy bond.
+- **Report a `cash_accrual` model on a financed book as a defect.** The cash balance already holds the funding loan (−Price at entry), so the accrual charges the funding a second time. The engine warns once ("the funding is counted twice"); the report must not carry that number.
+- **The default caveat list predates holding cash.** `tearsheet.PRICEBT_CAVEATS` still says coupons between marks are not booked and that financing is the cash accrual. For a book holding bonds, pass `caveats=[...]` saying coupons and repo financing are booked through holding cash, and state which repo (GC or special, overnight or term, haircut) the bond config uses.
 | **Can someone reproduce it?** | Reproducibility | Spec, asset configs, pricebt git commit, generated-at timestamp, CSVs of the ledger and the daily frame. |
 
 ### Success criteria
@@ -88,7 +98,8 @@ A `null` threshold is skipped; an unknown criterion or an unavailable metric is 
 - The verdict line agrees with the success-criteria table, and your narrative paragraph agrees with both.
 - When the spec sets `in_sample_end`, the out-of-sample Sharpe is reported next to the in-sample one.
 - Total Trades is at least `min_trades`, or the report says the statistics are not meaningful.
-- The caveats section contains the four pricebt caveats plus anything the adversarial review raised.
+- The caveats section contains the four pricebt caveats plus anything the adversarial review raised. For a book holding bonds, it also says coupons and repo are booked (holding cash), which repo the config uses, and the coupon and financing totals.
+- For a financed book with no costs and no cash accrual, the change in `Total` equals ΔPV + Σ coupons + Σ financing from `backtest.holding_cash`.
 - The HTML opens offline (no external resources) and shows at least the cumulative P&L, drawdown, rolling Sharpe, monthly P&L and histogram charts.
 
 ## Pitfalls
@@ -97,6 +108,7 @@ A `null` threshold is skipped; an unknown criterion or an unavailable metric is 
 - **P&L in bp is meaningless when risk crosses zero.** Dividing by a risk near zero produces huge values of either sign. Read it only for directional books; for hedged or curve books use currency P&L.
 - **Day-one costs are outside the daily series.** The first row's transaction cost is in Total PnL but not in any daily P&L difference, so Sharpe slightly flatters a strategy that trades on day one.
 - **Held-forever positions.** Mean-reversion strategies built from `AddTradeAction` with no duration never close. Hit rate, average win/loss and holding period are then computed on zero closed trades (reported as empty); use P&L and drawdown instead.
+- **Financed books.** `Total` of a bond book already nets repo interest and includes coupons. Do not add carry from `Carry`/`RollDown` (forward-looking estimates) on top, and do not run a `cash_accrual` model with it.
 - **Annualisation.** The default factor is 252 observations per year. Use the grid's real frequency (for example 12 for a monthly grid).
 - **Do not hand-edit numbers** in the HTML. Rebuild it.
 

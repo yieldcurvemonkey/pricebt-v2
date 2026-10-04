@@ -57,16 +57,22 @@ Start from `sw = IRSwaption("Pay", "10y", "USD", notional_amount=1e6, expiration
 
 ## Bond probes
 
-Start from `bd = Bond(identifier="<your identifier>", size=1e6, buy_sell="Buy")`.
+Start from `bd = Bond(identifier="<your identifier>", size=1e6, buy_sell="Buy")`. A bond's `Price` is its settlement-date market value: (clean + accrued at standard settlement) × face / 100, holder-signed, **not** discounted to the pricing date. The bond measures are imported the same way: `from pricebt.risk import AccruedInterest, CleanPrice, DirtyPrice, ModifiedDuration, Convexity, DaysToSettlement, RepoRate, RepoHaircut, FinancingToDate, ForwardPrice, Carry, RollDown`.
 
 | # | probe | how | expected | a miss usually means |
 |---|---|---|---|---|
-| B1 | **Price and yield round trip** | price the bond in your library at pricebt's `IRFwdRate` (converted to the library's yield convention) | the library's price = pricebt `Price` (dirty, per face amount) | clean vs dirty, per 100 vs per face, compounding convention of the yield |
+| B1 | **Price and yield round trip** | price the bond in your library at pricebt's `IRFwdRate` (converted to the library's yield convention) for standard settlement | the library's invoice amount = pricebt `Price` (dirty, per face amount, at settlement) | clean vs dirty, per 100 vs per face, compounding convention of the yield, a value discounted to the trade date |
 | B2 | **dv01 matches a yield bump** | price at yield ±1bp in your library: `(P(y+1bp) − P(y−1bp)) / 2` | = `IRDelta` scalar = `LightningDV01`, negative for a long bond | risk per −1bp, per 100 face, a curve delta with dy/dz ≠ 1 |
-| B3 | **Convexity** | `P(y+1bp) + P(y−1bp) − 2P(y)` | = `IRGammaParallel` (per bp²), positive | convexity per 100 or per (1%)², or halved |
-| B4 | **Accrued on a coupon date** | the library's accrued the day before and on a coupon date | resets to ~0 on the coupon date; the dirty `Price` drops by the coupon | ex-coupon or record-date conventions differ; `Price` never drops (then `Cashflows` must be empty) |
-| B5 | **Carry over one day with the yield fixed** | the library's price at t+1 at the *same* yield, plus any coupon paid in (t, t+1] | − P(t) = `Theta` | theta per year, a rolled curve instead of a fixed yield |
-| B6 | **Cashflows** | the library's schedule for the trade | same dates and amounts as `Cashflows`, holder-signed, principal included | a missing principal row, amounts per 100 |
+| B3 | **Convexity** | `P(y+1bp) + P(y−1bp) − 2P(y)` | = `IRGammaParallel` (per bp²), positive; `1e8 × IRGammaParallel / Price` = `Convexity` | convexity per 100 or per (1%)², or halved |
+| B4 | **Accrued and the coupon drop** | the library's accrued and invoice amount on the trade dates around a coupon | `AccruedInterest` resets to ~0 once settlement reaches the coupon date; `Price` drops the coupon on the trade date whose settlement is on or after the coupon date (T+1: the business day before a business-day coupon date), which is the `Cashflows.payment_date` | ex-coupon or record-date conventions differ; the drop placed on the coupon date itself (settlement ignored) |
+| B5 | **Theta with the yield fixed** | from t to the next business day nb: the library's invoice at nb at the *same* yield, plus any coupon `Price` drops in (t, nb], minus P(t), divided by the calendar days (nb − t) | = `Theta` (per calendar day; a Friday spreads the step over 3 days) | theta per year, per business day, a rolled curve instead of a fixed yield, financing included (it belongs in `FinancingToDate`) |
+| B6 | **Cashflows** | the library's schedule for the trade | same amounts as `Cashflows`, holder-signed, principal included; `payment_date` the drop date of B4 | a missing principal row, amounts per 100, the coupon date used as `payment_date` |
+| B7 | **Clean, dirty, accrued** | the library's clean price and accrued for standard settlement | `CleanPrice` = the quoted clean price; `CleanPrice + 100 × AccruedInterest / face = DirtyPrice = 100 × Price / face`; `FairPremium = Price`; `PremiumCents` (pct) `= DirtyPrice` | accrued per 100 instead of in currency, an unsigned face, a clean price returned as `Price` |
+| B8 | **Settlement lag** | `DaysToSettlement` on a Monday, a Friday and the day before a holiday | US Treasuries T+1: 1, 3, and the calendar days to the next good day | business days counted, the wrong calendar, scaling with size |
+| B9 | **One day of repo** | `FinancingToDate` on the trade date and the next business day | 0, then `−(1 − h) × Price(t₀) × RepoRate × days / basis` for a long (days between the two settlement dates; basis 360 for USD repo); the opposite sign for a short | compounding, trade-date day counts, the principal re-read daily instead of pinned at resolve, the haircut applied the wrong way |
+| B10 | **Forward parity** | recompute `Price × (1 + RepoRate × τ(s, H)) − Σ C × (1 + RepoRate × τ(c, H))`, H = settlement + 1 calendar month (following business day), τ in the repo day count | = `ForwardPrice` | a forward to maturity, coupons in (s, H] not netted, the bond's day count used for τ |
+| B11 | **Carry and roll-down on a flat curve** | a flat curve at the yield, repo set to the yield in the same compounding, a horizon with no coupon | `Carry + RollDown ≈ 0`; `Carry = (Price − AccruedInterest) − (ForwardPrice − accrued at H)` | carry on the dirty price, roll-down on a re-fitted curve, a horizon other than H |
+| B12 | **Repo source** | `RepoRate` on a date when the bond trades special, against the desk's repo screen | the special rate if the config finances at special, else general collateral; a term rate stays at its trade-date level | GC used for a special issue (financing overstated), an overnight fixing where the trade is term |
 
 ## Bump probes by library shape
 

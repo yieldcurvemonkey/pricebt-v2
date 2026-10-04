@@ -128,7 +128,7 @@ In `GenericEngine._handle_cash`, inside the cash walk, after DEV-R1's off-grid p
    `Cashflows`, on `d` (a `Portfolio(...).calc` under `PricingContext(d)`; the pricing caches make repeats cheap).
 3. If it has a previous mark `p`: book `Σ payment_amount` of `Cashflows(p)` rows with `p < payment_date ≤ d`
    (`_cash_due`) plus `FinancingToDate(d) − FinancingToDate(p)` into `cash_dict[d]` in its currency (converted to
-   `result_ccy` with the FX config when set), record it in `backtest.holding_cash[d][name] = (ccy, cashflow,
+   `result_ccy` with the FX config when set), record it in `backtest.holding_cash[d][position] = (ccy, cashflow,
    financing)`, and move the accrual anchor (`current_value`) to `d` as a cash payment does.
 4. A present position's mark becomes `d`; an exiting one's is dropped.
 
@@ -202,3 +202,44 @@ Each one-line mutation was applied, the named test run and seen to fail, and the
 | M11 | `"Price"` added to `PRICEBT_MEASURES` (a pricebt measure shadowing gs) | `tests/test_gs_api_parity.py::test_no_unexpected_extra_risk_measures` |
 | M12 | `Carry` added to `ZERO_BY_CONVENTION["Bond"]` | `tests/test_contracts.py::test_strict_classes_and_shared_constants` |
 | M13 | the `days` kind made non-intensive | `tests/test_contracts.py::test_new_bond_rows_units_and_intensivity` |
+
+**Phase S review fixes (commit `156554a`):**
+
+| # | Mutation | Failing test |
+|---|---|---|
+| M14 | holding-cash record keyed by the position's name | `tests/test_holding_cash.py::test_two_positions_with_the_same_name_keep_their_own_records` |
+| M15 | flows converted at the mark date, not their payment date | `tests/test_holding_cash.py::test_converted_flows_do_not_depend_on_the_grid` |
+| M16 | flows and financing in two currencies silently added | `tests/test_holding_cash.py::test_flows_and_financing_in_two_currencies_need_result_ccy` |
+
+**Phase T (toy, commits `ef5a2d5`, `d90970b`; all in `tests/toylib/bond.py` or the toy config):**
+
+| # | Mutation | Failing test (`tests/test_toylib_bond.py::` unless named) |
+|---|---|---|
+| T1 | settle T+0 | `test_accrued_over_a_coupon_date_and_clean_plus_accrued_is_dirty`, `test_price_is_the_settlement_value_at_the_yield_and_the_yield_is_z_plus_spread` |
+| T2 | Price discounted to t, not to settlement | `test_price_is_the_settlement_value_at_the_yield_and_the_yield_is_z_plus_spread` |
+| T3 | the special dropped | `test_financed_totals_over_a_coupon_date`, `test_forward_price_parity`, `test_repo_terms_and_financing_to_date_day_loop` |
+| T4 | ACT/365 repo | `test_financed_totals_over_a_coupon_date`, `test_forward_price_parity` |
+| T5 | coupon reinvestment dropped from ForwardPrice | `test_forward_price_parity` |
+| T6 | duration τ from t | `test_duration_and_convexity_are_finite_differences_of_price_from_yield` |
+| T7 | RollDown without AI(H) | `test_carry_plus_roll_down_is_zero_when_the_repo_matches_the_yield_on_a_flat_curve` |
+| T8 | Theta per step, not per day | `test_theta_times_step_days_is_the_constant_yield_change_to_the_next_weekday` |
+| T9 | Theta without the dropped flows | same |
+| T10 | weekend repo at its own date's fixing | `test_repo_terms_and_financing_to_date_day_loop` |
+| T11 | principal without the haircut | `test_repo_terms_and_financing_to_date_day_loop`, `test_financed_totals_over_a_coupon_date` |
+| T12 | unsigned principal | `test_long_and_short_are_symmetric` |
+| T13 | `Cashflows.payment_date` = the coupon date | `test_financed_totals_over_a_coupon_date`, `tests/test_pnl_ir.py::test_b_bond_cashflow_pnl_is_the_coupon_on_exactly_the_coupon_steps` |
+| T14 | accrued at t, not settlement | `test_accrued_over_a_coupon_date_and_clean_plus_accrued_is_dirty` |
+| T15 | `FinancingToDate` not scaled by quantity (yaml) | `test_quantity_scales_amounts_and_not_levels` |
+| T16 | RollDown keeps coupons paid in (s, H] | `test_forward_price_parity` |
+| T17 | RollDown on the forward curve, not the rolled curve | `test_roll_down_on_a_sloped_curve_rolls_the_curve_not_the_forwards` |
+| T18 | no maturity cap on financing | `test_financing_stops_at_maturity` |
+| T19 | accrued at t + 1 calendar day | `test_price_is_the_settlement_value_at_the_yield_and_the_yield_is_z_plus_spread` (Friday case) |
+| T20 | principal left out of the flows paid before H | `test_forward_price_when_the_bond_matures_before_the_horizon` |
+
+**Phase K (skills):** 36 mutations of the checker, `measures.py`, `attribution.py`, `spot_check.py`, `spec.py`,
+`tearsheet.py`, the bond template and the recipes, each failing a named test in `tests/skills/`. Two examples:
+the bond clean/dirty row comparing clean with itself fails
+`test_skill_check_asset_ir.py::test_broken_ir_fixture_fails_its_row[bad_bond_clean_dirty]`, and `financing_pnl`
+treated as an attribute fails `test_skill_pnl_attribution.py::test_financed_bond_books_its_coupon_and_repo_as_cash_and_explains_them`.
+The four bond fixtures (`bad_bond_{dv01_positive,financing_sign,clean_dirty,forward_parity}.yaml`) each FAIL only
+their own row; `tests/skills/fixtures/check_asset/regenerate_bond_fixtures.py` rebuilds them from the toy config.

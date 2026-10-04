@@ -2,7 +2,7 @@
 
 Each pattern is a fragment of an asset config. Names such as `platform`, `client.market(...)` and `lib.Curve` stand for **your** library's calls. They are placeholders, not a real API. Injected names (`pricebt_date`, `market`, `kwargs`, `resolved`, `trade`, `trades`, `weights`, `pricebt_quantity`, `pricebt_csa`, `pricebt_bump_size`, `market_to`, ...) are defined in [`docs/v2/ASSET_CONFIG_GUIDE.md`](../../../docs/v2/ASSET_CONFIG_GUIDE.md).
 
-Patterns 1-13 are config mechanics. Patterns 14-27 are the **measure recipes** for the IR contract (`src/pricebt/risk/contracts.py`). Each one is implemented, as tested code, in the contract templates of [`pricebt-connect-pricing-library`](../../pricebt-connect-pricing-library/SKILL.md) (`skills/pricebt-connect-pricing-library/references/config-template.yaml`, `config-template-swaption.yaml`, `config-template-bond.yaml`). The recipe names below (`own_rate_delta`, `theta_one_day`, ...) are those templates' helpers.
+Patterns 1-13 are config mechanics. Patterns 14-27 and 29-33 are the **measure recipes** for the IR contract (`src/pricebt/risk/contracts.py`); 30-33 are the Bond's analytics and repo financing. Each one is implemented, as tested code, in the contract templates of [`pricebt-connect-pricing-library`](../../pricebt-connect-pricing-library/SKILL.md) (`skills/pricebt-connect-pricing-library/references/config-template.yaml`, `config-template-swaption.yaml`, `config-template-bond.yaml`). The recipe names below (`own_rate_delta`, `theta_one_day`, ...) are those templates' helpers.
 
 **Injected names reach nested scopes.** A generator, comprehension or lambda inside an `expr` (`'sum(lib.pv(market, t) * w for t, w in zip(trades, weights))'`) sees every injected name (fixed on v2-ir-risk: an expression is evaluated with the injected names as globals). A `code:` helper does not: it sees only its asset's namespace, so pass `market` (or `trade`, ...) in as an argument. pricebt finds a pass-through parameter (`pricebt_bump_size`, ...), `market_to`/`pricebt_to_date` and an attribute's `market` anywhere in the expression, a lambda or generator included.
 
@@ -202,45 +202,43 @@ code: |
 
 # Measure recipes (the IR contract)
 
-## 14. The measure contract: map (IRSwap, IRSwaption) or map or declare (Bond)
+## 14. The measure contract: map every row (IRSwap, IRSwaption, Bond)
 
-An `IRSwap` or `IRSwaption` config loads only if **every** (measure, form) of its class's contract
-is **mapped** with an allowed unit: these are the strict classes (`contracts.STRICT_CLASSES`,
-`docs/v2/IR_STRICT_CONTRACT.md`), and declaring a contract measure, one of its forms, or a preset of
-one is itself a load error. A `Bond` config maps each row or declares it (DEV-I11). Print a contract
-with `python skills/pricebt-risk-measures/scripts/measures.py contract IRSwap`.
+An `IRSwap`, `IRSwaption` or `Bond` config loads only if **every** (measure, form) of its class's
+contract is **mapped** with an allowed unit: every class with a contract is strict
+(`contracts.STRICT_CLASSES`, `docs/v2/IR_STRICT_CONTRACT.md`, `docs/v2/BOND_DESIGN.md`), and
+declaring a contract measure, one of its forms, or a preset of one under `unsupported_measures:` is
+itself a load error. `unsupported_measures:` is legal only for a class without a contract
+(`ConfigInstrument`), where a request for a declared measure raises `UnsupportedMeasureError`.
+Print a contract with `python skills/pricebt-risk-measures/scripts/measures.py contract Bond`.
 
 ```yaml
 risk_measures:
   IRVega: {scalar: vega, bucketed: vega_cube}                    # mapped: the unit must be ccy_per_bp
-# a Bond only -- on an IRSwap/IRSwaption this block is a load error:
-unsupported_measures:
-  LightningOAS: "yourlib has no OAS model for this bond"                                         # every form
-  IRDelta: {bucketed: "yourlib has no key-rate bump"}                                            # one form
 ```
 
-- **No escape hatch for swaps and swaptions.** A measure your library has no call for is still
-  computable from PV, a curve shift and a valuation date (patterns 16-29; the connect skill's
-  templates derive every row from a handful of primitives). A literal constant (`'0.0'`, `'{}'`) is
-  honest only where the contract defines the value as 0, `contracts.ZERO_BY_CONVENTION` (pattern
-  15); the checker FAILs any other one (`ir_fake_constant`).
+- **No escape hatch.** A measure your library has no call for is still computable from PV, a curve
+  or yield shift and a valuation date (patterns 16-33; the connect skill's templates derive every
+  row from a handful of primitives). A literal constant (`'0.0'`, `'{}'`) is honest only where the
+  contract defines the value as 0, `contracts.ZERO_BY_CONVENTION` (pattern 15); the checker FAILs
+  any other one (`ir_fake_constant`).
 
 - **Units by kind.** `ccy` for Price, Theta and Annuity; `ccy_per_bp` for first-order sensitivities;
   `ccy_per_bp2` for second-order ones. Rates and vols are `bp`, `pct` or `decimal` and must be
   intensive (the default for those units). `ExpiryInYears` and `ProbabilityOfExercise` take
-  `decimal`: `number` is extensive by default, so it fails "must be intensive". Cashflows is
-  `returns: frame` (pattern 23).
-- **One error lists every gap.** For an IRSwap/IRSwaption it ends with a paste-ready **mapping
-  skeleton** (`contracts.mapping_skeleton`): a `functions:` / `portfolio_functions:` stub per missing
-  form with an allowed unit, and the `risk_measures:` lines. Merge each section into yours and write
-  every `expr`: the stub `... TODO` is a syntax error on purpose, so an unfinished skeleton never
-  loads. For a Bond it ends with an `unsupported_measures:` block: paste it and replace each `TODO`
-  reason (any non-empty reason loads, so a leftover `TODO` loads too: the checker flags it).
+  `decimal`: `number` is extensive by default, so it fails "must be intensive". `DaysToSettlement`
+  allows only `number`, so it needs `scale_with_quantity: false`. Cashflows is `returns: frame`
+  (pattern 23).
+- **One error lists every gap** and ends with a paste-ready **mapping skeleton**
+  (`contracts.mapping_skeleton`): a `functions:` / `portfolio_functions:` stub per missing form with
+  an allowed unit, and the `risk_measures:` lines. Merge each section into yours and write every
+  `expr`: the stub `... TODO` is a syntax error on purpose, so an unfinished skeleton never loads.
 - **Preset keys count.** `IRDeltaParallel: dv01` counts as the `IRDelta` scalar and also prices
-  `IRDelta(aggregation_level='Type')`. On a Bond, declare the **base** measure, never a preset: a
-  declared preset loads with a warning and declares nothing.
-- **A mapping wins over a declaration** of the same form on a Bond, with a `UserWarning` about a
-  stale declaration. On an IRSwap/IRSwaption the same declaration is a load error. Remove it.
+  `IRDelta(aggregation_level='Type')`.
+- **A mapping wins over a declaration** of the same form, with a `UserWarning` about a stale
+  declaration, but only for a measure outside the class's contract (any measure, for a class
+  without a contract). Declaring a contract measure is a load error whether it is mapped or not.
+  Remove it.
 - Measure names outside the contract (a custom `IRTheta`, say) are unrestricted. Classes without a
   contract (`FXOption`, `EqOption`, `InflationSwap`, `Cash`, `FXForward`, `ConfigInstrument`)
   need only `Price`.
@@ -248,8 +246,10 @@ unsupported_measures:
 ## 15. Zero by convention (swaps and bonds)
 
 gs answers every IR measure on every IR instrument, and a swap's vega really is 0. On swaps and
-bonds, **map** these (a swap cannot declare them; a bond should not). For an IRSwap they are exactly
-`contracts.ZERO_BY_CONVENTION["IRSwap"]`; for an IRSwaption only `IRBasis` and `IRXccyDelta`:
+bonds, **map** these (no contract class can declare them). For an IRSwap and a Bond they are
+exactly `contracts.ZERO_BY_CONVENTION["IRSwap"]` and `["Bond"]` (the vol rows, `IRBasis`,
+`IRXccyDelta`; each entry carries its reason, e.g. "a bullet bond has no optionality"); for an
+IRSwaption only `IRBasis` and `IRXccyDelta`:
 
 ```yaml
 functions:
@@ -262,8 +262,7 @@ portfolio_functions:
 
 Why: `pnl_explain` and `aggregate` need every held instrument to answer every measure of a
 definition. A swaption book hedged with swaps under `swaption_pnl_definition` asks the swaps for
-vega. A Bond may still declare these unsupported, but that breaks mixed books with vol attribution
-(R2-8). `IRBasis` and `IRXccyDelta` are zero only if your library really has one curve and one
+vega (R2-8). `IRBasis` and `IRXccyDelta` are zero only if your library really has one curve and one
 currency. A multi-curve library maps the real basis delta (shift the projection-minus-discount
 spread). Keep the zero vol's unit equal to your swaption configs' vol unit.
 
@@ -359,9 +358,11 @@ The contract (DEV-I15) is one calendar day of carry, total return, with the own 
 - **Not Theta:** a curve rebuilt at t+1 from today's zero rates (that is roll-down: the forwards
   move); a per-year number (`IRTheta` = 365 x `Theta`); a per-business-day number (a Friday's
   theta is still one calendar day); a theta without the day's coupon.
-- **Bonds:** the same yield one day later: `lib_pv_at_yield(t, y, d+1) + coupons paid in (d, d+1]
-  - PV(d)`. That is about PV·y/365, and exactly PV·(exp(y/365) - 1) for a continuously compounded
-  yield between coupons.
+- **Bonds:** a bond's Price is a settlement-date value, so one calendar day can move settlement by
+  0 or 3 days. The contract spreads the step to the next business day nb at the **same yield**:
+  `Theta = [Price(nb, same y) + flows Price drops in (t, nb] - Price(t)] / (nb - t).days`, so
+  `Theta x step days` is exact on a business-day grid. That is about Price·y/365 per calendar day.
+  Financing is not in Theta (`FinancingToDate`, pattern 31).
 - **The cash term** matters only when Price drops paid flows (pattern 23). For a total-return
   Price, Cashflows is empty and the term is 0.
 - `ir_pnl_definition` books theta as `Theta x ΔExpiryInYears x -365`. That factor is right only for
@@ -403,9 +404,9 @@ def multi_curve_ladder(m, trades, weights):
     return rows
 ```
 
-**PnlExplain** is a contract row for IRSwap and IRSwaption (its **bucketed** form: the loader puts
-a `returns: buckets` portfolio function in the bucketed slot, so `PnlExplain: pnl_explain` satisfies
-it) and optional for a Bond (gs 030007). `PnlExplain(CloseMarket(date=to))` maps to a buckets
+**PnlExplain** is a contract row for IRSwap, IRSwaption and Bond (its **bucketed** form: the loader
+puts a `returns: buckets` portfolio function in the bucketed slot, so `PnlExplain: pnl_explain`
+satisfies it; a bond labels the curve move `IR` and its spread move, e.g., `CREDIT`). `PnlExplain(CloseMarket(date=to))` maps to a buckets
 portfolio function that also receives `market_to` (the target date's market) and
 `pricebt_to_date`. Its expression must name one of them (DEV-M2). It is a full revaluation by risk
 factor, with no time component:
@@ -457,7 +458,8 @@ risk_measures:
 
   | Price convention | Cashflows | Theta's cash term | Backtest Total |
   |---|---|---|---|
-  | drops each flow on its payment date (most libraries; the toy bond) | the future flows | the flow paid tomorrow | falls by the coupon on its payment date: pricebt books no coupon cash (gs parity). Use `BackTest.pnl_explain_table()`: `economic_pnl = actual_pnl + cashflow_pnl` |
+  | drops each flow on its payment date (most libraries) | the future flows | the flow paid tomorrow | falls by the coupon on its payment date: pricebt books no coupon cash (gs parity). Use `BackTest.pnl_explain_table()`: `economic_pnl = actual_pnl + cashflow_pnl` |
+  | a Bond (the settlement-date value) | the flows still in Price; `payment_date` = the **trade date** Price drops the flow (T+1: the business day before a business-day coupon date) | the flows dropped over the step to the next business day | continuous: a position whose asset maps `FinancingToDate` (every Bond) has the engine book the dropped flows and the financing as cash (DEV-E22) |
   | total return: never drops a paid flow (the toy swap) | empty | 0 | continuous |
 
 - **Tables are skipped by the summaries.** `result_summary`, `risk_summary`, `summary_stats` and
@@ -543,12 +545,12 @@ functions:
 - **The own rate is the yield to maturity** (DEV-I12). `IRFwdRate` = `IRSpotRate` = the yield.
   The `IRDelta` scalar = `LightningDV01` = dPV/dy by yield bumps (long < 0). `IRGammaParallel` =
   d²PV/dy² (pattern 17). Theta is at a constant yield (pattern 20).
-- **Price** is the holder-signed DIRTY PV of the unpaid flows (dirty price / 100 x face). Clean
-  price and accrued interest are extra functions if you want them as series; they are not in the
-  contract.
-- **Quoted prices only.** A bond marked only by a quoted price has no curve to shift. Compute its
-  Z-spread once and shift the curve holding it, or declare `IRDiscountDeltaParallel`, the `IRDelta`
-  ladder and `IRGamma` with that reason.
+- **Price** is the holder-signed **settlement-date market value**: (clean + accrued at standard
+  settlement) x face / 100, never discounted back to the pricing date (DEV-I20). `FairPremium` is
+  the same number; `CleanPrice`, `DirtyPrice` and `AccruedInterest` are contract rows (pattern 30).
+- **Quoted prices only.** A bond marked only by a quoted price has no curve to shift. Solve its
+  Z-spread over a reference curve once per date and shift the curve holding it: that gives
+  `IRDiscountDeltaParallel`, the `IRDelta` ladder and `IRGamma`. Every row must still be mapped.
 
 ## 28. P&L explain functions (gamma, theta, year_fraction, cash_paid_to_date)
 
@@ -639,7 +641,8 @@ cumulative value -- PNL_EXPLAIN_PLAN.md section 2.5).
 
 ## 29. The rest of the strict contract: ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate, CRIFIRCurve
 
-IRSwap and IRSwaption also map these rows (`docs/v2/IR_STRICT_CONTRACT.md` R3-1, DEV-I19). All are
+IRSwap and IRSwaption also map these rows (`docs/v2/IR_STRICT_CONTRACT.md` R3-1, DEV-I19); a Bond
+maps them with its own contract text (pattern 33: its `FairPremium` and `ForwardPrice` differ). All are
 holder-signed and per unit trade, and every one derives from measures you already have. The worked
 recipes are `par_spread_bp`, `fair_premium`, `forward_value`, `compounded_rate_bp` and `crif_frame`
 in [`config-template.yaml`](../../pricebt-connect-pricing-library/references/config-template.yaml)
@@ -678,3 +681,242 @@ risk_measures:
 
 `PnlExplain` is the eighth new row (pattern 22). A pillar that is not a SIMM tenor (`4Y`) needs your
 ladder bumped at the SIMM tenors for CRIF; the template's `crif_frame` raises rather than guess.
+
+---
+
+# Bond analytics and repo financing (the Bond contract)
+
+A `Bond` config maps 40 rows (`docs/v2/BOND_DESIGN.md` section 3; the exact texts are in
+`src/pricebt/risk/contracts.py`). Patterns 30-33 cover the rows a swap does not have. The helpers
+below use placeholder primitives (`lib_*`) for your library; `resolved` holds the plain terms
+`resolve` pinned (pattern 27): `face` (signed), `coupon` (decimal), `frequency`, `maturity`, and
+the financing terms of pattern 31. The runnable reference is `tests/toylib/bond.py` with
+`tests/assets/toy_usd_bond.yaml`; the template is
+[`config-template-bond.yaml`](../../pricebt-connect-pricing-library/references/config-template-bond.yaml).
+
+## 30. Accrued, clean and dirty price, yield, duration, convexity, settlement
+
+```yaml
+functions:
+  npv:            {expr: 'price_settle(market, resolved)', unit: ccy}                       # Price and FairPremium
+  dirty_price:    {expr: '100.0 * price_settle(market, resolved) / resolved["face"]', unit: pct}
+  accrued:        {expr: 'accrued_at(resolved, settle_date(market, pricebt_date))', unit: ccy}
+  clean_price:    {expr: '100.0 * (price_settle(market, resolved) - accrued_at(resolved, settle_date(market, pricebt_date))) / resolved["face"]', unit: pct}
+  yield_bp:       {expr: 'lib_yield(market, resolved) * 1e4', unit: bp}                    # vendor: decimal -> pricebt: bp
+  mod_duration:   {expr: 'yield_duration(market, resolved)[0]', unit: decimal}
+  convexity:      {expr: 'yield_duration(market, resolved)[1]', unit: decimal}
+  days_to_settle: {expr: '(settle_date(market, pricebt_date) - pricebt_date).days', unit: number, scale_with_quantity: false}
+risk_measures:
+  Price: npv
+  FairPremium: npv
+  IRFwdRate: yield_bp            # the yield to maturity IS the own rate (DEV-I12): no separate yield measure
+  IRSpotRate: yield_bp
+  DirtyPrice: dirty_price
+  CleanPrice: clean_price
+  AccruedInterest: accrued
+  ModifiedDuration: mod_duration
+  Convexity: convexity
+  DaysToSettlement: days_to_settle
+```
+
+```python
+def settle_date(m, d):
+    """Standard settlement of trade date d: the settlement lag in business days of the bond's
+    calendar (US Treasuries: T+1)."""
+    return lib_add_business_days(m, d, SETTLEMENT_LAG)
+
+def price_settle(m, r):
+    """Holder-signed (clean + accrued) x face / 100 at standard settlement, NOT discounted to the
+    pricing date (DEV-I20). A library that returns a PV at the pricing date: divide by DF(settle)."""
+    return lib_dirty_price(m, r) * r["face"] / 100.0
+
+def accrued_at(r, s):
+    """Holder-signed coupon accrued from the last coupon date to settlement s (US Treasuries:
+    ACT/ACT ICMA, i.e. c/f x days accrued / days in the period); 0 on a coupon date, after maturity."""
+    period = lib_coupon_period(r, s)               # (last, next) coupon dates around s, or None after maturity
+    if period is None or s == period[0]:
+        return 0.0
+    last, nxt = period
+    return r["face"] * r["coupon"] / r["frequency"] * (s - last).days / (nxt - last).days
+
+def yield_duration(m, r, h=1e-4):
+    """ModifiedDuration -(1/P) dP/dy and Convexity (1/P) d2P/dy2 by bumping the YIELD (decimal) in
+    the IRFwdRate convention; P the dirty settlement value. 0 when dead."""
+    y = lib_yield(m, r)
+    p0, pu, pd = (lib_value_at_yield(m, r, y + k) for k in (0.0, h, -h))
+    if p0 == 0.0:
+        return 0.0, 0.0
+    return -(pu - pd) / (2.0 * h * p0), (pu + pd - 2.0 * p0) / (h * h * p0)
+```
+
+- **Identities:** `CleanPrice + 100 x AccruedInterest / face = DirtyPrice`;
+  `DirtyPrice x face / 100 = Price = FairPremium`. The signed face makes `DirtyPrice` and
+  `CleanPrice` the same for a long and a short, while `AccruedInterest` is holder-signed. Dead
+  (Price 0): `DirtyPrice` and `CleanPrice` are 0.
+- **One yield convention** for `IRFwdRate`, `ModifiedDuration` and `Convexity`. With a semiannual
+  street yield, modified = Macaulay / (1 + y/2); with a continuous yield they are equal.
+- **Settlement is calendar days.** `DaysToSettlement` is 1 for a T+1 weekday and 3 on a Friday or
+  before a holiday. Its kind allows only `number`, which is extensive by default, so
+  `scale_with_quantity: false` is required.
+- **Verify:** `ModifiedDuration ≈ -1e4 x IRDelta / Price`, `Convexity ≈ 1e8 x IRGammaParallel /
+  Price`, a price ↔ yield round trip, the accrued across a coupon date (0 on it). The checker's
+  bond pack rows `bond_clean_dirty`, `bond_fair_premium`, `bond_duration`, `bond_convexity`,
+  `bond_settlement` and `bond_accrued_over_coupon` test these.
+
+## 31. Repo financing: RepoRate, RepoHaircut, FinancingToDate
+
+The financing contract (DEV-I21) is required: a Bond config without these rows does not load. The
+config decides overnight vs term and GC vs special; the contract fixes what each number means.
+Financing terms are kwargs with config defaults, pinned by `resolve`:
+
+```yaml
+defaults:
+  repo_term: overnight           # or term: the rate is locked at the trade date
+  repo_haircut: 0.02             # decimal: 2% of the settlement value is not financed
+functions:
+  repo_rate:    {expr: 'repo_fixing(market, resolved, pricebt_date) * 1e4', unit: bp}
+  repo_haircut: {expr: 'resolved["haircut"]', unit: decimal}
+  financing:    {expr: 'financing_to_date(market, resolved, pricebt_date)', unit: ccy}
+risk_measures:
+  RepoRate: repo_rate
+  RepoHaircut: repo_haircut
+  FinancingToDate: financing
+```
+
+```python
+def pin_financing(m, r, kwargs, trade_date):
+    """Called at the end of resolve (the trade date's market). The principal is pinned here, never
+    re-read on later dates: (1 - haircut) x Price on the trade date, per resolved face."""
+    r["settle0"] = settle_date(m, trade_date)
+    r["haircut"] = float(kwargs.get("repo_haircut", 0.02))
+    r["repo_term"] = kwargs.get("repo_term", "overnight")
+    r["term_rate"] = lib_term_repo_rate(m, r) if r["repo_term"] == "term" else None
+    r["principal"] = (1.0 - r["haircut"]) * price_settle(m, r)
+    return r
+
+def repo_fixing(m, r, x):
+    """The simple rate (decimal) charged for calendar day x: the pinned term rate, or the overnight
+    fixing of the last business day on or before x, GC minus the issue's special spread."""
+    if r["repo_term"] == "term":
+        return r["term_rate"]
+    day = lib_business_day_on_or_before(m, x)
+    return lib_gc_fixing(m, day) - lib_special_spread(m, r, day)   # point in time: no fixing after m's date
+
+def financing_to_date(m, r, d):
+    """Cumulative repo interest, holder-signed: -principal x sum over calendar days x in
+    [settle0, min(settle(d), maturity)) of repo_fixing(x) / basis. A long pays (<= 0), a short
+    receives (>= 0); 0 on the trade date."""
+    end = min(settle_date(m, d), r["maturity"])
+    x, acc = r["settle0"], 0.0
+    while x < end:
+        acc += repo_fixing(m, r, x) / REPO_BASIS             # USD: ACT/360
+        x += datetime.timedelta(days=1)
+    return -r["principal"] * acc
+```
+
+- **Cumulative, not per day.** The engine books `FinancingToDate(d) − FinancingToDate(p)` as cash
+  on each date it marks or exits the position (DEV-E22), recorded in
+  `backtest.holding_cash[d][position] = (ccy, cashflow, financing)`. A cumulative level telescopes, so
+  the booked total is exact on any grid (`tests/test_holding_cash.py`).
+- **Finite on every held date.** A missing fixing makes the market `None` (the date drops), never a
+  NaN. Read fixings from the market of `m`'s date or earlier: no look-ahead. With T+1 the last day
+  charged is at most the pricing date; with a longer lag the days after it have no fixing yet, so
+  charge them the pricing date's rate.
+- **GC vs special.** An on-the-run issue often trades special (a lower rate): GC for it overstates
+  the funding cost. **Term vs overnight:** a term rate is pinned at resolve; an overnight rate
+  re-fixes each business day.
+- **No `cash_accrual` on top.** The cash balance already holds the funding loan (−Price at entry);
+  a `cash_accrual` model would charge it again, and the engine warns (error catalogue). Model the
+  haircut capital's funding, if you want it, inside `FinancingToDate`.
+- **Verify:** over one weekday `ΔFinancingToDate = −(1 − h) x Price(t₀) x RepoRate x days / basis`;
+  a short is the exact negative of a long. Checker rows `bond_repo`, `bond_financing` and
+  `bond_holding_cash`.
+
+## 32. ForwardPrice, Carry and RollDown
+
+H, the carry horizon, is the standard settlement date s plus one calendar month, rolled to the
+following business day. `RepoRate` is held flat to H.
+
+```yaml
+functions:
+  forward_price: {expr: 'forward_price(market, resolved, pricebt_date)', unit: ccy}
+  carry:         {expr: 'carry(market, resolved, pricebt_date)', unit: ccy}
+  roll_down:     {expr: 'roll_down(market, resolved, pricebt_date)', unit: ccy}
+risk_measures:
+  ForwardPrice: forward_price
+  Carry: carry
+  RollDown: roll_down
+```
+
+```python
+def horizon(m, s):
+    return lib_following_business_day(m, s + dateutil.relativedelta.relativedelta(months=1))
+
+def _tau(a, b):
+    return (b - a).days / REPO_BASIS                       # the repo day count
+
+def forward_price(m, r, d):
+    """Price x (1 + RepoRate x tau(s, H)) - sum over flows c paid in (s, H] of C x (1 + RepoRate x
+    tau(c, H)); holder-signed; 0 when dead."""
+    s = settle_date(m, d)
+    flows = [(p, a) for p, a in lib_flows(r) if p > s]     # (payment date, holder-signed amount)
+    if not flows:
+        return 0.0
+    h, rate = horizon(m, s), repo_fixing(m, r, d)
+    paid = sum(a * (1.0 + rate * _tau(p, h)) for p, a in flows if p <= h)
+    return price_settle(m, r) * (1.0 + rate * _tau(s, h)) - paid
+
+def carry(m, r, d):
+    """Clean value now minus clean forward value at H = coupon income over (s, H] minus financing."""
+    s = settle_date(m, d)
+    if not [p for p, _ in lib_flows(r) if p > s]:
+        return 0.0
+    h = horizon(m, s)
+    return (price_settle(m, r) - accrued_at(r, s)) - (forward_price(m, r, d) - accrued_at(r, h))
+
+def roll_down(m, r, d):
+    """Clean value at H on the reference curve rolled down (each flow keeps today's discount for the
+    same time to payment; the spread held) minus clean value now."""
+    s = settle_date(m, d)
+    if not [p for p, _ in lib_flows(r) if p > s]:
+        return 0.0
+    h = horizon(m, s)
+    at_h = lib_value_rolled_down(m, r, h)                  # settlement-date value at H, curve shape held in time to maturity
+    return (at_h - accrued_at(r, h)) - (price_settle(m, r) - accrued_at(r, s))
+```
+
+- **Not the swap row.** A swap's or swaption's `ForwardPrice` is Price / DF(expiry) (pattern 29). A
+  bond's is the **financed** forward at H, at the repo rate.
+- **Signs** (holder-signed: a short's are the negatives). A long's `Carry` > 0 when the coupon
+  accrual over (s, H] exceeds the financing at `RepoRate`. `RollDown` is the pull to par at a
+  constant yield on a flat curve.
+- **The identity.** `Carry + RollDown` is the financed P&L to H if the curve does not move. On a
+  flat curve with the repo equal to the yield (same compounding, no coupon before H) it is 0.
+- **Roll-down curve.** Say in `description:` which reference curve you roll (the bond's fitted
+  curve, a par curve, a swap curve): different curves give different `RollDown` numbers.
+- **Verify:** checker rows `bond_forward_parity` and `bond_carry_roll`.
+
+## 33. The bond's other strict rows
+
+```yaml
+functions:
+  premium_cents:   {expr: '100.0 * price_settle(market, resolved) / abs(resolved["face"])', unit: pct}   # = DirtyPrice for a long
+  local_annuity:   {expr: 'annuity(market, resolved) / abs(resolved["face"])', unit: decimal}
+  compounded_rate: {expr: '((1 + resolved["coupon"] / resolved["frequency"]) ** resolved["frequency"] - 1) * 1e4', unit: bp}
+risk_measures:
+  FairPremium: npv               # Price itself: Price is already the settlement-date value
+  LightningDV01: delta           # the yield DV01 = the IRDelta scalar
+  PremiumCents: premium_cents
+  LocalAnnuityInCents: local_annuity
+  CompoundedFixedRate: compounded_rate
+```
+
+- `LightningOAS`: the option-adjusted spread over the reference curve; a bullet bond's is its
+  Z-spread. `ParSpread`: the par asset-swap spread (or the library's par spread). Both intensive.
+- `CRIFIRCurve`: the bond's own `IRDelta` ladder as SIMM rows (pattern 29's `crif_frame`); an empty
+  frame once the bond has matured.
+- `PnlExplain`: a buckets portfolio function (pattern 22) with an `IR` row (curves moved, spread
+  held) and, e.g., a `CREDIT` row (the spread moved), summing to `Price(market_to) − Price(market)`
+  on the pricing date.
+- **Verify:** `PremiumCents` (pct) = `DirtyPrice` for a long, `−DirtyPrice` for a short (checker row `bond_premium_cents`), `FairPremium`
+  = `Price` (`bond_fair_premium`), `LightningDV01` = the `IRDelta` scalar (`bond_lightning_dv01`).

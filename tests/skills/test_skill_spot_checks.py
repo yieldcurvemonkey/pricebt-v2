@@ -6,6 +6,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from pricebt.backtests.actions import AddTradeAction
@@ -187,3 +188,37 @@ def test_attribution_residual_info_pass_and_fail(session, monkeypatch):
     monkeypatch.setattr(BackTest, "pnl_explain_table", lambda self: poisoned)
     nan = spot_check.check_pnl_attribution_generic(bt)
     assert nan.status == "FAIL" and "PNL_theta" in nan.detail
+
+
+def _financed_bond_run(start=date(2024, 4, 1), end=date(2024, 6, 28)):
+    """The toy bond (its config maps FinancingToDate) re-entered monthly across its 2024-05-15 coupon:
+    the engine books the coupon and the repo interest as holding cash (pricebt DEV-E22)."""
+    from pricebt.instrument import Bond
+
+    bond = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD", name="bond")
+    trig = PeriodicTrigger(PeriodicTriggerRequirements(frequency="1m", end_date=end), [AddTradeAction(bond, "1m")])
+    return GenericEngine().run_backtest(Strategy(None, trig), start=start, end=end, frequency="1b", show_progress=False)
+
+
+def test_financed_bond_book_passes_and_tampered_holding_cash_fails(monkeypatch):
+    """Total change = Price change + coupons + financing on a financed book: the cash roll-forward
+    counts the holding cash, and check_holding_cash recomputes every booking from the config."""
+    session = PricebtSession.use(assets=[ROOT / "tests" / "assets" / "toy_usd_bond.yaml", ROOT / "tests" / "assets" / "toy_usd_irs.yaml"])
+    bt = _financed_bond_run()
+    assert any(c for day in bt.holding_cash.values() for _ccy, c, _f in day.values())  # the coupon is booked
+    res = _by_name(spot_check.run_spot_checks(bt, session=session, sample=10, rerun=_financed_bond_run))
+    for name in CORE + ["holding cash", "determinism"]:
+        assert res[name].status == "PASS", res[name]
+    assert "coupons 21,250.00" in res["holding cash"].detail
+    # the roll-forward needs the holding-cash term: without it every booking is a stray cash move
+    monkeypatch.setattr(spot_check, "_payments_by_date", lambda b: pd.Series(
+        {d: sum(sum(cp.cash_paid.values()) for cp in cps) for d, cps in b.cash_payments.items()}, dtype=float).sort_index())
+    assert spot_check.check_cash_rollforward(bt).status == "FAIL"
+    monkeypatch.undo()
+    d = next(d for d, day in bt.holding_cash.items() if day)
+    position = next(iter(bt.holding_cash[d]))  # keyed by the instrument
+    ccy, cash, fin = bt.holding_cash[d][position]
+    bt.holding_cash[d][position] = (ccy, cash, fin + 10.0)
+    tampered = spot_check.check_holding_cash(bt, spot_check._fresh_pricing(session), sample=10, seed=0)
+    assert tampered.status == "FAIL" and str(d) in tampered.detail
+    assert spot_check.check_holding_cash(_run(), spot_check._fresh_pricing(session), sample=10, seed=0).status == "INFO"  # a swap book: nothing booked

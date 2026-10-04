@@ -23,7 +23,7 @@ For each trade, write down the terms in the desk system's own vocabulary so both
 
 - swap: effective date, maturity, fixed rate, direction, notional;
 - swaption: expiry, underlying tenor, strike, payer/receiver, bought/sold, settlement;
-- bond: identifier, face amount, settlement.
+- bond: identifier, face amount, trade date and settlement date, and the repo terms (general collateral or special, overnight or term, haircut).
 
 ## Produce pricebt's numbers
 
@@ -48,7 +48,7 @@ print(svc.value(t, value_date, IRDelta, None).result())   # the ladder, if mappe
 print(svc.value(t, value_date, IRVega, None).result())    # the vol cube, '<tail>;<expiry>' keys
 ```
 
-To match a booked trade exactly, pass its absolute terms instead of tenors, for example `termination_date=date(2034, 1, 3)` and a decimal `strike`, so both sides value identical terms. For a bond, pass the booked identifier and face amount (`Bond(identifier=..., size=..., buy_sell="Buy")`).
+To match a booked trade exactly, pass its absolute terms instead of tenors, for example `termination_date=date(2034, 1, 3)` and a decimal `strike`, so both sides value identical terms. For a bond, pass the booked identifier and face amount (`Bond(identifier=..., size=..., buy_sell="Buy")`), plus whatever repo terms your config takes as kwargs, and value `CleanPrice`, `DirtyPrice`, `AccruedInterest`, `IRFwdRate` (the yield), `ModifiedDuration`, `Convexity`, `DaysToSettlement`, `RepoRate`, `RepoHaircut`, `FinancingToDate`, `ForwardPrice`, `Carry` and `RollDown` the same way.
 
 ## Produce the desk's numbers
 
@@ -70,14 +70,19 @@ Screenshots or report extracts are fine. Record the source, the date, and the ti
 | `IRGammaParallel` | 2-5% | per bp² of the own rate (chain rule); a desk gamma "per 1bp shift of the curve" differs |
 | `IRVega` | 1-2% | per +1bp of **normal** vol; convert a lognormal or per-1% desk vega before comparing |
 | `IRVanna`, `IRVolga` | 5-10% | finite-difference noise is large; compare signs and orders of magnitude first |
-| `Theta` | 2-5% | per calendar day, own rate and vol fixed, total return; a desk theta that rolls the curve differs by roll-down |
+| `Theta` | 2-5% | per calendar day, own rate and vol fixed, total return; a desk theta that rolls the curve differs by roll-down; a bond's `Theta` holds the yield fixed and excludes financing (that is `FinancingToDate`), so compare it with an unfinanced desk carry |
 | implied vol (`IRAnnualImpliedVol`) | 0.1bp | normal, at the strike; the daily vol is annual/√252 |
 | par rate / forward (`IRFwdRate`) | 0.1bp | in the unit the function declares |
-| bond clean / dirty price | 1e-6 per unit of face (0.0001 per 100) | `Price` is dirty; compare the clean price through your accrued function |
+| bond clean / dirty price | 1e-6 per unit of face (0.0001 per 100) | `Price` is the settlement-date dirty value (not discounted to the trade date); `CleanPrice` is the quote; `CleanPrice + 100 × AccruedInterest / face = DirtyPrice` |
+| accrued interest | 1e-8 × face | ACT/ACT ICMA for US Treasuries, to the standard settlement date, in currency and holder-signed |
 | bond yield | 0.1bp | state the compounding (continuous, semi-annual street) on both sides |
-| duration, convexity | 1% / 2% | convert: dv01 ≈ −modified duration × dirty price × 1e-4 × face; `IRGammaParallel` ≈ convexity × dirty price × 1e-8 × face |
+| duration, convexity | 1% / 2% | `ModifiedDuration` and `Convexity` in the `IRFwdRate` yield convention; convert: dv01 ≈ −modified duration × dirty price × 1e-4 × face; `IRGammaParallel` ≈ convexity × dirty price × 1e-8 × face |
+| settlement date | exact | `DaysToSettlement` in calendar days; the desk's settlement calendar |
+| repo rate and haircut | 0.5bp / exact | the desk's repo source for the same collateral (special or general collateral) and term; the haircut the desk's counterparty applies |
+| financing to date | 1e-6 relative | recompute: Σ over calendar days of `(1 − h) × Price(trade date) × RepoRate(day) / basis` (360 for USD repo) between the two settlement dates, holder-signed (a long pays); weekends use the last business day's fixing |
+| forward price, carry, roll-down | 1e-6 relative / desk tolerance | `ForwardPrice` by the contract formula to H = settlement + 1 calendar month; compare `Carry` and `RollDown` with the desk's carry-and-roll screen only after matching its horizon, repo and roll-down curve |
 | ladder buckets and vol cube | 2% per bucket, 1% on the sum | pillar labels must match the desk's; cube keys `'<tail>;<expiry>'` |
-| `Cashflows` | exact dates, 1e-6 relative amounts | holder-signed, only flows after the valuation date |
+| `Cashflows` | exact dates, 1e-6 relative amounts | holder-signed, only flows after the valuation date; a bond's `payment_date` is the trade date its `Price` drops the flow (T+1: the business day before a business-day coupon date), not the coupon date |
 
 Tighten the tolerances if both sides use the identical library call. Loosen them only with a written reason.
 
@@ -100,6 +105,7 @@ Keep the table next to the config or in the research log. The asset is validated
    - per +1bp vs per −1bp; per 1% vs per 1bp; decimal vs bp;
    - normal vs lognormal vol; per day vs per year theta;
    - total vs fixed-annuity delta;
-   - clean vs dirty price.
+   - clean vs dirty price; a settlement-date value vs one discounted to the trade date;
+   - general collateral vs special repo; overnight vs term; repo day count (ACT/360 for USD) vs the bond's.
 4. **Localise the error** with the relevant probe in [known-answer-probes.md](known-answer-probes.md).
 5. **Fix the config**, then rerun `skills/pricebt-verify-asset-config/scripts/check_asset.py` and this comparison.

@@ -20,7 +20,8 @@ Replace everything in `<angle brackets>`. Delete a section's hints once it is wr
 - **Idea and hypothesis:** <from the spec's `idea` and `hypothesis`, one sentence each>.
 - **Rule:** <archetype, signal and thresholds, rebalance, sizing>. <Instruments and notionals.>
 - **Period and data:** <start to end, frequency, in-sample end; asset configs; any missing-market dates dropped>.
-- **Frictions:** <cost model and level; cash accrual; initial value>.
+- **Frictions:** <cost model and level; cash accrual; initial value>. <Bonds: the repo the config uses (GC or special, overnight or term, haircut), and the coupon and repo-interest totals from `backtest.holding_cash`.>
+- **Total identity (financed books):** <the change in Total = ΔPV + coupons − repo interest (long), checked; no cash accrual on top>.
 - **Assumptions:** <the spec's `assumptions`: every default relied on>.
 
 ## Results
@@ -42,7 +43,7 @@ Replace everything in `<angle brackets>`. Delete a section's hints once it is wr
 
 Always include the pricebt caveats (the tearsheet lists them), and say whether each one matters for *this* strategy:
 
-- <Coupons paid between marks are not booked as cash: material for carry strategies and multi-year holds.>
+- <Coupons paid between marks are not booked as cash: material for carry strategies and multi-year holds. True for swaps and swaptions only; a bond's coupons and repo interest are booked as holding cash (DEV-E22), so say so instead for a bond book.>
 - <Same-close execution: material for fast signals; see the one-day-lag look-ahead result.>
 - <Costs and financing exactly as modelled: say what is missing (bid/ask on exit, funding, margin).>
 - <Missing-market dates dropped: how many, and whether any fell in the drawdown.>

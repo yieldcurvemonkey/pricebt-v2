@@ -1,8 +1,8 @@
-# Broken on purpose (check_asset fixture): the bond's IRDelta is the library's risk per -1bp (positive for a long bond) mapped without
-# negating. Must FAIL bond_dv01_sign.
+# Broken on purpose (check_asset fixture): the clean price adds the accrued instead of subtracting it. Must FAIL bond_clean_dirty and
+# nothing else.
 # Copy of tests/assets/toy_usd_bond.yaml with ONE thing broken: regenerate_bond_fixtures.py rewrites it from the toy.
 schema_version: 1
-asset: bad_bond_dv01_positive
+asset: bad_bond_clean_dirty
 description: >
   Toy USD fixed-coupon bond with repo financing on the deterministic rates world
   (tests/toylib/bond.py): a tiny bond master keyed by identifier, a flat curve plus a sinusoidal
@@ -33,7 +33,7 @@ resolve:
   expr: 'tb.resolve_bond(market, kwargs)'
 functions:
   npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # Price and FairPremium; valued on the pricing date (a CloseMarket override passes no time)
-  delta:           {expr: '-tb.delta(market, trade)', unit: ccy_per_bp}   # MISTAKE: per -1bp (long bond > 0)
+  delta:           {expr: 'tb.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
   yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
   gamma:           {expr: 'tb.gamma(market, trade)', unit: ccy_per_bp2}
@@ -52,7 +52,7 @@ functions:
   compounded_rate: {expr: 'tb.compounded_fixed_rate(trade)', unit: bp}
   crif_ir_curve:   {expr: 'tb.crif_ir_curve(market, trade)', unit: ccy, returns: frame, scale_columns: [Amount]}
   dirty_price:     {expr: 'tb.dirty_price(market, trade, pricebt_date)', unit: pct}
-  clean_price:     {expr: 'tb.clean_price(market, trade, pricebt_date)', unit: pct}
+  clean_price:     {expr: 'tb.dirty_price(market, trade, pricebt_date) + 100 * tb.accrued(market, trade, pricebt_date) / trade["face"]', unit: pct}   # MISTAKE: + accrued
   accrued:         {expr: 'tb.accrued(market, trade, pricebt_date)', unit: ccy}
   mod_duration:    {expr: 'tb.modified_duration(market, trade)', unit: decimal}
   convexity:       {expr: 'tb.convexity(market, trade)', unit: decimal}

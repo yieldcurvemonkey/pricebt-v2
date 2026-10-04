@@ -73,8 +73,13 @@ swaption, read from the resolved trade, so the asset config must map it under `a
 | `AggregateTransactionModel(transaction_models=(), aggregate_type=TransactionAggType.SUM)` | sum / max / min of the component costs |
 | `ConstantCashAccrualModel(rate=0, annual=True)` | cash grows `(1 + rate/365)^days` between cash dates; `Strategy(cash_accrual=...)` |
 | `DataCashAccrualModel(data_source=None, annual=True)` | as above with the rate read from `data_source` on each accrual start date |
+| holding cash (no model: an engine rule, DEV-E22) | for every held position whose asset maps `FinancingToDate` (every `Bond`), on each date the engine marks or exits it: the `Cashflows` rows dropped since its previous mark plus the change of `FinancingToDate`, booked as cash in the position's currency (or `result_ccy`). Recorded in `BackTest.holding_cash[d][position] = (ccy, cashflow, financing)`. Swaps and swaptions book nothing here (gs parity) |
 
-Costs appear (negative) in `result_summary["Transaction Costs"]`; `Total = price + Cumulative Cash + Transaction Costs`.
+Costs appear (negative) in `result_summary["Transaction Costs"]`; `Total = price + Cumulative Cash + Transaction Costs`. For a financed position `Cumulative Cash` includes the holding cash, so `Total` moves by ΔPV + coupons + ΔFinancingToDate (a long pays repo: ΔFinancingToDate ≤ 0).
+
+**Do not combine a cash-accrual model with a financed position.** The cash balance holds the funding loan (−Price at entry), so the accrual charges the funding a second time. The engine warns once: "a cash_accrual model accrues the whole cash balance, which for a financed position already holds its funding loan (-Price at entry): its FinancingToDate is booked as cash too, so the funding is counted twice (pricebt DEV-E22)".
+
+**Financed bond archetypes** (`periodic_roll` and `curve_trade` with a `Bond` leg; see [the catalogue](archetype-catalogue.md#swaption-and-bond-recipes)): financed carry and roll-down (`Carry`, `RollDown` to the horizon H = settlement + 1 calendar month as the ex-ante estimate; `RepoRate`, `RepoHaircut` as the financing terms) and bond vs swap (`ParSpread`, `LightningOAS`, or the bond's `IRFwdRate` minus the swap's as the spread).
 
 ## Strategy and engine
 
@@ -86,7 +91,7 @@ Costs appear (negative) in `result_summary["Transaction Costs"]`; `Total = price
   engine always adds its `price_measure` to `risks`. `pnl_explain` takes a `PnlDefinition`
   (`ir_pnl_definition`, `swaption_pnl_definition`, `bond_pnl_definition` or `fx_pnl_definition` from
   `pricebt.backtests.backtest_objects`); its measures are added to `risks`, and `BackTest.pnl_explain_table()`
-  then gives the per-step actual / cashflow / attributed / residual P&L.
+  then gives the per-step actual / cashflow / financing / attributed / residual P&L.
 - Signal data: `GenericDataSource(data_set=None, missing_data_strategy=MissingDataStrategy.fail)` over a pandas
   Series (`fill_forward` never looks ahead, DEV-T13); build the Series with
   `pricebt.data.measure_series(instrument, measure, start, end, frequency='1b')`.

@@ -464,10 +464,13 @@ def test_short_straddle_delta_hedged_is_delta_flat_short_vega_long_theta():
     assert any("DEV-I12" in n for n in built.notes)
 
 
-def test_bond_carry_roll_is_long_duration_and_its_coupon_shows_only_in_the_explain_table():
+def test_financed_bond_carry_roll_books_coupon_and_repo_into_total():
+    """pricebt DEV-E22 through the recipe: the toy bond config maps the financing contract, so the
+    engine books the coupon on the date Price drops it (2024-05-14) and the repo interest on every
+    mark; each step's economic_pnl is the change in Total; Carry and RollDown are reported."""
     from pricebt.backtests.backtest_objects import bond_pnl_definition
     from pricebt.backtests.generic_engine import GenericEngine
-    from pricebt.risk import IRDeltaParallel
+    from pricebt.risk import Carry, FinancingToDate, IRDeltaParallel, RepoRate, RollDown
 
     built = recipes.build(EXAMPLES / "toy_bond_carry_roll.yaml")
     bt = GenericEngine().run_backtest(built.strategy, **built.run_kwargs, pnl_explain=bond_pnl_definition())
@@ -475,13 +478,19 @@ def test_bond_carry_roll_is_long_duration_and_its_coupon_shows_only_in_the_expla
     ledger = bt.trade_ledger().sort_values("Open")
     assert list(ledger["Close"])[:-1] == list(ledger["Open"])[1:]  # re-entered on every roll date
     assert (rs[IRDeltaParallel] < 0).all()  # a long bond loses when its yield rises
+    assert (rs[Carry] != 0).all() and rs[RollDown].abs().max() > 0 and (rs[RepoRate] > 0).all()
     table = bt.pnl_explain_table()
     coupon = table.loc[table["cashflow_pnl"] != 0, "cashflow_pnl"]
-    assert list(coupon.index) == [date(2024, 5, 15)] and coupon.iloc[0] == pytest.approx(10e6 * 0.0425 / 2)
-    step = table.loc[date(2024, 5, 15)]
-    assert step["actual_pnl"] < 0 < step["economic_pnl"]  # Total drops by the coupon the engine never books
+    assert list(coupon.index) == [date(2024, 5, 14)] and coupon.iloc[0] == pytest.approx(10e6 * 0.0425 / 2)
+    assert (table["financing_pnl"] < 0).all()  # a long pays the repo on every step
+    step = table.loc[date(2024, 5, 14)]
+    assert step["actual_pnl"] < 0 < step["economic_pnl"]  # Price dropped the coupon, the cash came in
+    total = rs[bt.TOTAL_COLUMN].astype(float)
+    assert total.loc[date(2024, 5, 14)] - total.loc[date(2024, 5, 13)] == pytest.approx(step["economic_pnl"], rel=1e-9)
     assert abs(step["residual_pnl"]) < 1e-3 * coupon.iloc[0]
-    assert any("NOT booked" in n for n in built.notes)
+    booked = sum(f for day in bt.holding_cash.values() for _ccy, _c, f in day.values())
+    assert booked == pytest.approx(table["financing_pnl"].sum(), rel=1e-12) and FinancingToDate in bt.risks
+    assert any("financed in repo" in n and "DEV-E22" in n for n in built.notes)
 
 
 def test_bond_against_a_payer_swap_keeps_both_directions_and_nets_to_zero_dv01():
@@ -497,6 +506,9 @@ def test_bond_against_a_payer_swap_keeps_both_directions_and_nets_to_zero_dv01()
         assert float(bt.results[d][DV01][swap.name]) == pytest.approx(5000.0, rel=1e-6)
         assert float(bt.results[d][DV01].aggregate()) == pytest.approx(0.0, abs=1e-6)
     assert any("the spread is the trade" in n for n in built.notes)
+    # only the financed bond legs book holding cash (coupons + repo); the swap legs keep gs parity
+    booked = {inst.name for day in bt.holding_cash.values() for inst in day}
+    assert booked and all(n.startswith("Leg1_primary") for n in booked)
 
 
 # --------------------------------------------------------------------------------- determinism, every archetype

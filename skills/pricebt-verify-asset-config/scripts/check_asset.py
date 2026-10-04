@@ -320,7 +320,8 @@ def check_quantity_scaling(ctx: _Ctx) -> List[CheckResult]:
         # d2, not d1: the d1-resolved trade has moved off ATM there, so an ATM npv is not ~0
         v1 = float(ctx.service.value(ctx.r1, ctx.d2, m, None))
         v3 = float(ctx.service.value(scaled, ctx.d2, m, None))
-        factor = -3.0 if spec.unit in _EXTENSIVE_UNITS else 1.0
+        # `number` is both a count (DaysToSettlement: scale_with_quantity false) and an amount: its flag decides
+        factor = -3.0 if (spec.scale_with_quantity if spec.unit == "number" else spec.unit in _EXTENSIVE_UNITS) else 1.0
         ok = math.isclose(v3, factor * v1, rel_tol=1e-9, abs_tol=1e-12)
         kind = "extensive" if factor < 0 else "intensive"
         detail = f"{fname} ({spec.unit}, {kind}): q=1 {_fmt(v1)}, q=-3 {_fmt(v3)} on {ctx.d2}, expected x{factor:g}"
@@ -886,7 +887,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--end", type=date.fromisoformat, help="smoke backtest end (default start + 3 months)")
     ap.add_argument("--kwargs", default="{}", help="instrument kwargs as JSON, e.g. '{\"termination_date\": \"5y\"}'")
     ap.add_argument("--sys-path", action="append", default=[], help="directory to prepend to sys.path (the pricing library / helper modules)")
-    ap.add_argument("--no-backtest", action="store_true", help="skip the smoke backtest")
+    ap.add_argument("--no-backtest", action="store_true", help="skip the smoke backtest (the bond pack's bond_holding_cash still runs its own short engine pass)")
     ap.add_argument("--json", help="also write the results as JSON to this file")
     ap.add_argument("--pack", default="auto", choices=["auto", "none", "IRSwap", "IRSwaption", "Bond"], help="contract + check pack: auto uses the config's instrument; name one for a ConfigInstrument asset")
     a = ap.parse_args(argv)

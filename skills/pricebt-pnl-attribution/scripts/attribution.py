@@ -30,7 +30,9 @@ import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-FIXED = ["actual_pnl", "cashflow_pnl", "economic_pnl", "explained_pnl", "residual_pnl"]
+# pnl_explain_table's fixed columns; financing_pnl is a financed position's repo interest (pricebt
+# DEV-E22: the engine books it as holding cash), explained by definition (known cash, not a market move)
+FIXED = ["actual_pnl", "cashflow_pnl", "financing_pnl", "economic_pnl", "explained_pnl", "residual_pnl"]
 # the graded "unexplained" share = the worst of var(residual)/var(economic), 1 - r2 and
 # |sum residual|/sum|economic| (a steady bias, e.g. a sign-flipped Theta, passes the variance share
 # alone): <= WARN passes, <= FAIL warns. The names keep "RESIDUAL_SHARE" for the callers.
@@ -96,10 +98,10 @@ def _names(measure) -> List[str]:
 
 
 def _why_not(cfg, measure) -> Optional[str]:
-    """None if `cfg` serves `measure`'s scalar form, else why not (its declared reason if any). An
-    IRSwap/IRSwaption config maps every contract measure or does not load (IR_STRICT_CONTRACT R3-0),
-    so a "declared unsupported" answer comes from a Bond, and a "not mapped" one from a measure
-    outside the contracts (e.g. a custom name) or a class without one."""
+    """None if `cfg` serves `measure`'s scalar form, else why not (its declared reason if any). A
+    Bond, IRSwap or IRSwaption config maps every contract measure or does not load (R3-0, BOND_DESIGN
+    4.1), so both answers come from a class without a contract (e.g. a ConfigInstrument), which may
+    declare a measure under unsupported_measures, or from a measure outside the contracts."""
     names = _names(measure)
     if any(_mapped_function(cfg, n) is not None for n in names):
         return None
@@ -134,9 +136,10 @@ def definition_for(source=None, kind: str = "auto", assets: Optional[Iterable[st
     Keyword flags (delta=, gamma=, vega=, vanna=, volga=, theta=) override the kind's.
 
     Raises ValueError when an asset does not serve a measure the definition reads (every held
-    asset must answer every measure: pnl_explain calcs them all for every instrument; only a Bond
-    can still declare one unsupported, a swap or swaption config with a gap does not load), or
-    when a level is declared in different units on different assets."""
+    asset must answer every measure: pnl_explain calcs them all for every instrument; only a class
+    without a contract, e.g. a ConfigInstrument, can still declare one unsupported, a bond, swap or
+    swaption config with a gap does not load), or when a level is declared in different units on
+    different assets."""
     from pricebt.backtests.backtest_objects import ir_pnl_definition
 
     if kind not in (*_KIND_FLAGS, "auto"):
@@ -150,7 +153,7 @@ def definition_for(source=None, kind: str = "auto", assets: Optional[Iterable[st
     if problems:
         raise ValueError(
             "every held asset must map every measure the definition reads (swaps and bonds map the vol"
-            " greeks and vol levels to 0.0, IR_RISK_DESIGN R2-8; a Bond's declaration does not count):\n  " + "\n  ".join(problems)
+            " greeks and vol levels to 0.0, IR_RISK_DESIGN R2-8; a declaration does not count):\n  " + "\n  ".join(problems)
         )
     uses = lambda *names: any(wanted.get(n, True) for n in names)  # noqa: E731
     rate_unit = _level_unit(configs, "IRFwdRate") if uses("delta", "gamma", "vanna") else "bp"
@@ -181,7 +184,9 @@ def _float(v) -> Optional[float]:
 def explain_stats(table: pd.DataFrame) -> Dict[str, Any]:
     """Summary of a pnl_explain_table():
 
-    totals            column sums (the five fixed columns and every attribute)
+    totals            column sums (the six fixed columns and every attribute; financing_pnl is the
+                      repo interest a financed position paid, pricebt DEV-E22, and is part of both
+                      economic_pnl and explained_pnl)
     r2                1 - sum(residual^2) / sum((economic - mean economic)^2): how much of the
                       step-to-step economic P&L the attribution explains, with no refit (stricter
                       than corr^2; a biased attribution scores below 1 even when correlated)
@@ -280,6 +285,10 @@ def grade_reason(stats: Dict[str, Any], warn: float = RESIDUAL_SHARE_WARN, fail:
     for a, scale in stats["signatures"].items():
         text += (f"; residual signature: {a} x {scale:.3g} would absorb the residual, so {_reading(scale)}"
                  + ("" if _material(stats, warn) else " (immaterial on this book)"))
+    totals = stats["totals"]
+    if totals.get("financing_pnl"):
+        text += (f"; financed book: coupons {totals['cashflow_pnl']:,.2f} and repo interest {totals['financing_pnl']:,.2f} booked as cash by the engine"
+                 " (pricebt DEV-E22; financing is explained by definition)")
     return text
 
 
@@ -298,14 +307,15 @@ def attribution_frames(bt) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 def demo_backtest(kind: str = "swaption", end: Optional[dt.date] = None, risks=None, **config_edits):
     """A toy book (tests/assets, PYTHONPATH must include tests): 'swaption' = a long 1y10y ATM payer
-    held daily from 2024-01-02; 'bond' = a long toy bond held from 2024-05-06 across its
-    2024-05-15 coupon, with Cashflows among the risks (pass risks=[] to leave the coupon out)."""
+    held daily from 2024-01-02; 'bond' = a long financed toy bond held from 2024-05-06 across its
+    2024-05-15 coupon (dropped from Price on 2024-05-14, T+1): its asset maps FinancingToDate, so
+    the engine books the coupon and the repo interest as holding cash (pricebt DEV-E22) and the
+    table shows them as cashflow_pnl and financing_pnl, with no Cashflows among the risks."""
     from pricebt.backtests.actions import AddTradeAction
     from pricebt.backtests.generic_engine import GenericEngine
     from pricebt.backtests.strategy import Strategy
     from pricebt.backtests.triggers import DateTrigger, DateTriggerRequirements
     from pricebt.instrument import Bond, IRSwaption
-    from pricebt.risk import Cashflows
     from pricebt.session import PricebtSession
 
     if kind == "swaption":
@@ -315,7 +325,7 @@ def demo_backtest(kind: str = "swaption", end: Optional[dt.date] = None, risks=N
     elif kind == "bond":
         config, start = REPO_ROOT / "tests/assets/toy_usd_bond.yaml", dt.date(2024, 5, 6)
         inst = Bond(identifier="TOY 4.25 2034-11-15", size=1e6, buy_sell="Buy", settlement_currency="USD", name="bond")
-        end, risks = end or dt.date(2024, 6, 28), [Cashflows] if risks is None else risks
+        end, risks = end or dt.date(2024, 6, 28), risks or []
     else:
         raise ValueError(f"kind must be 'swaption' or 'bond', got {kind!r}")
     if config_edits:  # in-memory edits, e.g. functions={"vega": {...}}: each named entry is replaced whole
@@ -344,7 +354,7 @@ def main(argv=None):
     if args.definition:
         try:
             definition = definition_for(args.definition, kind=args.kind)
-        except ValueError as exc:  # the gap list: every unmapped / declared (Bond) measure, or mixed units
+        except ValueError as exc:  # the gap list: every unmapped / declared measure, or mixed units
             print(f"cannot attribute this book: {exc}", file=sys.stderr)
             raise SystemExit(1) from None
         table = describe(definition)

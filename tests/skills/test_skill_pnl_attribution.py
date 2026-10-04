@@ -1,8 +1,8 @@
 """skills/pricebt-pnl-attribution/scripts/attribution.py on real GenericEngine runs of the toy
 swaption and toy bond (tests/assets): the definition it picks and the books it refuses, units read
 from the configs, the pnl_explain_table identities, and the residual signatures the skill's
-references/diagnosing-residuals.md teaches (coupon without Cashflows, flipped vega sign, unit
-mismatch, NaN). Every run is a few months daily, well under a second."""
+references/diagnosing-residuals.md teaches (flipped vega sign, unit mismatch, NaN), and the financed
+bond's coupons and repo interest as cashflow_pnl and financing_pnl (pricebt DEV-E22). Every run is a few months daily, well under a second."""
 from __future__ import annotations
 
 import json
@@ -39,12 +39,14 @@ def _names(definition):
 
 
 def _bond_declaring_theta() -> dict:
-    """toy_usd_bond with Theta declared instead of mapped: only a Bond may declare (an IRSwap or
-    IRSwaption config with a gap does not load, IR_STRICT_CONTRACT R3-0)."""
+    """A ConfigInstrument copy of toy_usd_bond with Theta declared instead of mapped: only a class
+    without a contract may declare (a Bond, IRSwap or IRSwaption config with a gap does not load,
+    IR_STRICT_CONTRACT R3-0, BOND_DESIGN 4.1)."""
     from pricebt.assets import yamlio
 
     raw = yamlio.load_file(BOND)
-    raw["asset"] = "toy_usd_bond_declared"
+    raw.update(asset="toy_usd_bond_declared", instrument="ConfigInstrument")
+    raw.pop("match")
     del raw["risk_measures"]["Theta"]
     raw["unsupported_measures"] = {"Theta": "this bond library has no carry call"}
     return raw
@@ -70,7 +72,7 @@ def test_definition_for_picks_the_kind_and_reads_units_from_the_configs():
 
 
 def test_definition_for_refuses_a_book_it_cannot_attribute():
-    # a bond declaring Theta unsupported: every held asset must serve every measure
+    # a (ConfigInstrument) bond declaring Theta unsupported: every held asset must serve every measure
     with pytest.raises(ValueError, match=r"toy_usd_bond_declared: Theta declared unsupported") as err:
         attribution.definition_for([_bond_declaring_theta(), SWAP_FULL])
     assert "this bond library has no carry call" in str(err.value) and "toy_usd_irs_full" not in str(err.value)
@@ -85,7 +87,8 @@ def test_definition_for_refuses_a_book_it_cannot_attribute():
 def test_table_identities_frames_and_stats_on_the_toy_swaption():
     bt = attribution.demo_backtest("swaption", end=SHORT)
     table, cumulative = attribution.attribution_frames(bt)
-    assert list(table.columns) == ["actual_pnl", "cashflow_pnl", "economic_pnl", *SIX, "explained_pnl", "residual_pnl"]
+    assert list(table.columns) == ["actual_pnl", "cashflow_pnl", "financing_pnl", "economic_pnl", *SIX, "explained_pnl", "residual_pnl"]
+    assert (table["financing_pnl"] == 0.0).all()  # a swaption maps no FinancingToDate: nothing booked (gs parity)
     np.testing.assert_allclose(table[SIX].sum(axis=1), table["explained_pnl"], rtol=0, atol=1e-9)
     np.testing.assert_allclose(table["economic_pnl"] - table["explained_pnl"], table["residual_pnl"], rtol=0, atol=1e-9)
     assert list(cumulative.columns) == [*SIX, "residual_pnl", "economic_pnl"]
@@ -117,16 +120,30 @@ def test_pct_and_bp_configs_attribute_identically():
         pct.pnl_explain_table()
 
 
-def test_bond_coupon_is_explained_only_with_cashflows_among_the_risks():
-    coupon_day, coupon = date(2024, 5, 15), 1e6 * 0.0425 / 2
-    with_cash = attribution.explain_stats(table := attribution.demo_backtest("bond").pnl_explain_table())
-    assert table.at[coupon_day, "cashflow_pnl"] == pytest.approx(coupon)
-    assert abs(table.at[coupon_day, "residual_pnl"]) < 1.0 and attribution.grade(with_cash) == "PASS"
-    # without Cashflows the Price drop on the coupon date has nothing to offset it
-    without = attribution.explain_stats(attribution.demo_backtest("bond", risks=[]).pnl_explain_table())
-    assert without["totals"]["cashflow_pnl"] == 0.0 and without["worst_date"] == coupon_day
-    assert without["worst_residual"] == pytest.approx(-coupon, abs=5.0)
-    assert attribution.grade(without) == "FAIL"
+def test_financed_bond_books_its_coupon_and_repo_as_cash_and_explains_them():
+    """pricebt DEV-E22 on the toy bond (its config maps FinancingToDate): the engine books the coupon on
+    the date Price drops it (2024-05-14, the trade date settling on the 05-15 coupon) and the repo
+    interest on every mark, with no Cashflows among the risks; the table shows them as cashflow_pnl and
+    financing_pnl, financing is explained, and economic_pnl sums to the change in Total."""
+    from pricebt.risk import FinancingToDate
+
+    drop_day, coupon = date(2024, 5, 14), 1e6 * 0.0425 / 2
+    bt = attribution.demo_backtest("bond")
+    table = bt.pnl_explain_table()
+    stats = attribution.explain_stats(table)
+    assert list(table.loc[table["cashflow_pnl"] != 0].index) == [drop_day] and table.at[drop_day, "cashflow_pnl"] == pytest.approx(coupon)
+    assert table.at[drop_day, "actual_pnl"] < 0 < table.at[drop_day, "economic_pnl"]  # Price dropped the coupon, the cash came in
+    assert (table["financing_pnl"] < 0).all()  # a long pays the repo every step
+    (inst,) = bt.portfolio_dict[table.index[-1]]
+    with_risk = attribution.demo_backtest("bond", risks=[FinancingToDate])
+    first, last = table.index[0], table.index[-1]
+    fin = {d: float(with_risk.results[d][FinancingToDate][inst.name]) for d in (date(2024, 5, 6), last)}
+    assert stats["totals"]["financing_pnl"] == pytest.approx(fin[last] - fin[date(2024, 5, 6)], rel=1e-12)
+    np.testing.assert_allclose(table["explained_pnl"], table[THREE].sum(axis=1) + table["financing_pnl"], rtol=0, atol=1e-9)
+    total = bt.result_summary[bt.TOTAL_COLUMN].astype(float)
+    assert stats["totals"]["economic_pnl"] == pytest.approx(total.loc[last] - total.loc[date(2024, 5, 6)], rel=1e-9) and first > date(2024, 5, 6)
+    assert attribution.grade(stats) == "PASS" and "financed book" in attribution.grade_reason(stats)
+    assert set(stats["residual_corr"]) == set(THREE)  # financing is a fixed column (known cash), never an attribute
 
 
 def test_a_flipped_vega_sign_is_named_by_the_residual_correlation():
@@ -213,6 +230,7 @@ def test_cli_definition_and_demo(capsys, tmp_path):
     assert stop.value.code == 1
     err = capsys.readouterr().err
     assert err.startswith("cannot attribute this book: every held asset must map") and "Theta declared unsupported" in err
+    assert "a declaration does not count" in err
     stats = attribution.main(["--demo", "bond"])
     out = capsys.readouterr().out
     assert stats["finite"] and '"grade": "PASS"' in out

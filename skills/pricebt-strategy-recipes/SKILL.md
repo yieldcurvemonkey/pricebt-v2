@@ -17,7 +17,7 @@ A spec (`skills/pricebt-strategy-intake/templates/strategy_spec.yaml`) says *wha
 ## Inputs
 
 - A spec: a YAML path or a dict. `build`/`run` apply the template defaults and validate it first (via `skills/pricebt-strategy-intake/scripts/spec.py`), and never mutate the dict you pass, so a robustness script can `copy.deepcopy(spec)`, change `costs.level`, `signal.params`, `signal.lookback`, `signal.lag` or `dates.end`, and rerun.
-- The asset configs the spec lists (paths from the repository root; e.g. `tests/assets/toy_usd_irs.yaml`). For swaptions and bonds each config must answer the measures its recipe needs (the catalogue lists them per recipe); the load-time measure contract guarantees every one is mapped (a Bond may declare one unsupported), not that it is right: verify with [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md) first.
+- The asset configs the spec lists (paths from the repository root; e.g. `tests/assets/toy_usd_irs.yaml`). For swaptions and bonds each config must answer the measures its recipe needs (the catalogue lists them per recipe); the load-time measure contract guarantees every one is mapped (no swap, swaption or bond config may declare a contract measure unsupported; a bond's contract includes its repo financing), not that it is right: verify with [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md) first.
 - Ready specs for swaptions and bonds, run by the tests on the toy assets: `skills/pricebt-strategy-recipes/example/` (`toy_swaption_expiry_roll.yaml`, `toy_short_straddle_delta_hedged.yaml`, `toy_bond_carry_roll.yaml`, `toy_bond_asset_swap.yaml`). Copy one and point `assets:` at your configs.
 
 ## Outputs
@@ -96,7 +96,8 @@ A spec (`skills/pricebt-strategy-intake/templates/strategy_spec.yaml`) says *wha
 | `costs.model: constant` | `ConstantTransactionModel(level)`: currency per trade, per side |
 | `costs.model: notional_bp` | `ScaledTransactionModel('notional_amount', level * 1e-4)`: reads the config attribute `notional_amount` (a Bond config must map one: gs `Bond` sizes by `size`) |
 | `costs.model: dv01_bp` | `ScaledTransactionModel(IRDelta(aggregation_level='Type'), level)`: `level × |dv01|` currency per side |
-| `financing.cash_accrual_rate` | `Strategy(cash_accrual=ConstantCashAccrualModel(rate))` when > 0 |
+| `financing.cash_accrual_rate` | `Strategy(cash_accrual=ConstantCashAccrualModel(rate))` when > 0. Keep it 0 for a book holding bonds: the bond config's repo is already booked (below), and the engine warns that the funding is counted twice |
+| bond repo (not a spec field) | the bond asset config's `RepoRate`, `RepoHaircut` and `FinancingToDate`: the engine books each held bond's coupons and the change of `FinancingToDate` as cash on every mark and exit (holding cash, DEV-E22; `bt.holding_cash`). GC or special, overnight or term and the haircut are the config's choice: record them under `assumptions` |
 | `risks_to_report` | names from `pricebt.risk` (`Price`, `IRDeltaParallel`, `IRDelta(aggregation_level='Type')`, `IRVegaParallel`, `IRGammaParallel`, `Theta`, `Cashflows`, ...; unquoted numbers such as `bump_size=0.5` stay numbers); the book dv01 is added when sizing or hedging uses it |
 | `risk_limits.hedge_measure` | optional: the measure `delta_hedged` / `risk_band` hedge and trigger on (default `IRDelta(aggregation_level='Type')`; e.g. `IRDeltaParallel`, or `IRVegaParallel` with a swaption hedge); `max_abs_dv01` is then in its unit |
 | `signal.measure` | a gs measure name the config maps (`IRFwdRate`, `IRAnnualImpliedVol`, `ParSpread`) or a config function name (`par_rate`) |
@@ -126,10 +127,10 @@ Recipes (each a tested spec in `example/`, each with the measures your config mu
 | gamma scalping | `delta_hedged` | the same with `buy_sell: Buy` |
 | vega-neutral calendar | `delta_hedged` | swaption hedge of another expiry, `hedge_measure: IRVegaParallel` |
 | fade rich / cheap vol | `mean_reversion` | bought straddle primary, `signal.measure: IRAnnualImpliedVol` |
-| bond carry and roll-down | `periodic_roll` | Bond primary, `trade_duration: next schedule`, optional `financing.cash_accrual_rate` as repo |
-| bond vs swaps (asset-swap-like), swap spread | `curve_trade` | bought Bond + payer IRSwap, `sizing.method: dv01_target` |
+| financed bond carry and roll-down | `periodic_roll` | Bond primary, `trade_duration: next schedule`; repo from the bond config, `financing.cash_accrual_rate: 0.0`; screen or report with `Carry` + `RollDown` |
+| bond vs swaps (asset-swap-like), swap spread | `curve_trade` | bought Bond + payer IRSwap, `sizing.method: dv01_target`; spread signal from `ParSpread` (or yield minus swap rate) |
 
-`build` adds a note per class to `built.notes` (swaption premium and expiry exits, bond coupons not booked, mixed-type delta additivity): the report must carry them.
+`build` adds a note per class to `built.notes` (swaption premium and expiry exits, bond coupons, mixed-type delta additivity): the report must carry them.
 
 ## Checks
 
@@ -137,7 +138,7 @@ Recipes (each a tested spec in `example/`, each with the measures your config mu
 - `describe(built)` names the triggers and actions you expected, and you have read every note.
 - On the run: `result_summary["Total"] == Price + "Cumulative Cash" + "Transaction Costs"` on every row, `Transaction Costs` is negative when `costs.level > 0`, and two runs of the same spec give identical frames.
 - The archetype's own behaviour holds, as the tests in `tests/skills/test_skill_recipes.py` assert on the toy assets: monthly roll names; mean-reversion trades that never close; momentum exits on the next roll date; curve legs each at `±dv01_target` and netting to 0 on entry dates; hedged book dv01 ≈ 0; risk band respected on every date; trades exactly on the event dates; flat after a stop-loss.
-- Swaptions and bonds, on your configs as on the toys: every leg of a dv01-sized book has `quantity_ > 0` (a negative quantity means the level had the wrong sign and the position flipped); an option held to expiry closes on its resolved `expiration_date` with `Close Value >= 0` if bought; a hedged straddle book has `IRDeltaParallel ≈ 0`, `IRVegaParallel < 0` and `Theta > 0` every day; a long bond book has `IRDeltaParallel < 0`, and `pnl_explain_table()` shows each coupon in `cashflow_pnl`.
+- Swaptions and bonds, on your configs as on the toys: every leg of a dv01-sized book has `quantity_ > 0` (a negative quantity means the level had the wrong sign and the position flipped); an option held to expiry closes on its resolved `expiration_date` with `Close Value >= 0` if bought; a hedged straddle book has `IRDeltaParallel ≈ 0`, `IRVegaParallel < 0` and `Theta > 0` every day; a long bond book has `IRDeltaParallel < 0`, `pnl_explain_table()` shows each coupon in `cashflow_pnl` and the repo interest (≤ 0) in `financing_pnl`, and `bt.holding_cash` has an entry for every held bond on every mark.
 
 ## Pitfalls
 
@@ -146,7 +147,8 @@ Recipes (each a tested spec in `example/`, each with the measures your config mu
 - **Mean reversion supports notional sizing only**: its ±1 direction travels in `AddTradeActionInfo.scaling`, which `AddScaledTradeAction` never reads. `validate_spec` rejects the combination.
 - **`dv01_target` signs**: `AddScaledTradeAction` uses `scale = scaling_level / unit_risk`. A receiver's, a bought receiver swaption's and a long bond's unit dv01 are negative, so their level must be negative too, or the position silently flips (a receiver turns into a payer, a long bond into a short). The recipes sign the level by `direction_sign`, i.e. by the contract's delta sign for the class. This relies on your config honouring that sign (payer swap > 0, bought payer swaption > 0, long bond < 0): check it before sizing by risk.
 - **A swaption's `pay_or_receive` is the option type, not the position.** The opposite of a bought payer is a sold payer (`buy_sell` flipped), never a bought receiver. Hand-written strategies must flip `buy_sell` too (or negate `quantity_`).
-- **Swaption premium and bond coupons never reach cash** except through Price: the entry cash is −Price (that is the premium: keep kwargs `premium`/`fee` at 0, which the validator enforces), and coupons paid while a bond is held are not booked (gs parity). Report `economic_pnl` from `pnl_explain_table()` or use a total-return `npv`.
+- **Swaption premium and swap coupons never reach cash** except through Price: the entry cash is −Price (that is the premium: keep kwargs `premium`/`fee` at 0, which the validator enforces), and coupons paid while a swap is held are not booked (gs parity). Report `economic_pnl` from `pnl_explain_table()` or use a total-return `npv`.
+- **Bonds are financed.** Every Bond config maps `FinancingToDate`, so the engine books a held bond's coupons and its repo interest as cash (DEV-E22): `Total` is the financed P&L. Adding `financing.cash_accrual_rate` charges the funding loan (−Price at entry) a second time.
 - **Straddles have no delta sign**: dv01 sizing and dv01-neutral curve legs are refused for them; size by notional or nav.
 - **Mixed instrument types** (swaption + swap hedge, bond + swap): own-rate deltas are per bp of different rates, so hedges, risk triggers and dv01 sizing across types are approximate (DEV-I12).
 - **`'next schedule'`** exits at the next date of the trigger that fired: the next roll for Periodic/Aggregate, the next listed date for DateTrigger, never (held to the end) after the last one. MeanReversion supplies `next_schedule=None` (held to the end); a lone MktTrigger or a StrategyRiskTrigger supplies no info at all, and an action with `'next schedule'` under it raises `RuntimeError('Next schedule not supported by action')`.
@@ -191,6 +193,6 @@ missing measure, or pass `gamma=False, carry=False` for delta-only attribution o
 - [`pricebt-spot-checks`](../pricebt-spot-checks/SKILL.md): verify the run.
 - [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md): report it, including `describe(built)` and the notes.
 - [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md): prove the swaption / bond configs a recipe relies on (signs, units, expiry behaviour) before trusting a run.
-- [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): decompose a swaption or bond book's P&L (`pnl_explain_table`) into delta, gamma, vega, vanna, volga, theta and coupons.
-- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): how your library produces each measure a recipe relies on (own-rate delta, chain-rule gamma, vega, per-day theta, Cashflows) and why a swap or swaption must map every one (only a Bond may declare).
+- [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md): decompose a swaption or bond book's P&L (`pnl_explain_table`) into delta, gamma, vega, vanna, volga, theta, coupons and financing.
+- [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md): how your library produces each measure a recipe relies on (own-rate delta, chain-rule gamma, vega, per-day theta, Cashflows, the bond financing contract) and why a swap, swaption or bond must map every one.
 - [`pricebt-port-gs-notebook`](../pricebt-port-gs-notebook/SKILL.md): when you start from an existing gs notebook instead of a spec.

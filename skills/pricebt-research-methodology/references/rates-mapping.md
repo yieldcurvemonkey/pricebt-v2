@@ -20,7 +20,7 @@ The reference books are mostly about equities and FX. This page translates their
 
 ## pricebt-specific cautions that interact with the methodology
 
-- **Coupons paid between marks are not booked as cash** (gs parity). Carry P&L on long holds is therefore incomplete. Say so whenever carry is part of the hypothesis.
+- **Coupons paid between marks are not booked as cash for swaps and swaptions** (gs parity). Carry P&L on their long holds is therefore incomplete; say so whenever carry is part of the hypothesis. A bond is different: every Bond config maps `FinancingToDate`, so the engine books its coupons and repo interest as holding cash (DEV-E22) and its `Total` is the financed P&L. State the repo assumption (GC or special, overnight or term, haircut) whenever bond carry is part of the hypothesis.
 - **Signal and execution happen on the same close.** The cleanest look-ahead check is to re-run with the signal shifted by one business day (see [`pricebt-spot-checks`](../../pricebt-spot-checks/SKILL.md)).
 - **Mean-reversion exits in gs are offsetting trades held forever.** Gross notional grows with every signal, so report net dv01 and gross notional.
-- **Unfunded P&L.** `result_summary['Total']` is cumulative currency P&L. Choose a capital base explicitly before quoting percentages.
+- **Unfunded P&L.** `result_summary['Total']` is cumulative currency P&L. Choose a capital base explicitly before quoting percentages. For a repo-financed bond book the natural base is the haircut capital (`RepoHaircut` × the settlement value), not the face amount.

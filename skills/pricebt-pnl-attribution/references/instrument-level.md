@@ -80,7 +80,7 @@ How to do step 2 depends on your library's shape:
 For the worst step (t−1, t) of `pnl_explain_table` (see [diagnosing-residuals.md](diagnosing-residuals.md)):
 
 1. Under `PricingContext(pricing_date=t−1)`, calc `PnlExplain(CloseMarket(date=t))` on the instruments of `bt.results[t−1].portfolio`.
-2. Compare its IR row with `PNL_delta + PNL_gamma`, its IR VOL row with `VegaPnL + PNL_volga`, and its `CROSSES` row with `PNL_vanna`.
-3. The time part is `economic_pnl − Σ rows`; compare it with `PNL_theta`.
+2. Compare its IR row with `PNL_delta + PNL_gamma`, its IR VOL row with `VegaPnL + PNL_volga`, and its `CROSSES` row with `PNL_vanna`. For a bond, compare the IR and `CREDIT` rows together with `PNL_delta + PNL_gamma`: the bond's yield moves with both the curve and its spread.
+3. The time part is `economic_pnl − financing_pnl − Σ rows`; compare it with `PNL_theta`. `financing_pnl` (0 except for a financed position) is repo interest, never in `PnlExplain` rows or in `Theta`.
 
 Whichever pair disagrees names the greek to fix.

@@ -7,7 +7,7 @@ For each measure in the `IRSwap` / `IRSwaption` / `Bond` contract, this page giv
 - the traps that give a plausible but wrong number;
 - how to check the number.
 
-The contract text itself is `src/pricebt/risk/contracts.py`, and you can print it with `measures.py contract <class>`. The design is `docs/v2/IR_RISK_DESIGN.md`, §2 and the overriding §00, and `docs/v2/IR_STRICT_CONTRACT.md`: an **`IRSwap` or `IRSwaption` config must map every row** (no `unsupported_measures:`; a literal constant only for `contracts.ZERO_BY_CONVENTION`), so every recipe below is the way to *compute* a measure; only a `Bond` may still declare one (section 3). A runnable reference implementation of every recipe is in `tests/toylib/irrisk.py` (the shared kernel and the swap), `tests/toylib/swaption.py` and `tests/toylib/bond.py`, wired up by `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`. `tests/test_toylib_ir.py` proves each identity below against an independent computation.
+The contract text itself is `src/pricebt/risk/contracts.py`, and you can print it with `measures.py contract <class>`. The design is `docs/v2/IR_RISK_DESIGN.md`, §2 and the overriding §00, `docs/v2/IR_STRICT_CONTRACT.md` and, for bonds and financing, `docs/v2/BOND_DESIGN.md`: an **`IRSwap`, `IRSwaption` or `Bond` config must map every row** (no `unsupported_measures:`; a literal constant only for `contracts.ZERO_BY_CONVENTION`), so every recipe below is the way to *compute* a measure (section 3). A runnable reference implementation of every recipe is in `tests/toylib/irrisk.py` (the shared kernel and the swap), `tests/toylib/swaption.py` and `tests/toylib/bond.py`, wired up by `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`. `tests/test_toylib_ir.py` proves each identity below against an independent computation.
 
 In the snippets, `lib.*` stands for **your** library. Every `lib.*` name is a placeholder, not a real API.
 
@@ -21,7 +21,7 @@ In the snippets, `lib.*` stands for **your** library. Every `lib.*` name is a pl
 | **Normal vol σ** | `IRAnnualImpliedVol` is the normal (Bachelier) vol at the strike. `IRVega`, `IRVanna` and `IRVolga` are per bp of that σ. |
 | **Units agree across a book** | Every asset in one book must declare the same unit for each level (`IRFwdRate`, `IRAnnualImpliedVol`). The shipped and toy configs use `bp`, and the P&L definitions take the unit as a parameter. |
 | **Dead instruments** | A matured, expired-OTM or fully paid instrument has every sensitivity at `0.0`, finite levels, and an empty `Cashflows` and `CRIFIRCurve`. A level must continue from its last live value (R2-7). One NaN poisons every later cumulative `pnl_explain` value: pricebt skips a risk that is exactly 0 and never guards NaN. |
-| **No-exposure measures** | A swap's or a bond's `IRVega`, `IRVanna`, `IRVolga` and vol levels are `0.0`, which is the true value under any rates model (R2-8); so are `IRBasis` on one curve and `IRXccyDelta` in one currency. Map them to a `'0.0'` function; do not declare them. These are exactly `contracts.ZERO_BY_CONVENTION` for a swap (a swaption: `IRBasis`, `IRXccyDelta`); any other literal is a placeholder, and `check_asset.py`'s `ir_fake_constant` FAILs it. |
+| **No-exposure measures** | A swap's or a bond's `IRVega`, `IRVanna`, `IRVolga` and vol levels are `0.0`, which is the true value under any rates model (R2-8); so are `IRBasis` on one curve and `IRXccyDelta` in one currency. Map them to a `'0.0'` function; declaring them is a load error. These are exactly `contracts.ZERO_BY_CONVENTION` for a swap and a bond (a swaption: `IRBasis`, `IRXccyDelta`), each with its reason; any other literal is a placeholder, and `check_asset.py`'s `ir_fake_constant` FAILs it. |
 
 Where the code goes: in the config's `code:` block, or in your own helper module that `imports:` loads. It never goes in `src/pricebt` (MUST-1).
 
@@ -83,7 +83,7 @@ Many services return a PV, a par rate and a DV01 or DV01 ladder in one batched c
 | `Cashflows` | the service's cashflow code converted to holder-signed rows | sum of `DF × payment_amount` = `Price` is a good check |
 | `ExpiryInYears`, the R2-8 zeros | date arithmetic; `'0.0'` | every library |
 
-**No scenario request at all.** On a swap or swaption you still map every row: export the service's discount factors (or zero rates) into a local "shadow" curve, reprice the trade's cash flows on it, and bump that curve for gamma, the gamma ladder and the translated `Theta`. Say in `description:` that these measures are the shadow curve's, check them against the service's DV01 where they overlap, and expect the checker's `ir_taylor` / `ir_theta` rows to WARN if the shadow curve is coarse. A Bond may declare instead (section 3).
+**No scenario request at all.** On a swap, swaption or bond you still map every row: export the service's discount factors (or zero rates) into a local "shadow" curve, reprice the trade's cash flows on it, and bump that curve for gamma, the gamma ladder and the translated `Theta`. Say in `description:` that these measures are the shadow curve's, check them against the service's DV01 where they overlap, and expect the checker's `ir_taylor` / `ir_theta` rows to WARN if the shadow curve is coarse.
 
 The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portfolio-and-results.md` applies only to classes without a contract), so map it with one of the rows above.
 
@@ -95,7 +95,7 @@ The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portf
   - **drop paid flows:** each flow leaves `Price` on its payment date, and `Cashflows` lists the flows still to drop;
   - **total return:** paid flows never leave `Price`, and `Cashflows` is empty.
 - **Swaption after expiry:** under physical settlement, an exercised leg is the underlying swap and an unexercised one is 0 (R2-7). If your library cash-settles, the settlement amount leaves `Price` on its payment date, so list it in `Cashflows`.
-- **Bond:** dirty PV of the face held, **not** clean and **not** per 100. From a shape-D quote: `Price = sign × (clean + accrued_per_100) / 100 × face`. Also discount the settlement-date dirty price to the pricing date if your library quotes for T+1/T+2, and decide how you treat ex-coupon periods. Whatever you choose, do the same in `Theta` and `Cashflows`.
+- **Bond (fixed by the contract, DEV-I20):** the **settlement-date market value** of the face held: `Price = (clean + accrued_per_100 at standard settlement) / 100 × face`, signed face, **not** clean, **not** per 100, and **not** discounted from the settlement date back to the pricing date. It drops a flow on the first trade date whose standard settlement is on or after the flow's payment date (T+1: the business day before a business-day coupon date). So `FairPremium = Price`, `DirtyPrice = 100 × Price / face`, and the financed principal is the same number. Decide how you treat ex-coupon periods and do the same in `Theta`, `Cashflows` and `AccruedInterest`.
 - **Traps:**
   - a library PV that ignores `buy_sell` (fold it in `resolve`);
   - clean price;
@@ -105,7 +105,8 @@ The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portf
   - Buy = −Sell exactly;
   - an ATM swap is about 0;
   - a long option is > 0;
-  - a bond near par has dirty PV of about face.
+  - a bond near par has dirty PV of about face;
+  - a bond's `100 × Price / face` equals the market's invoice price for standard settlement.
 
 ### `IRDelta` scalar (sens1, ccy per bp of r)
 
@@ -143,7 +144,7 @@ The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portf
 - **Definition:** a +1bp parallel shift of the **discount** curve only, with projection curves held (R2-3). This is not normalised by dr/ds.
 - **Single-curve library:** the forwards must still be held, so `(PV(+h) − PV(−h)) / 2` on a whole-curve shift is **not** it (that is the parallel DV01, which the key-rate ladder sums to). Value the floating leg's forwards on the base curve and discount on the shifted one (`toylib.irrisk.discount_delta_on` with `npv_two_curve`), or rediscount the projected cash flows. On the toy 10y payer at the money it is ≈0 (−83.66 at K = 2%), against an `IRDelta` scalar of 812: the two are different measures.
 - **Multi-curve:** shift only the discount or OIS curve object.
-- **A platform that can only shift everything together:** a swap or swaption must still map it: reprice the projected cash flows (projection held, from the base market) on a discount curve shifted locally (the shadow curve of section 1). A Bond may declare it.
+- **A platform that can only shift everything together:** a swap, swaption or bond must still map it: reprice the projected cash flows (projection held, from the base market) on a discount curve shifted locally (the shadow curve of section 1). A bond's flows are fixed, so its discount delta is the bond repriced on the reference curve shifted +1bp with its spread held.
 
 ### `IRGammaParallel` (sens2, ccy per bp² of r)
 
@@ -166,7 +167,7 @@ The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portf
 ### `IRGamma` bucketed (sens2, ccy per bp² at each pillar)
 
 - **Definition:** a diagonal gamma ladder (DEV-I13; gs returns a 12-column cross-gamma table). For each pillar i: `PV(+h_i) + PV(−h_i) − 2·PV` with h = 1bp. It is a portfolio function with the same keys and labels as the delta ladder.
-- **Cost:** two reprices per pillar; batch every trade of the book per scenario market, and cache the scenario markets on the base market object. A swap or swaption must map it; only a Bond may declare it (`IRGamma: "..."`) when its library has no per-pillar shift.
+- **Cost:** two reprices per pillar; batch every trade of the book per scenario market, and cache the scenario markets on the base market object. Every contract class must map it; a bond library with no per-pillar shift bumps the pillars of a local copy of the reference curve with the bond's spread held.
 
 ### `IRVega` scalar (sens1, ccy per +1bp of normal vol)
 
@@ -213,7 +214,7 @@ The scalar must be mapped itself (the ladder-sum fallback of section 4 of `portf
 - **IRBasis:** +1bp on the projection-vs-discount spread. In a multi-curve library, shift the projection curve's spread over discount, or the basis swap quotes.
 - **IRXccyDelta:** +1bp on the cross-currency basis. It is relevant when the CSA or discounting is in another currency.
 - **Single-curve or single-currency models:** `0.0` is the true value in your model (the contract says so).
-- **A model with the basis but no way to bump it:** a swap or swaption must still compute it (bump the spread on a local copy of the projection curve); a Bond may declare it.
+- **A model with the basis but no way to bump it:** a swap or swaption must still compute it (bump the spread on a local copy of the projection curve). A bullet bond's `IRBasis` and `IRXccyDelta` are 0 by convention (`contracts.ZERO_BY_CONVENTION["Bond"]`).
 
 ### `IRFwdRate` (rate, intensive)
 
@@ -250,10 +251,10 @@ The par rate of the spot-starting instrument with the same final date (`toylib.i
 - **Swaps and swaptions: translate the curve.** Keep every forward and move the valuation date by one day, `DF'(x) = DF(x) / DF(t+1d)` (the `toylib.irrisk._TranslatedCurve` recipe, which keeps the CSA). A swaption uses the same F and σ with `T − 1/365`; a step onto expiry exercises on the frozen F.
 - **Swaps across a coupon: hold the own par.** When the one-day window pays a coupon, the paid period leaves the remaining schedule and the translated par jumps by Δpar. That is the schedule rolling, not the market: subtract `pv01_T × Δpar / n`, with `pv01_T` the translated annuity pv01 and `n` the calendar days to the next business day (DEV-I15), so `Theta × n` over a business-day step removes it exactly once (a Friday before a Saturday coupon: n = 3). Off coupon dates the translated par equals today's and the term is 0 (the ARBS config's `theta_1d`, the Meridian example's `theta`).
 - **Never roll the curve.** Rebuilding it on t+1 from the same quotes or zero rates by tenor keeps the zero rates, not the forwards. That is roll-down, and it belongs in the delta attribution as a ΔIRFwdRate.
-- **Bonds:** reprice at t+1 at the **same yield**, and add the coupons paid in (t, t+1] (`toylib.bond.theta_1d`).
+- **Bonds (contract text):** `Theta = [Price(nb, same yield) + flows Price drops in (t, nb] − Price(t)] / (nb − t).days`, nb the next business day. Hold the **yield** (`IRFwdRate`), not the curve. A bond's `Price` is a settlement-date value, so one calendar day can move settlement by 0 or 3 days; spreading the next-business-day step over its calendar days makes `Theta × step days` exact on a business-day grid. It includes the pull to par and the accrual at constant yield, and **no financing** (that is `FinancingToDate`). Reference: `toylib.bond.theta_1d`.
 - **Shape A:** a curve wrapper that divides by `DF(t+1d)`, plus the evaluation date moved to t+1. A process-global evaluation date (QuantLib-style) is moved inside `try/finally` and restored, or better set from the translated market inside the PV call (section 1).
-- **Shape B:** use a "forward valuation date, constant forwards" scenario if there is one. A vendor "theta" or "carry" code qualifies only if it is per calendar day, excludes roll-down and financing, and includes the day's coupon cash under the drop-paid-flows convention. Otherwise compute Theta by the translated reprice (on a shadow curve if there is no scenario request, section 1); only a Bond may declare it.
-- **Shape D:** a package's "carry" (coupon accrual minus repo) is **not** Theta: it has financing in it and holds no yield.
+- **Shape B:** use a "forward valuation date, constant forwards" scenario if there is one. A vendor "theta" or "carry" code qualifies only if it is per calendar day, excludes roll-down and financing, and includes the day's coupon cash under the drop-paid-flows convention. Otherwise compute Theta by the translated reprice (on a shadow curve if there is no scenario request, section 1).
+- **Shape D:** a package's "carry" (coupon accrual minus repo) is **not** Theta: it has financing in it and holds no yield. It may be the `Carry` row if its horizon and repo match that row's definition.
 - **Traps:**
   - per-year theta: the swap P&L recipe's `IRTheta` (`skills/pricebt-strategy-recipes/scripts/swap_pnl.py`) is `365 × Theta`, so never map `Theta` to a per-year function;
   - business-day theta: Friday→Monday is three calendar days, and the P&L attribute multiplies Theta by −365 × ΔExpiryInYears;
@@ -265,7 +266,7 @@ The par rate of the spot-starting instrument with the same final date (`toylib.i
 ### `ExpiryInYears` (time, intensive)
 
 - **Definition:** `max(final_or_expiry − t, 0).days / 365`, in calendar days (ACT/365F). A swaption uses its expiry; a swap or bond uses its final date (DEV-I17).
-- **Every library can supply it:** it is date arithmetic on the resolved terms, e.g. `{expr: 'max((resolved["expiration_date"] - pricebt_date).days, 0) / 365', unit: decimal}`. Declaring it (a Bond) is not honest.
+- **Every library can supply it:** it is date arithmetic on the resolved terms, e.g. `{expr: 'max((resolved["expiration_date"] - pricebt_date).days, 0) / 365', unit: decimal}`.
 - **Why the exact convention matters:** the theta attribute uses `−365 × ΔExpiryInYears` as "days elapsed". A library year fraction (ACT/360, business/252) mis-scales every theta P&L.
 
 ### `Annuity` (annuity, ccy)
@@ -282,13 +283,14 @@ The par rate of the spot-starting instrument with the same final date (`toylib.i
 - **Definition:** the flows that `Price` still includes and will drop on their payment date (`payment_date > pricing date`), holder-signed, one row each.
 - **Columns:** `payment_date`, `payment_amount`, `currency` and `payment_type` are required. `notional`, `rate`, `accrual_start_date`, `accrual_end_date`, `discount_factor` and the other gs columns are optional.
 - **Total-return Price:** `Cashflows` is empty (R2-6); return `pd.DataFrame(columns=[...])` or `[]`.
+- **Bond:** `payment_date` is the **trade date on which `Price` drops the flow**: the first date whose standard settlement is on or after the coupon's payment date (T+1: the business day before a business-day coupon date), not the coupon date itself (`toylib.bond.drop_date`). For a financed position (every Bond, since `FinancingToDate` is a contract row) the engine books these rows as cash on that date (DEV-E22).
 
   ```yaml
   cashflows: {expr: 'lib_cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount, notional]}
   ```
 
 - **Rules:** `scale_columns` must include `payment_amount`. Frames never convert currency. They are left out of `result_summary`/`risk_summary` (DEV-R11) and stay in `backtest.results`.
-- **Verify:** across a payment date, the drop in `Price` ≈ that date's `payment_amount`. `BackTest.pnl_explain_table()` reports it as `cashflow_pnl`. Under the drop-paid-flows convention, `Σ DF(payment_date) × payment_amount = Price` exactly when every flow is listed.
+- **Verify:** across a payment date, the drop in `Price` ≈ that date's `payment_amount`. `BackTest.pnl_explain_table()` reports it as `cashflow_pnl`. Under the drop-paid-flows convention, `Σ DF(payment_date) × payment_amount = Price` exactly when every flow is listed (a bond: discount each flow from its coupon date to the settlement date, not from `payment_date` to the pricing date, since `Price` is a settlement-date value and `payment_date` is the drop date).
 
 ### The strict-contract additions (`IRSwap`, `IRSwaption`; DEV-I19)
 
@@ -318,9 +320,37 @@ functions:   # a swap, from the template's primitives (resolved notional signed,
 | Class | Measure | Definition | Notes |
 |---|---|---|---|
 | IRSwaption | `ProbabilityOfExercise` | the probability of finishing in the money under the annuity measure. Normal model: `Φ(d)` for a payer and `Φ(−d)` for a receiver, `d = (F−K)/(σ√T)` | intensive (`decimal`). After expiry, 1 or 0 as decided |
-| Bond | `LightningDV01` | yield DV01, dP/dy per +1bp (< 0 long) | many packages report it positive (the loss convention): negate. From modified duration: `−D_mod × dirty PV × 1e-4` |
-| Bond | `LightningOAS` | OAS over your reference curve; a bullet bond uses its Z-spread | intensive, rate unit |
-| Bond | `ParSpread` | par asset-swap spread, or your library's par spread (not the swap/swaption `ParSpread` above) | intensive, rate unit; declare it if you have no swap curve |
+
+### The Bond contract (DEV-I19, DEV-I20, DEV-I21)
+
+Every row below is required on a `Bond` config (`docs/v2/BOND_DESIGN.md` §3; full table in [measure-catalogue.md](measure-catalogue.md) section 1.1). The reference implementations are `tests/toylib/bond.py` (wired by `tests/assets/toy_usd_bond.yaml`), and the tested template `skills/pricebt-connect-pricing-library/references/config-template-bond.yaml` maps each from a few `lib_*` primitives. Notation: s = the standard settlement date of the pricing date, face = the resolved **signed** face, C a coupon amount, y the yield in the `IRFwdRate` convention, **H** = s + 1 calendar month rolled to the following business day of the bond's calendar (`toylib.bond.horizon`), τ(a, b) a year fraction in the **repo** day count (USD ACT/360).
+
+**Resolve pins the financing.** `resolve` must pin, from the trade date's market: the trade date, its settlement date, the financed principal per unit `(1 − RepoHaircut) × Price(trade date)`, and, for a term repo, the rate locked at the trade date (`toylib.bond.resolve_bond`). Without the pin every later date re-finances at that date's price and `FinancingToDate` stops telescoping. The config decides overnight vs term and GC vs special (the toy: `repo_term` and `repo_haircut` kwargs with config defaults; a special spread per identifier).
+
+| Measure | Recipe | Unit | Verify / traps |
+|---|---|---|---|
+| `LightningDV01` | yield DV01, dP/dy per +1bp (< 0 long): the `IRDelta` scalar itself | ccy_per_bp | many packages report it positive (the loss convention): negate. From modified duration: `−ModifiedDuration × Price × 1e-4` |
+| `LightningOAS` | OAS over your reference curve; a bullet bond: its Z-spread (the parallel spread over the reference curve that reprices `Price`) | rate unit, intensive | finite on every held date |
+| `ParSpread` | par asset-swap spread, or your library's par spread (not the swap/swaption `ParSpread`) | rate unit, intensive | state the swap curve and sign convention in the function comment |
+| `FairPremium` | `Price` (map the same function) | ccy | `FairPremium == Price` exactly; never `Price / DF(settlement)` |
+| `ForwardPrice` | `Price × (1 + RepoRate × τ(s, H)) − Σ_{s < c ≤ H} C × (1 + RepoRate × τ(c, H))`, `RepoRate` held flat to H | ccy, holder-signed; dead 0 | the swap rows' `Price / DF(expiry)` is the wrong formula here; a coupon in (s, H] lowers the forward |
+| `PremiumCents` | `Price / \|face\| × 100` for pct | notional_level, intensive | holder-signed (absolute face): equals `DirtyPrice` for a long, its negative for a short (`DirtyPrice` divides by the signed face) |
+| `LocalAnnuityInCents` | `Annuity / \|face\|` | notional_level, intensive | |
+| `CompoundedFixedRate` | `(1 + c/f)^f − 1`, c the annual coupon rate, f coupons a year | rate, intensive | a trade term: constant over the bond's life |
+| `CRIFIRCurve`, `PnlExplain` | as the swap rows (section above); `PnlExplain` rows by factor, e.g. `IR` for the curve and `CREDIT` for the spread, summing to Price(market_to) − Price(market) | frame / ccy | |
+| `DirtyPrice` | `100 × Price / face` | notional_level: a price per 100 face is `pct` (the toy declares `pct`), intensive | same for a long and a short; dead 0 |
+| `AccruedInterest` | coupon × accrual fraction from the last coupon date to s, in the bond's accrual convention (UST: ACT/ACT ICMA) × face, holder-signed | ccy | 0 when s is a coupon date and after maturity; drops to 0 on the drop date of each coupon |
+| `CleanPrice` | `DirtyPrice − 100 × AccruedInterest / face` | notional_level (`pct`, as `DirtyPrice`), intensive | equals the market's quoted clean price for standard settlement; dead 0 |
+| `ModifiedDuration` | `−(1/P) dP/dy` with P the dirty price: `(P(y − h) − P(y + h)) / (2h·P)` on a price-from-yield call, h = 1e-4 | time (`decimal` or `number`), intensive | `≈ −1e4 × IRDelta / Price`; a package's duration in another yield convention (semi-annual vs continuous) differs: convert or bump |
+| `Convexity` | `(1/P) d²P/dy²`: `(P(y + h) + P(y − h) − 2P) / (h²·P)` | time (years²), intensive | some packages report C/100; `IRGammaParallel ≈ Convexity × Price × 1e-8` |
+| `DaysToSettlement` | `(s − pricing date).days` on the bond's settlement calendar | `number` with `scale_with_quantity: false` (the `days` kind) | UST T+1: 1, or 3 over a weekend or a holiday |
+| `RepoRate` | the rate in force on the pricing date: overnight GC or special fixing, or the term rate pinned at resolve | rate (simple, repo day count), intensive | finite on every held date; a special trades **below** GC |
+| `RepoHaircut` | the pinned or default haircut | rate (decimal 0.02 = 2%), intensive | a percent under a decimal declaration finances 100× wrong |
+| `FinancingToDate` | `−principal × Σ_{calendar days x in [s₀, min(s, maturity))} RepoRate(x) / basis`, s₀ the trade date's settlement, principal the holder-signed `(1 − RepoHaircut) × Price(trade date)` pinned by resolve (so a long pays); weekends and holidays use the last business day's fixing (`toylib.bond.financing_to_date`) | ccy, holder-signed (long ≤ 0) | 0 on the trade date; one day: `ΔFinancingToDate = −(1 − h) × Price(t₀) × RepoRate × days / basis` |
+| `Carry` | `(Price − AccruedInterest) − (ForwardPrice − accrued at H)` | ccy, holder-signed; dead 0 | = coupon income over (s, H] minus financing at `RepoRate` |
+| `RollDown` | clean value at H on the reference curve rolled down (time to maturity unchanged, spread held) − clean value now | ccy, holder-signed; dead 0 | flat curve: the pull to par at constant yield; `Carry + RollDown` = the financed P&L to H if the curve does not move; ≈ 0 together on a flat curve with repo = yield and no coupon before H |
+
+**How the engine uses it (DEV-E22).** For every held position whose asset maps `FinancingToDate`, `GenericEngine` books, on each date it marks or exits the position, the `Cashflows` rows dropped since the previous mark (`p < payment_date ≤ d`) plus `FinancingToDate(d) − FinancingToDate(p)`, as cash in the instrument's currency (converted to `result_ccy` when set). It records each part in `backtest.holding_cash[d][position] = (ccy, cashflow, financing)`, and `pnl_explain_table` shows them as `cashflow_pnl` and `financing_pnl`. Both parts telescope, so a financed position's `Total` = ΔPV + coupons + ΔFinancingToDate (a long: − repo interest) exactly, on any grid (`tests/test_holding_cash.py`). Assets that do not map `FinancingToDate` (swaps, swaptions) book nothing extra (gs parity). A strategy with a `cash_accrual` model and a financed position warns once: "a cash_accrual model accrues the whole cash balance, which for a financed position already holds its funding loan (-Price at entry): its FinancingToDate is booked as cash too, so the funding is counted twice (pricebt DEV-E22)".
 
 ### Unit and sign conversions (first-order sensitivities)
 
@@ -332,29 +362,16 @@ functions:   # a swap, from the template's primitives (resolved notional signed,
 | per unit rate (∂PV/∂r, r decimal) | 1e-4 |
 | per 1mm notional, when the unit trade is N | N / 1e6 |
 
-## 3. Declaring a measure unsupported: Bond only
+## 3. No declarations on a contract class
 
-**`IRSwap` and `IRSwaption` cannot declare** (`docs/v2/IR_STRICT_CONTRACT.md` R3-0). Declaring a contract measure, one of its forms, or a preset of it is a load error (`IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them`), and a gap ends the load error with a paste-ready mapping skeleton (`contracts.mapping_skeleton`; `measures.py block <config>` prints the same). Every measure is computable from the primitives of section 1; where your library truly lacks an input, an honest, documented approximation (a shadow curve, a model-based greek) is the only legal outcome, never a constant outside `contracts.ZERO_BY_CONVENTION`.
+**`IRSwap`, `IRSwaption` and `Bond` cannot declare** (`docs/v2/IR_STRICT_CONTRACT.md` R3-0, `docs/v2/BOND_DESIGN.md` decision 4.1). Declaring a contract measure, one of its forms, or a preset of it is a load error (`unsupported_measures declares <M>, a <class> contract measure: Bond/IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them -- map it and remove the declaration`), and a gap ends the load error with a paste-ready mapping skeleton (`contracts.mapping_skeleton`; `measures.py block <config>` prints the same). Every measure is computable from the primitives of section 1 plus the trade's static and repo data; where your library truly lacks an input, an honest, documented approximation (a shadow curve, a model-based greek, a bump on a local copy of the reference curve) is the only legal outcome, never a constant outside `contracts.ZERO_BY_CONVENTION`. A declared measure would break a mixed book's P&L definition, and a fake number would flow silently into hedges, risk triggers and P&L attribution.
 
-A **Bond** may declare a measure (`unsupported_measures:`) when its library **genuinely cannot** produce it, with a reason a reviewer can check. For example:
-
-- "no key-rate bump: the analytics package prices off one yield" (for `IRGamma`);
-- "no discount-only curve: the package discounts at the bond's yield" (for `IRDiscountDeltaParallel`);
-- "no OAS model" (for `LightningOAS`).
-
-Requesting the measure then raises `UnsupportedMeasureError` with that reason, so the caller sees the gap. A fake number would flow silently into hedges, risk triggers and P&L attribution.
+`unsupported_measures:` remains for classes **without** a contract (for example `ConfigInstrument`): a request for a declared measure raises `UnsupportedMeasureError` with the config's reason ([portfolio-and-results.md](portfolio-and-results.md) section 6).
 
 **Not honest (any class):**
 
-- mapping `0.0` for exposure your model has;
-- mapping a proxy with different semantics: an annuity pv01 as gamma's source, a per-year theta, a lognormal vega, a clean price;
-- declaring something every library can compute: `ExpiryInYears`, `IRDailyImpliedVol` when the annual vol is mapped, the `0.0` vol measures of a bond (`measures.py matrix --strict` flags each);
-- leaving a `TODO` reason (`measures.py matrix` flags it).
-
-**Consequences to accept (Bond):**
-
-- a `PnlDefinition` or hedge that needs a declared measure raises for that asset;
-- a declared bond vega breaks mixed books with vol attribution (R2-8).
+- mapping `0.0` for exposure your model has (a `'0.0'` repo rate or financing included);
+- mapping a proxy with different semantics: an annuity pv01 as gamma's source, a per-year theta, a lognormal vega, a clean price as `Price`, a vendor carry with financing in it as `Theta`.
 
 ## 4. Verify numerically
 
@@ -435,4 +452,49 @@ with PricingContext(pricing_date=dt.date(2024, 6, 3)):
     assert all(math.isfinite(val(otm, x)) for x in (IRFwdRate, IRAnnualImpliedVol, ExpiryInYears))
 ```
 
-Over a backtest, the same explain runs every step as `BackTest.pnl_explain_table()`: attribution by measure, residual, and coupon cash. The `pricebt-pnl-attribution` skill covers it.
+### 4.1 Bond identities
+
+The Bond contract's identities (`docs/v2/BOND_DESIGN.md` §3), written against the toy bond (`tests/assets/toy_usd_bond.yaml`, `RepoRate` declared in bp, `DirtyPrice`/`CleanPrice` in pct); point it at your config and adjust the unit factors. `check_asset.py`'s bond pack runs the same identities on any Bond config.
+
+```python
+# the Bond identities on the toy bond config (PYTHONPATH=src;tests, repository root)
+import datetime as dt
+import math
+
+from pricebt.instrument import Bond
+from pricebt.markets import PricingContext
+from pricebt.risk import (AccruedInterest, CleanPrice, Convexity, DaysToSettlement, DirtyPrice, FairPremium,
+                          FinancingToDate, IRDelta, IRGammaParallel, ModifiedDuration, Price, RepoHaircut, RepoRate)
+from pricebt.session import PricebtSession
+
+PricebtSession.use(assets=["tests/assets/toy_usd_bond.yaml"])
+FACE, d1, d2 = 1e6, dt.date(2024, 3, 4), dt.date(2024, 3, 5)
+DELTA = IRDelta(aggregation_level="Type")
+
+
+def val(inst, measure):
+    return float(inst.calc(measure).result())
+
+
+bond = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=FACE, settlement_currency="USD")
+with PricingContext(pricing_date=d1):
+    bond.resolve()  # pins the trade date, its settlement, the financed principal (and a term rate)
+    p, dirty, clean, ai = val(bond, Price), val(bond, DirtyPrice), val(bond, CleanPrice), val(bond, AccruedInterest)
+    assert math.isclose(clean + 100 * ai / FACE, dirty, rel_tol=1e-12)        # clean + accrued = dirty (per 100)
+    assert math.isclose(dirty * FACE / 100, p, rel_tol=1e-12)                    # dirty x face / 100 = Price
+    assert val(bond, FairPremium) == p                                           # FairPremium == Price
+    assert math.isclose(val(bond, ModifiedDuration), -1e4 * val(bond, DELTA) / p, rel_tol=1e-3)
+    assert math.isclose(val(bond, Convexity), 1e8 * val(bond, IRGammaParallel) / p, rel_tol=1e-3)
+    assert val(bond, DaysToSettlement) == 1.0                                    # a Monday, T+1
+    assert val(bond, FinancingToDate) == 0.0                                     # 0 on the trade date
+    haircut = val(bond, RepoHaircut)
+with PricingContext(pricing_date=d2):
+    one_day, rate = val(bond, FinancingToDate), val(bond, RepoRate) / 1e4
+# one calendar day of overnight repo, ACT/360: the day [s(d1), s(d2)) is charged at that calendar day's RepoRate,
+# which with T+1 on consecutive weekdays is the rate in force on d2
+assert math.isclose(one_day, -(1 - haircut) * p * rate / 360, rel_tol=1e-9)
+```
+
+Also check, in your library: the price ↔ yield round trip (`Price` from `IRFwdRate` reprices to itself); forward parity (`ForwardPrice` by the formula above from `Price`, `RepoRate` and the coupon schedule); `Carry + RollDown ≈ 0` on a flat curve when the repo equals the yield (same compounding, a horizon with no coupon); and, over a short financed backtest across a coupon date, `Total` = ΔPrice + coupons + ΔFinancingToDate (`tests/test_holding_cash.py` is the pricebt-side proof).
+
+Over a backtest, the same explain runs every step as `BackTest.pnl_explain_table()`: attribution by measure, residual, coupon cash (`cashflow_pnl`) and, for a financed position, `financing_pnl`. The `pricebt-pnl-attribution` skill covers it.

@@ -32,9 +32,12 @@ instruments:                             # named instrument templates; kwargs ar
   # a swaption: buy_sell is the POSITION, pay_or_receive the option type (Pay | Receive | Straddle); both required
   #   class: IRSwaption
   #   kwargs: {pay_or_receive: Pay, buy_sell: Buy, expiration_date: 3m, termination_date: 10y, notional_currency: USD, notional_amount: 10000000, strike: ATM}
-  # a bond: buy_sell and identifier required; `size` is the face amount
+  # a bond: buy_sell and identifier required; `size` is the face amount. It is financed in repo by its asset
+  # config (GC or special, overnight or term, haircut; T+1 settlement): the config's defaults: keys are kwargs
+  # too, e.g. the toy's repo_term (overnight | term) and repo_haircut (decimal); coupons and repo interest are
+  # booked as cash (pricebt DEV-E22)
   #   class: Bond
-  #   kwargs: {buy_sell: Buy, identifier: TOY 4.25 2034-11-15, size: 10000000, settlement_currency: USD}
+  #   kwargs: {buy_sell: Buy, identifier: TOY 4.25 2034-11-15, size: 10000000, settlement_currency: USD, repo_term: overnight, repo_haircut: 0.02}
 
 # --- when ---------------------------------------------------------------------------------------
 dates:
@@ -84,7 +87,7 @@ costs:
   model: dv01_bp                         # none | constant | notional_bp | dv01_bp
   level: 0.25                            # constant: currency per trade; notional_bp: bp of notional; dv01_bp: bp of dv01 per side
 financing:
-  cash_accrual_rate: 0.0                 # annual rate on cash (ConstantCashAccrualModel); 0 = no accrual
+  cash_accrual_rate: 0.0                 # annual rate on cash (ConstantCashAccrualModel); 0 = no accrual; must be 0 with a Bond (its repo is FinancingToDate)
 initial_value: 0                         # starting cash (P&L view when 0)
 
 # --- judging it ---------------------------------------------------------------------------------

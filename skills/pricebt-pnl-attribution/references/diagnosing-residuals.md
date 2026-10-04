@@ -63,9 +63,11 @@ In a toy or trending market, several attributes drift together, so more than one
 - **Fix.** Translate the curve, keeping the forwards: `DF'(x) = DF(x)/DF(t+1d)` (IR_RISK_DESIGN R2-4).
 
 ### 6. Coupons: `Cashflows` vs total-return `Price`
-- **Symptom.** The residual on the payment step is about −coupon, `worst_date` is the coupon date, and the grade is FAIL. The bond demo without `Cashflows` shows −21,250 on 2024-05-15.
+- **Symptom.** The residual on the payment step is about −coupon, `worst_date` is the coupon date, and the grade is FAIL.
 - **Cause.** `Price` drops a paid coupon (it values only the flows still to come), but `Cashflows` is not mapped, or not among the run's `risks`.
 - **Fix.** Map `Cashflows` (a frame of the flows `Price` will drop, holder-signed) and run with `risks=[Cashflows]`. `cashflow_pnl` then carries the coupon and `economic_pnl` is smooth.
+- **A financed bond cannot show this.** Every `Bond` maps `Cashflows` and `FinancingToDate` (the strict contract), so the engine books its coupons as holding cash (DEV-E22) and the table reads them from `bt.holding_cash`, with or without `Cashflows` in `risks=`. The bond demo books its 21,250 coupon on 2024-05-14, the trade date `Price` drops it (T+1: the business day before the 2024-05-15 payment), with a residual of −0.58 on that step.
+- **A coupon on the wrong step** (the residual is −coupon on one step and +coupon on a neighbour) means the bond's `Cashflows.payment_date` is the payment date, not the drop date: `Price` drops the flow on the first trade date whose settlement is on or after the payment date, and `payment_date` must be that trade date.
 - **Total-return `Price`** (it never drops a flow, like the toy swap): `Cashflows` is an empty frame and the coupon is already in `actual_pnl`.
 - **`Theta` must follow the same total-return rule**: `Price(t+1d) + cash paid in (t, t+1d] − Price(t)`. A theta that omits the cash term while `Price` drops the coupon shows a `PNL_theta` spike of about −coupon on the step before the payment, and a residual of about +coupon.
 
@@ -115,12 +117,21 @@ In a toy or trending market, several attributes drift together, so more than one
 - **A residual** that appears only in the hedged run points at the hedge instruments' configs. Run each leg alone.
 
 ### 14. `actual_pnl` does not match `Total`
-- `pnl_explain_table` sees only the held book's price changes and the paid cash. It does not see:
+- `pnl_explain_table` sees only the held book's price changes, the paid cash and the booked financing. It does not see:
   - transaction costs;
   - cash accrual;
   - entry at a price other than PV;
-  - the engine's non-booking of coupons (gs parity).
-- **Reconcile** with `Σ actual_pnl = Total(end) − Total(start)` on a no-cost, no-accrual run (definitions.md §4).
+  - the engine's non-booking of swap and swaption coupons (gs parity).
+- **Reconcile** on a no-cost, no-accrual run (definitions.md §4): `Σ economic_pnl = Total(end) − Total(start)` for a book of financed bonds (the bond demo: both 82,093.81); `Σ actual_pnl = Total(end) − Total(start)` for swaps and swaptions with no coupon in the period.
+- **A financed bond with a `cash_accrual` model** has `Total` below `Σ economic_pnl` by about the repo interest a second time: the cash balance holds the funding loan (−Price at entry) and the accrual charges it again. The engine warns once ("the funding is counted twice"). Remove the accrual.
+
+### 15. Financed bonds
+- **Financing never reaches the residual.** `financing_pnl` is in both `economic_pnl` and `explained_pnl`. A residual that co-moves with `financing_pnl` (corr ≈ −1, scale ≈ 0) therefore means the financing is counted twice: `Theta` nets repo interest (the contract excludes it), or the config's `Price` already subtracts financing (a total-return `Price`, rejected by `docs/v2/BOND_DESIGN.md` §2.1).
+- **Weekend and holiday steps.** `Price` is a settlement-date value, so over a Friday → Monday step settlement moves Monday → Tuesday (T+1) and the yield's accrual covers one business-day step, not three calendar days. The contract's `Theta` spreads the next-business-day step per calendar day, so `Theta × days` stays exact on a business-day grid. A `Theta` that is `Price(t + 1 calendar day) − Price(t)` is 0 or 3 days of accrual depending on the weekday: the residual alternates with the weekday (Fridays and pre-holiday steps).
+- **Financing steps follow settlement too.** `FinancingToDate` accrues to the settlement of the pricing date, so the Friday step pays three days of repo and the Monday step one (the last business day's fixing over weekends and holidays). Repo booked on trade-date day counts is off by a day around every weekend; the check is `ΔFinancingToDate = −(1 − haircut) · Price(trade date) · RepoRate · days / basis` with days between settlement dates.
+- **Coupon drop date.** See §6: a coupon booked one step late or early leaves ±coupon pairs.
+- **Accrued interest.** `Price` is dirty: it rises with the accrual every day and falls by the coupon on the drop date, while `AccruedInterest` resets to 0. A `Theta` computed on the clean price misses the accrual (about `face × coupon / 365` a day), which then sits in the residual on every step, co-moving with `PNL_theta`.
+- **Spread moves.** `bond_pnl_definition` attributes against the bond's own yield, which includes its spread to the curve, so a spread move is in `PNL_delta`, not the residual. A custom definition that attributes on the curve rate instead (for example an `IR` + `CREDIT` split) needs a spread attribute, or the spread move lands in the residual (definitions.md §7).
 
 ## Confirm on one step by hand
 

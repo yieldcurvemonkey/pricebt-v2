@@ -4,7 +4,7 @@ Every metric in metrics.json, as computed by `compute_metrics` in [`tearsheet.py
 
 ## Conventions
 
-- **P&L, not returns.** `Total = price + Cumulative Cash + Transaction Costs` (DESIGN.md §8.3). With `initial_value = 0` (the default) there is no capital base: `Total` is cumulative P&L in currency, so every "return" below is a currency P&L. A percentage return would need a capital figure that the backtest does not have.
+- **P&L, not returns.** `Total = price + Cumulative Cash + Transaction Costs` (DESIGN.md §8.3). For a financed position (every `Bond`), `Cumulative Cash` also holds the engine's holding cash: the coupons dropped and the change of `FinancingToDate` (DEV-E22; per date and position in `backtest.holding_cash`). So a bond book's `Total` is already net of repo interest and includes its coupons. With `initial_value = 0` (the default) there is no capital base: `Total` is cumulative P&L in currency, so every "return" below is a currency P&L. A percentage return would need a capital figure that the backtest does not have.
 - **Sharpe of P&L = information ratio against cash.** With a zero risk-free rate and no capital base, `mean(daily P&L) / std(daily P&L) × √A` is the information ratio of the strategy against holding cash. It is invariant to notional: doubling the size doubles the mean and the standard deviation.
 - **Daily P&L** `p_t = Total_t − Total_{t−1}` over consecutive rows of `result_summary`. There are N = rows − 1 observations. Off-grid rows (cash or cost dates between grid dates) are rows too. The first row's value (typically a day-one transaction cost) is in Total but in no `p_t`.
 - **Annualisation factor A** = 252 by default (observations per year for a business-day grid). Use 12 for a monthly grid, 52 for weekly. `Years = N / A`.
@@ -109,7 +109,7 @@ Rendered only when `build_tearsheet(..., attribution=backtest.pnl_explain_table(
 
 | Metric | Formula | Units | Notes |
 |---|---|---|---|
-| component total | sum over steps of the column (each attribute, `explained_pnl`, `residual_pnl`, `actual_pnl`, `cashflow_pnl`, `economic_pnl`) | ccy | an attribute's total equals the last value of `pnl_explain()` for it |
+| component total | sum over steps of the column (each attribute, `explained_pnl`, `residual_pnl`, `actual_pnl`, `cashflow_pnl`, `financing_pnl`, `economic_pnl`) | ccy | an attribute's total equals the last value of `pnl_explain()` for it; `financing_pnl` (repo interest on financed positions) is part of `explained_pnl`, never the residual |
 | share of economic P&L | component total / `economic_pnl` total | fraction | shares of the attributes and the residual sum to 1 |
 | unexplained share | the worst of the residual variance share, 1 − r2 and \|Σ residual\| / Σ\|economic\| (`attribution.grade`) | fraction | graded PASS ≤ 5%, WARN ≤ 25%, else FAIL; also FAIL on any NaN, or when a residual signature names an attribute on a material residual; the WARN/FAIL line under the table is `attribution.grade_reason` |
 | residual variance share | var(`residual_pnl`) / var(`economic_pnl`) over the steps | fraction | blind to a steady bias (a sign-flipped theta); blank with fewer than two steps |

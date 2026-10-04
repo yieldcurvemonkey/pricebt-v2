@@ -1,8 +1,8 @@
-# Broken on purpose (check_asset fixture): the bond's IRDelta is the library's risk per -1bp (positive for a long bond) mapped without
-# negating. Must FAIL bond_dv01_sign.
+# Broken on purpose (check_asset fixture): ForwardPrice finances Price to the horizon but keeps a coupon paid before it (no
+# coupon term). Must FAIL bond_forward_parity (on a date whose horizon holds a coupon) and nothing else.
 # Copy of tests/assets/toy_usd_bond.yaml with ONE thing broken: regenerate_bond_fixtures.py rewrites it from the toy.
 schema_version: 1
-asset: bad_bond_dv01_positive
+asset: bad_bond_forward_parity
 description: >
   Toy USD fixed-coupon bond with repo financing on the deterministic rates world
   (tests/toylib/bond.py): a tiny bond master keyed by identifier, a flat curve plus a sinusoidal
@@ -33,7 +33,7 @@ resolve:
   expr: 'tb.resolve_bond(market, kwargs)'
 functions:
   npv:             {expr: 'tb.npv(market, trade, pricebt_date)', unit: ccy}   # Price and FairPremium; valued on the pricing date (a CloseMarket override passes no time)
-  delta:           {expr: '-tb.delta(market, trade)', unit: ccy_per_bp}   # MISTAKE: per -1bp (long bond > 0)
+  delta:           {expr: 'tb.delta(market, trade)', unit: ccy_per_bp}
   discount_delta:  {expr: 'tb.discount_delta(market, trade)', unit: ccy_per_bp}
   yield_dv01:      {expr: 'tb.yield_dv01(market, trade)', unit: ccy_per_bp}
   gamma:           {expr: 'tb.gamma(market, trade)', unit: ccy_per_bp2}
@@ -46,7 +46,7 @@ functions:
   expiry_in_years: {expr: 'tb.expiry_in_years(market, trade)', unit: decimal}
   annuity:         {expr: 'tb.annuity(market, trade)', unit: ccy}
   cashflows:       {expr: 'tb.cashflows(market, trade)', unit: ccy, returns: frame, scale_columns: [payment_amount, notional]}
-  forward_price:   {expr: 'tb.forward_price(market, trade)', unit: ccy}
+  forward_price:   {expr: 'tb.npv(market, trade) * (1 + tb._repo(market, trade) * (tb.horizon(tb.settle(market.curve.ref_date)) - tb.settle(market.curve.ref_date)).days / 360)', unit: ccy}   # MISTAKE: coupons before H kept
   premium_cents:   {expr: 'tb.premium_cents(market, trade, pricebt_date)', unit: pct}   # Price / |face| per 100
   local_annuity:   {expr: 'tb.local_annuity_in_cents(market, trade)', unit: decimal}
   compounded_rate: {expr: 'tb.compounded_fixed_rate(trade)', unit: bp}
