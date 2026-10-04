@@ -109,13 +109,13 @@ and convexity (decimal or number, intensive).
 | `RepoHaircut` | rate | s | DEV-I21. The fraction of the settlement value not financed (decimal 0.02 = 2%). |
 | `FinancingToDate` | value | s | DEV-I21. Cumulative repo interest on the funding leg, from the settlement of the trade date to the settlement of the pricing date (or maturity, if earlier), holder-signed: a long pays (≤ 0), a short lends the cash and receives (≥ 0). Principal `(1 − RepoHaircut) · Price(trade date)`, pinned at resolve; simple interest at each calendar day's `RepoRate` (the last business day's fixing over weekends and holidays). 0 on the trade date. **The engine books its change as cash (DEV-E22).** |
 | `Carry` | value | s | DEV-I21. Clean value now minus clean forward value at H: `(Price − AccruedInterest) − (ForwardPrice − AI(H))` = coupon income over (s, H] minus financing at `RepoRate`. Dead: 0. |
-| `RollDown` | value | s | DEV-I21. Clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now. On a flat curve: the pull to par at constant yield. `Carry + RollDown` = the financed P&L to H if the curve does not move. Dead: 0. |
+| `RollDown` | value | s | DEV-I21. Clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now. On a flat curve: the pull to par at constant yield. `Carry + RollDown` = the P&L to H with the whole `Price` financed and coupons reinvested at `RepoRate`, if the curve does not move. Dead: 0. |
 
 **Identities** (the toy tests and the checker rows): `CleanPrice + 100·AccruedInterest/face = DirtyPrice`;
 `DirtyPrice·face/100 = Price = FairPremium`; `PremiumCents` (pct) `= sign(face)·DirtyPrice` (`PremiumCents` divides by |face|, so it carries the holder's sign; `DirtyPrice` does not); price ↔ yield round trip;
 `ModifiedDuration ≈ −1e4·IRDelta/Price`; `Convexity` ≈ the finite-difference second derivative in yield;
 `ForwardPrice` parity; `Carry + RollDown = 0` on a flat curve when the repo matches the yield (same compounding, a
-horizon with no coupon); `ΔFinancingToDate` over a step = `−(1 − h)·Price(t₀)·Σ RepoRate(day)/basis` over the calendar days between the two settlement dates (each day at the rate fixed on its last business day). `ForwardPrice` and `Carry` finance the whole `Price` (a forward price does not depend on the haircut), so `Carry + RollDown` matches a backtest's financed P&L only for a zero haircut.
+horizon with no coupon); `ΔFinancingToDate` over a step = `−(1 − h)·Price(t₀)·Σ RepoRate(day)/basis` over the calendar days between the two settlement dates (each day at the rate fixed on its last business day). `ForwardPrice` and `Carry` finance the whole `Price` (a forward price does not depend on the haircut), so `Carry + RollDown` matches a backtest's financed P&L only for a zero haircut and no coupon in (s, H] (`ForwardPrice` reinvests a coupon at the repo rate; the backtest holds it as cash).
 
 ## 4. The engine extension (DEV-E22) and the table (4.7)
 

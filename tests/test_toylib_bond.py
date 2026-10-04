@@ -39,6 +39,8 @@ SCHEDULES = {
     SPECIAL_ID: (0.0425, date(2034, 11, 15), (5, 11)),
     GC_ID: (0.045, date(2054, 2, 15), (2, 8)),
 }
+SHORT_ID = "TOY 3.5 2027-05-15"  # matures inside the tests' horizons; GC (no special)
+SCHEDULES_SHORT = {SHORT_ID: (0.035, date(2027, 5, 15), (5, 11))}
 
 
 # ------------------------------------------------------------------------------------ the test's own bond maths
@@ -58,12 +60,12 @@ def _wd_on_or_before(d):
 
 
 def _coupon_dates(ident):
-    _c, mat, months = SCHEDULES[ident]
+    _c, mat, months = {**SCHEDULES, **SCHEDULES_SHORT}[ident]
     return [date(y, m, 15) for y in range(2020, mat.year + 1) for m in months if date(y, m, 15) <= mat]
 
 
 def _flows(ident, face):
-    c, mat, _months = SCHEDULES[ident]
+    c, mat, _months = {**SCHEDULES, **SCHEDULES_SHORT}[ident]
     return [(p, face * c / 2) for p in _coupon_dates(ident)] + [(mat, face)]
 
 
@@ -73,7 +75,7 @@ def _price(flows, s, y):
 
 
 def _accrued(ident, face, x):
-    c, mat, _months = SCHEDULES[ident]
+    c, mat, _months = {**SCHEDULES, **SCHEDULES_SHORT}[ident]
     if x >= mat:
         return 0.0
     pays = _coupon_dates(ident)
@@ -117,6 +119,9 @@ def test_price_is_the_settlement_value_at_the_yield_and_the_yield_is_z_plus_spre
     assert tb.npv(m, b) == pytest.approx(_price(_flows(ident, N), s, y), rel=1e-12)
     assert tb.yield_bp(m, b) == pytest.approx(y * 1e4, abs=1e-9)
     assert tb.days_to_settlement(m, b) == (s - t).days
+    # accrued at settlement, not t + 1 (a Friday settles on Monday). Mutation: accrued at t + 1 -> fails
+    assert tb.accrued(m, b) == pytest.approx(_accrued(ident, N, s), rel=1e-12)
+    assert tb.clean_price(m, b) == pytest.approx(100 * (_price(_flows(ident, N), s, y) - _accrued(ident, N, s)) / N, rel=1e-12)
     _, short = _resolve(ident, d=t, buy_sell="Sell")
     assert tb.npv(m, short) == pytest.approx(-_price(_flows(ident, N), s, y), rel=1e-12)
     assert tb.yield_bp(m, short) == pytest.approx(y * 1e4, abs=1e-9)
@@ -186,6 +191,48 @@ def test_forward_price_parity(t, horizon, coupon_inside):
     assert tb.repo_rate(m, b) == pytest.approx(r * 1e4, rel=1e-12)
     carry = (price - _accrued(SPECIAL_ID, N, s)) - (fwd - _accrued(SPECIAL_ID, N, horizon))
     assert tb.carry(m, b) == pytest.approx(carry, rel=1e-9)
+    # flat curve: the rolled value at H is the flows after H at the same yield; coupons paid in
+    # (s, H] are not in it. Mutation: keep them in the horizon value -> fails
+    y = _y(t)
+    pull = (_price(flows, horizon, y) - _accrued(SPECIAL_ID, N, horizon)) - (price - _accrued(SPECIAL_ID, N, s))
+    assert tb.roll_down(m, b) == pytest.approx(pull, rel=1e-9)
+
+
+def test_roll_down_on_a_sloped_curve_rolls_the_curve_not_the_forwards():
+    """On a sloped curve the rolled value at H discounts each flow p by the TODAY curve's DF over
+    the time to maturity left at H, DF(t, t + (p - H)), with the spread held: not by the forward
+    curve DF(H, p). Mutation: forward-curve discounting in toylib.bond.roll_down -> fails."""
+    z, slope, sp = 0.03, 0.002, 0.0025
+    m = SimpleNamespace(curve=tr.ToyCurve(D, "USD", z, None, slope), spread=sp, repo=0.03)
+    _, b = _resolve(GC_ID, m=m)
+    s, horizon, flows = date(2024, 3, 5), date(2024, 4, 5), _flows(GC_ID, N)
+
+    def df(x):  # the test's own sloped discount factor from D
+        tau = (x - D).days / 365
+        return math.exp(-(z + slope * tau) * tau)
+
+    now = sum(a * df(p) / df(s) * math.exp(-sp * (p - s).days / 365) for p, a in flows if p > s)
+    rolled = sum(a * df(D + (p - horizon)) * math.exp(-sp * (p - horizon).days / 365) for p, a in flows if p > horizon)
+    want = (rolled - _accrued(GC_ID, N, horizon)) - (now - _accrued(GC_ID, N, s))
+    forward_curve = sum(a * df(p) / df(horizon) * math.exp(-sp * (p - horizon).days / 365) for p, a in flows if p > horizon)
+    assert abs(rolled - forward_curve) > 1000  # the two conventions really differ here
+    assert tb.roll_down(m, b) == pytest.approx(want, rel=1e-9)
+
+
+def test_forward_price_when_the_bond_matures_before_the_horizon():
+    """TOY 3.5 2027-05-15 on Mon 2027-05-03: settles 05-04, H = 06-04, maturity 05-15 inside:
+    the final coupon and the principal are both reinvested to H. Mutation: principal left out of
+    the paid flows -> fails."""
+    t = date(2027, 5, 3)
+    m, b = _resolve(SHORT_ID, d=t)
+    s, horizon, r, flows = date(2027, 5, 4), date(2027, 6, 4), _repo(t, special=0.0), _flows(SHORT_ID, N)
+    assert tb.horizon(s) == horizon
+    price = _price(flows, s, _y(t))
+    paid = [(p, a) for p, a in flows if s < p <= horizon]
+    assert len(paid) == 2  # the final coupon and the principal
+    fwd = price * (1 + r * (horizon - s).days / 360) - sum(a * (1 + r * (horizon - p).days / 360) for p, a in paid)
+    assert tb.forward_price(m, b) == pytest.approx(fwd, rel=1e-9, abs=1e-6)
+    assert tb.carry(m, b) == pytest.approx((price - _accrued(SHORT_ID, N, s)) - fwd, rel=1e-9, abs=1e-6)  # AI(H) = 0 after maturity
 
 
 # ------------------------------------------------------------------------------------ 5. zero carry + roll
@@ -384,3 +431,16 @@ def test_dead_bond_sensitivities_zero_levels_finite():
     for fn in (tb.yield_bp, tb.repo_rate, tb.financing_to_date, tb.spread_bp):
         assert math.isfinite(fn(m, b)), fn.__name__
     assert tb.npv(tb.market(date(2034, 11, 13), "USD"), b) != 0.0  # Mon: settles Tue, before the Wed maturity
+
+
+def test_financing_stops_at_maturity():
+    """TOY 3.5 2027-05-15 (a Saturday) bought 2027-04-01, seen 2027-05-20: interest runs from the
+    trade's settlement to maturity, not to the pricing date's settlement. Mutation: no maturity cap
+    in toylib.bond.financing_to_date -> fails."""
+    t0 = date(2027, 4, 1)
+    _, b = _resolve(SHORT_ID, d=t0)
+    s0 = _next_wd(t0)
+    principal = (1 - HAIRCUT) * _price(_flows(SHORT_ID, N), s0, _y(t0))
+    want = -_interest(principal, s0, date(2027, 5, 15), special=0.0)
+    for seen in (date(2027, 5, 20), date(2027, 6, 30)):
+        assert tb.financing_to_date(tb.market(seen, "USD"), b) == pytest.approx(want, rel=1e-12), seen

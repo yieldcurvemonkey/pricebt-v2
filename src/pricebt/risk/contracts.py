@@ -232,7 +232,7 @@ _BOND_EXTRA = (
          "clean value now minus clean forward value at H: (Price - AccruedInterest) - (ForwardPrice - accrued at H) = coupon income over (s, H] minus financing at RepoRate; ccy, holder-signed; dead: 0 (DEV-I21)."),
     _req("RollDown", "value", "scalar",
          "clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now; on a flat curve, the pull to par at constant yield. "
-         "Carry + RollDown is the P&L to H, the whole Price financed at RepoRate, if the curve does not move (with a haircut h the backtest finances (1 - h) of it: FinancingToDate). ccy, holder-signed; dead: 0 (DEV-I21)."),
+         "Carry + RollDown is the P&L to H, the whole Price financed at RepoRate and coupons paid in (s, H] reinvested at it, if the curve does not move (a backtest finances (1 - h) of Price, FinancingToDate, and holds coupons as cash). ccy, holder-signed; dead: 0 (DEV-I21)."),
 )
 
 CONTRACTS: Dict[str, Tuple[MeasureRequirement, ...]] = {
