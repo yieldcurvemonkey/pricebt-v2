@@ -474,3 +474,13 @@ contract from those primitives exactly as `skills/pricebt-connect-pricing-librar
 lays out, and the opt-in `tests/test_live_arbs_bond.py` would carry the checks the task lists (clean + accrued = dirty,
 yield ↔ price, duration and convexity against bumps, a coupon date, a financed one-month carry backtest, and
 `check_asset.py` with no FAIL).
+
+### The swap tier on `v2-bonds` (2026-10-04)
+
+The bond work changed code the live swap files exercise (`pnl_explain_table` gained `financing_pnl`; the checker's
+contract, fold and size rows were rewritten; the strict-contract error texts now name Bond). The swap config maps
+no `FinancingToDate`, so the engine's holding cash never applies to it. One deliberate rerun of
+`tests/test_live_arbs.py` + `tests/test_live_arbs_contract.py` + `tests/test_live_arbs_pnl.py` at `62eb52b`:
+**41 passed in 373.4s**, with no change to the test files. Side effect: the documented one only, an empty
+today-dated fixings-cache folder (`USD-SOFR-1D_fixings/2026-10-03`, 0 files). No bond object of ARBS was imported.
+

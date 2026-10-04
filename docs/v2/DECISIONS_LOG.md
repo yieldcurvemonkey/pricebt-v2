@@ -1452,3 +1452,32 @@ branch". The repository's default branch is `v2-redesign`, which already points 
 `v2-ir-required` (`54df01a`; PR #2 is still open only as a record). So the PR is opened from `v2-bonds` into
 `v2-redesign`: its diff is exactly the bond work, the same diff a PR into `v2-ir-required` would show, and merging it
 updates the default branch as asked. PR #2 is left as it is.
+
+## 2026-10-03 — v2-bonds: skills and checker decisions taken during implementation (revision 4)
+
+Decisions the phase agents took and the orchestrator verified; each has a test and a named mutation
+(BOND_DESIGN §8):
+- **`holding_cash` is keyed by the position object**, not its name: two unnamed initial-portfolio positions share a
+  name, and the review found the name key mixed their records (`test_two_positions_with_the_same_name_keep_their_own_records`).
+- **Under `result_ccy` each flow converts at its own payment date**, the financing change at the mark date: the
+  converted flows are grid-independent; the financing conversion stays slightly grid-dependent (documented).
+- **`tests/skills/fixtures/check_asset/bad_todo_reason.yaml` is deleted.** It demonstrated a declaration whose reason
+  starts with TODO; on a contract class every declaration is now a load error, so no loadable contract-class config
+  can reach that state. The checker's TODO-reason rule still applies to classes without a contract.
+- **`measures.py matrix --strict` is accepted and does nothing**: every contract class is strict, so the flag has no
+  stricter mode to select; it stays so old scripts do not break.
+- **The checker's carry and forward identities allow one day of repo interest on |Price|.** A monthly carry is a
+  small difference of large numbers; a correct library that pays a weekend coupon on the next business day differs
+  from the checker's reconstruction by about one day of reinvestment, which must not FAIL.
+- **The checker's horizon and coupon payment dates follow the bond's calendar** (the dates with a market), after the
+  review showed a holiday horizon FAILed a correct config; the holiday case is tested on
+  `tests/skills/fixtures/check_asset/holiday_bond_lib.py`, a test-only copy of the toy with 2026-27 US Treasury
+  holidays (the toy itself stays weekday-only).
+- **The fold row allows a direction-dependent repo rate**: if `RepoRate` differs between long and short, the row
+  skips the measures that depend on it (`RepoRate`, `RepoHaircut`, `FinancingToDate`, `ForwardPrice`, `Carry`) and
+  says so; with equal rates the full fold applies.
+- **The bond template's term repo is its own primitive** (`lib_term_repo_rate`), so a term-repo config never locks
+  the overnight fixing by accident.
+- **The holding-cash jump rule nets out the step's market move** (IRDelta and IRGammaParallel times the yield move,
+  plus Theta), so a large yield move next to a coupon drop does not FAIL a correct config.
+
