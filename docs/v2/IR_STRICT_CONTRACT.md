@@ -39,7 +39,10 @@ For the classes **`IRSwap` and `IRSwaption`**, a contract row is satisfied **onl
   would compile as `Ellipsis`). A config cannot load from the skeleton alone, because a strict contract forbids
   placeholders.
 - **`UnsupportedMeasureError` can no longer arise for a strict class.** It still applies to `Bond`.
-- **`Bond` is unchanged.** It keeps map-or-declare, R2-9 and the unsupported block.
+  *(Superseded by revision 4, [`BOND_DESIGN.md`](BOND_DESIGN.md) decision 4.1: Bond is strict too, so
+  `UnsupportedMeasureError` arises only for a class without a contract.)*
+- **`Bond` is unchanged.** It keeps map-or-declare, R2-9 and the unsupported block. *(Superseded by
+  revision 4: Bond is strict, its contract is widened, and `contracts.unsupported_block` is gone.)*
 - **Shared data constants in `contracts.py`.** The checker skill imports these and never keeps its own copy:
   - `ZERO_BY_CONVENTION = {"IRSwap": frozenset({IRVega, IRVanna, IRVolga, IRAnnualImpliedVol, IRAnnualATMImpliedVol, IRDailyImpliedVol, IRBasis, IRXccyDelta}), "IRSwaption": frozenset({IRBasis, IRXccyDelta})}`
     (names as strings; a single-curve or single-currency library may legally map these to a literal 0);

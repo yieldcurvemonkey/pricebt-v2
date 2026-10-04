@@ -249,12 +249,11 @@ def _instrument_classes() -> Tuple[str, ...]:
 
 def _check_contract(name: str, instrument: str, risk_measures: Mapping[str, "RiskMapping"], functions: Mapping[str, FunctionSpec], portfolio_functions: Mapping[str, FunctionSpec], unsupported: Mapping[str, Mapping[str, str]]) -> Dict[Tuple[str, str], str]:
     """pricebt DEV-I11: every measure and form of the instrument's contract (`risk.contracts`) is
-    mapped with an allowed unit or, unless the class is strict (`contracts.is_strict`: mapping
-    only), declared under `unsupported_measures:`. All problems go into one `ConfigError` that ends
-    with a paste-ready block for the missing ones (a mapping skeleton for a strict class, else a
-    declaration block); a stale
-    declaration of something mapped is only a `UserWarning` (R2-9: the mapping wins), as is a
-    declaration the contract cannot count. Returns `contracts.provided_forms` for `AssetConfig`."""
+    mapped with an allowed unit; a class with a contract is strict (R3-0; DESIGN.md section 11, DEV-I11),
+    so declaring a contract measure under `unsupported_measures:` is a problem too. All problems go
+    into one `ConfigError` that ends with a paste-ready mapping skeleton for the missing forms; a
+    declaration the contract cannot count is only a `UserWarning`. Returns
+    `contracts.provided_forms` for `AssetConfig`."""
 
     def summary(fname: Optional[str]) -> Optional[contracts.MappedFunction]:
         if fname is None:
@@ -268,13 +267,10 @@ def _check_contract(name: str, instrument: str, risk_measures: Mapping[str, "Ris
         warnings.warn(f"asset {name}: {w}", UserWarning, stacklevel=3)
     if result.problems:
         msg = f"{len(result.problems)} measure-contract problem(s) for instrument {instrument} (docs/v2/IR_RISK_DESIGN.md section 2):\n" + "\n".join(f"  - {p}" for p in result.problems)
-        if result.missing and contracts.is_strict(instrument):
-            # docs/v2/IR_STRICT_CONTRACT.md R3-0: no declarations for this class, so a mapping skeleton
+        if result.missing:
+            # docs/v2/IR_STRICT_CONTRACT.md R3-0: no declarations for a contract class, so a mapping skeleton
             msg += f"\nMap each missing measure (merge into functions:, portfolio_functions: and risk_measures:, replacing each {contracts.SKELETON_EXPR!r} with the computation):\n"
             msg += contracts.mapping_skeleton(instrument, result.missing)
-        elif result.missing:
-            msg += "\nMap each missing measure, or declare what the library cannot compute (merge into unsupported_measures:, replacing each TODO with an honest reason):\n"
-            msg += contracts.unsupported_block(instrument, result.missing)
         raise ConfigError(msg, asset=name, key="risk_measures")
     return contracts.provided_forms(instrument, mapped)
 

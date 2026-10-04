@@ -379,4 +379,4 @@ risk_measures:                         # every row of the IRSwap contract (src/p
   CRIFIRCurve: crif
   PnlExplain: pnl_explain
 # No unsupported_measures: block -- an IRSwap config must map every contract measure (IR_STRICT_CONTRACT R3-0;
-# declaring one is a load error). Only a Bond may still declare (config-template-bond.yaml).
+# declaring one is a load error). Bond is strict too (BOND_DESIGN 4.1; config-template-bond.yaml).

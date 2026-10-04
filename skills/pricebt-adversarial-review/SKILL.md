@@ -1,6 +1,6 @@
 ---
 name: pricebt-adversarial-review
-description: Adversarially review a pricebt backtest before anyone trusts it - a severity-ranked checklist of pricebt-specific traps (coupons not booked, same-close execution, offsetting MR exits, dropped market dates, frictionless defaults, unit/sign errors) and textbook pitfalls (look-ahead, data snooping, overfitting, costs, regime, bad marks), automated robustness experiments (cost ladder, parameter sweep, truncation and signal-shift look-ahead tests, sub-periods, in/out-of-sample), and a findings report. Use after every backtest and before any tearsheet.
+description: Adversarially review a pricebt backtest before anyone trusts it - a severity-ranked checklist of pricebt-specific traps (swap coupons not booked, a financed bond's repo and holding cash, funding counted twice with cash accrual, same-close execution, offsetting MR exits, dropped market dates, frictionless defaults, unit/sign errors) and textbook pitfalls (look-ahead, data snooping, overfitting, costs, regime, bad marks), automated robustness experiments (cost ladder, parameter sweep, truncation and signal-shift look-ahead tests, sub-periods, in/out-of-sample), and a findings report. Use after every backtest and before any tearsheet.
 ---
 
 # Adversarial review
@@ -27,8 +27,8 @@ Assume the backtest is wrong and try to prove it. A finding is a claim with evid
 
 | Level | Meaning | Examples |
 |---|---|---|
-| **Blocker** | The headline number is wrong or unsupported | a sign or unit error; look-ahead; unpinned resolve; P&L driven by a mark glitch |
-| **Major** | Materially misleading without a fix or caveat | costs off; carry strategy with coupons not booked; heavy parameter snooping; a single-regime result |
+| **Blocker** | The headline number is wrong or unsupported | a sign or unit error; look-ahead; unpinned resolve; P&L driven by a mark glitch; a financed bond's funding counted twice |
+| **Major** | Materially misleading without a fix or caveat | costs off; a swap carry strategy with coupons not booked; a bond financed at general collateral when it trades special; heavy parameter snooping; a single-regime result |
 | **Minor** | Worth stating; does not change the conclusion | a short history; a few dropped dates; rounding |
 
 ## Procedure

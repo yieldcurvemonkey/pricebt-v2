@@ -37,13 +37,20 @@ COMMON_PASS = [
 ]
 # IR_STRICT_CONTRACT R3-1: the identity rows of the new strict-contract measures, and R3-0's constant scan
 STRICT_PASS = ["ir_premium_cents", "ir_local_annuity", "ir_forward_price", "ir_fair_premium", "ir_par_spread", "ir_compounded_fixed_rate", "ir_crif", "ir_fake_constant"]
+# the strict-contract identities a Bond shares with the swaps (its ForwardPrice, FairPremium, PremiumCents
+# and ParSpread have Bond texts, BOND_DESIGN section 3) and the bond identity and financing rows
+BOND_IDENTITY_PASS = ["ir_local_annuity", "ir_compounded_fixed_rate", "ir_crif", "ir_fake_constant"]
+BOND_PASS = [
+    "bond_clean_dirty", "bond_fair_premium", "bond_premium_cents", "bond_duration", "bond_convexity", "bond_settlement",
+    "bond_accrued_over_coupon", "bond_repo", "bond_financing", "bond_forward_parity", "bond_carry_roll", "bond_holding_cash",
+]
 PACK_PASS = {
     "toy_usd_irs_full.yaml": ["swap_dv01_sign", "swap_bucket_sum", "swap_par_rate_atm", "swap_pnl_explain", "swap_annuity_sign", "measure_series", *STRICT_PASS],
     "toy_usd_swaption.yaml": [*STRICT_PASS, 
         "swaption_buy_sell_fold", "swaption_straddle", "swaption_strike_pinned", "swaption_parity", "swaption_fwd_unit", "swaption_vol_unit", "swaption_vega_sign",
         "swaption_delta_sign", "swaption_gamma_sign", "swaption_prob_exercise", "swaption_expiry", "quantity_scaling[IRVega bucketed]",
     ],
-    "toy_usd_bond.yaml": [
+    "toy_usd_bond.yaml": [*BOND_IDENTITY_PASS, *BOND_PASS,
         "ir_cashflow_drop", "bond_buy_sell_fold", "bond_size_linearity", "bond_dv01_sign", "bond_gamma_sign", "bond_lightning_dv01",
         "bond_yield_unit", "bond_price_yield", "bond_cashflows_bound", "bond_expiry",
         "measure_series",  # tracks the yield (the IRFwdRate function), not the constant 0.0 vol level
@@ -82,8 +89,11 @@ BROKEN_IR = [
     ("bad_swaption_sell_not_folded", "swaption_buy_sell_fold", "FAIL", "Buy vs Sell"),
     ("bad_swaption_theta_per_year", "ir_theta", "FAIL", "looks per year"),
     ("bad_bond_dv01_positive", "bond_dv01_sign", "FAIL", "IRDelta"),
+    # BOND_DESIGN section 3: one break each in the bond identities and the financing contract
+    ("bad_bond_financing_sign", "bond_financing", "FAIL", "a long pays the repo interest"),
+    ("bad_bond_clean_dirty", "bond_clean_dirty", "FAIL", "an accrued added instead of subtracted"),
+    ("bad_bond_forward_parity", "bond_forward_parity", "FAIL", "a coupon paid before H must be subtracted"),
     ("bad_half_gamma_swaption", "ir_gamma_ratio", "FAIL", "half-gamma"),
-    ("bad_todo_reason", "contract[Theta]", "WARN", "declaration reason is a TODO"),  # a Bond: only a Bond may declare
     # one per strict-contract identity row (R3-1) and the constant scan (R3-0)
     ("bad_premium_cents_pct", "ir_premium_cents", "FAIL", "Price / |notional_amount|"),
     ("bad_local_annuity_per_bp", "ir_local_annuity", "FAIL", "Annuity / |notional_amount|"),
@@ -103,7 +113,7 @@ def test_broken_ir_fixture_fails_its_row(fixture, row, status, text):
     results = check_asset.run_checks(FIXTURES / f"{fixture}.yaml", dates=DATES, sys_path=[FIXTURES], backtest=False)
     rows = _rows(results)
     assert rows[row].status == status and text in rows[row].detail, rows[row]
-    if row in STRICT_PASS:  # a one-error copy of a full toy: exactly its own row fails
+    if row in STRICT_PASS + BOND_PASS:  # a one-error copy of a full toy: exactly its own row fails
         assert [r.name for r in results if r.status == check_asset.FAIL] == [row]
 
 
@@ -156,13 +166,14 @@ def test_pack_override_fails_a_declaration_of_a_strict_contract_measure():
         assert rows[f"contract[{m}]"].status == check_asset.FAIL and "a declaration cannot satisfy it" in rows[f"contract[{m}]"].detail, rows[f"contract[{m}]"]
     declarations = [r for r in check_asset.run_checks(raw, dates=DATES, backtest=False, pack="IRSwaption") if r.name == "contract_declarations"]
     assert {r.status for r in declarations} >= {check_asset.FAIL}
-    # the same declaration on a Bond pack is only a WARN (Bond keeps map-or-declare)
+    # the same declaration on a Bond pack FAILs too: Bond is strict (BOND_DESIGN 4.1)
     bond = _load("toy_usd_bond.yaml")
     bond.update(asset="ci_bond", instrument="ConfigInstrument")
     bond.pop("match")
     del bond["risk_measures"]["Theta"]
     bond["unsupported_measures"] = {"Theta": "no carry call"}
-    assert _rows(check_asset.run_checks(bond, dates=DATES, backtest=False, pack="Bond"))["contract[Theta]"].status == check_asset.WARN
+    theta = _rows(check_asset.run_checks(bond, dates=DATES, backtest=False, pack="Bond"))["contract[Theta]"]
+    assert theta.status == check_asset.FAIL and "a declaration cannot satisfy it" in theta.detail and "not mapped" in theta.detail
 
 
 def test_pack_none_and_unknown():
@@ -187,7 +198,14 @@ def test_cli_pack_override(tmp_path):
     assert statuses["swaption_buy_sell_fold"] == "PASS" and statuses["contract[Price]"] == "PASS"
 
 
+MULTI = "multi"  # a MUTATIONS path meaning: value is a list of (path, value) edits
+
+
 def _set(cfg, path, value):
+    if path == MULTI:
+        for p, v in value:
+            _set(cfg, p, v)
+        return cfg
     *head, last = path
     node = cfg
     for k in head:
@@ -261,6 +279,31 @@ MUTATIONS = [
     ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "float('nan')", "ir_fake_constant", "FAIL"),
     ("toy_usd_irs_full.yaml", ("functions", "spot_rate", "expr"), "math.nan", "ir_fake_constant", "FAIL"),
     ("toy_usd_irs_full.yaml", ("functions", "zero_per_bp", "expr"), "-math.inf", "ir_fake_constant", "FAIL"),
+    # BOND_DESIGN section 3: one realistic slip per bond identity and financing row (the fixtures add three more)
+    ("toy_usd_bond.yaml", ("functions", "dirty_price", "expr"), "tb.dirty_price(market, trade, pricebt_date) / 100", "bond_clean_dirty", "FAIL"),
+    ("toy_usd_bond.yaml", MULTI, [(("functions", "fair_premium"), {"expr": "-tb.npv(market, trade, pricebt_date)", "unit": "ccy"}),
+                                  (("risk_measures", "FairPremium"), "fair_premium")], "bond_fair_premium", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "premium_cents", "expr"), "tb.premium_cents(market, trade, pricebt_date) / 100", "bond_premium_cents", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "mod_duration", "expr"), "-tb.modified_duration(market, trade)", "bond_duration", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "convexity", "expr"), "0.5 * tb.convexity(market, trade)", "bond_convexity", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "days_to_settle", "expr"), "1.0", "bond_settlement", "FAIL"),
+    # business days with a calendar-day settlement_date attribute that agrees with it: only the Friday rule catches it
+    ("toy_usd_bond.yaml", MULTI, [(("functions", "days_to_settle", "expr"), "1.0"), (("attributes", "settlement_date"), 'resolved["trade_date"] + tb._DAY')],
+     "bond_settlement", "FAIL"),
+    # a settlement_date attribute that is the trade date (T+0) while DaysToSettlement is right: only the attribute check catches it
+    ("toy_usd_bond.yaml", ("attributes", "settlement_date"), 'resolved["trade_date"]', "bond_settlement", "FAIL"),
+    # an unsigned financing: 0 on the trade date, so only the later fold date shows it
+    ("toy_usd_bond.yaml", ("functions", "financing", "expr"), "abs(tb.financing_to_date(market, trade))", "bond_buy_sell_fold", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "discount_delta", "expr"), "0.0", "ir_fake_constant", "FAIL"),  # not zero by convention for a bond
+    ("toy_usd_bond.yaml", ("functions", "accrued", "expr"), "tb._accrued_at(trade, market.curve.ref_date)", "bond_accrued_over_coupon", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "repo_haircut", "expr"), "100 * tb.repo_haircut(market, trade)", "bond_repo", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "financing", "expr"), 'tb.financing_to_date(market, trade) / (1 - trade["haircut"])', "bond_financing", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "forward_price", "expr"), "-tb.forward_price(market, trade)", "bond_forward_parity", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "carry", "expr"), "-tb.carry(market, trade)", "bond_carry_roll", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "cashflows", "expr"), "tb.cashflows(market, trade).assign(payment_date=lambda f: [tb.next_weekday(p) for p in f.payment_date])",
+     "bond_holding_cash", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "clean_price", "expr"), 'tb.clean_price(market, trade, pricebt_date) * (1 if trade["face"] > 0 else -1)', "bond_buy_sell_fold", "FAIL"),
+    ("toy_usd_bond.yaml", ("functions", "repo_rate", "expr"), 'tb.repo_rate(market, trade) * abs(trade["face"]) / 1e6', "bond_size_linearity", "FAIL"),
 ]
 
 
@@ -305,19 +348,14 @@ def test_fair_premium_times_df_spot_is_caught(fair_premium, expected):
     assert rows["ir_fair_premium"].status == expected, rows["ir_fair_premium"]
 
 
-def test_stale_declaration_warns_on_a_bond_and_fails_to_load_on_a_swap():
-    """R2-9 (a mapping wins over a stale declaration, with a warning) is Bond-only now: on an IRSwap
-    the same declaration is a load error naming it (R3-0), so config_loads FAILs."""
-    raw = _set(_load("toy_usd_bond.yaml"), ("unsupported_measures",), {"Theta": "carry is not wired"})
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)  # the loader's own R2-9 warning
-        rows = check_asset.run_checks(raw, dates=DATES, backtest=False)
-    stale = [r for r in rows if r.name == "contract_declarations"]
-    assert [r.status for r in stale] == ["WARN"] and "stale declaration" in stale[0].detail
-    assert _rows(rows)["contract[Theta]"].status == check_asset.PASS  # the mapping wins
-    swap = _set(_load("toy_usd_irs_full.yaml"), ("unsupported_measures",), {"Theta": "carry is not wired"})
-    loads = _rows(check_asset.run_checks(swap, dates=DATES, backtest=False))["config_loads"]
-    assert loads.status == check_asset.FAIL and "unsupported_measures declares Theta" in loads.detail and "cannot satisfy them" in loads.detail
+@pytest.mark.parametrize("config", ["toy_usd_bond.yaml", "toy_usd_irs_full.yaml"])
+def test_a_stale_declaration_fails_to_load_on_every_contract_class(config):
+    """R2-9 (a mapping wins over a stale declaration, with a warning) survives only for classes with
+    no contract: on a Bond (BOND_DESIGN 4.1) or an IRSwap (R3-0) declaring a mapped contract measure
+    is a load error naming it, so config_loads FAILs."""
+    raw = _set(_load(config), ("unsupported_measures",), {"Theta": "carry is not wired"})
+    loads = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["config_loads"]
+    assert loads.status == check_asset.FAIL and "unsupported_measures declares Theta" in loads.detail and "Bond/IRSwap/IRSwaption configs must map" in loads.detail
 
 
 def _swap_pv01_half_gamma():
@@ -354,3 +392,85 @@ def test_theta_warn_also_points_at_the_delta():
     raw = _set(_load("toy_usd_irs_full.yaml"), ("functions", "delta", "expr"), "tr.pv01(market, trade)")
     theta = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["ir_theta"]
     assert theta.status == check_asset.WARN and "not the total own-rate derivative" in theta.detail
+
+
+def test_bond_gamma_ratio_fits_the_delta_drift_per_settlement_day():
+    """A bond's Price is a settlement-date value (BOND_DESIGN 4.5), so its delta drifts per settlement
+    day: a Friday step moves settlement by one business day, not three calendar days. Fitted per
+    calendar day, the drift leaks into the gamma slope on a quiet stretch (2026-06-05..07-03: ratio
+    ~1.8, a false WARN); per settlement day the ratio is ~1."""
+    rows = _rows(check_asset.run_checks(ASSETS / "toy_usd_bond.yaml", dates=[date(2026, 6, 5), date(2026, 7, 6)], backtest=False))
+    assert rows["ir_gamma_ratio"].status == check_asset.PASS, rows["ir_gamma_ratio"]
+
+
+# ------------------------------------------------------------------------------------ real-calendar bond cases
+# The toy is weekdays-only with unadjusted coupon dates; a real US Treasury library has holidays and pays a
+# weekend coupon on the next business day. fixtures/check_asset/holiday_bond_lib.py is the toy on such a
+# calendar: a correct config, so the bond pack must show no FAIL and no WARN on it.
+
+
+def _holiday_bond() -> dict:
+    raw = _load("toy_usd_bond.yaml")
+    raw.update(asset="toy_usd_bond_holiday", imports="import holiday_bond_lib as tb")
+    raw["market"]["key"] = "toy_usd_bond_holiday"
+    return raw
+
+
+@pytest.mark.parametrize("identifier,dates", [
+    # priced 2026-06-02: settlement 06-03, H = 07-03 + 0 = Independence Day observed, so H is Monday 07-06
+    ("TOY 4.25 2034-11-15", [date(2026, 5, 1), date(2026, 6, 2)]),
+    # the 2026-11-15 coupon is a Sunday, paid Monday 11-16, inside the horizon of 2026-10-30
+    ("TOY 3.5 2027-05-15", [date(2026, 10, 1), date(2026, 10, 5)]),
+])
+def test_a_holiday_calendar_treasury_has_no_fail_or_warn(identifier, dates):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)  # the smoke backtest drops the holidays
+        results = check_asset.run_checks(_holiday_bond(), dates=dates, sys_path=[FIXTURES], kwargs={"identifier": identifier})
+    bad = [r for r in results if r.status in (check_asset.FAIL, check_asset.WARN)]
+    assert not bad, bad
+    rows = _rows(results)
+    assert all(rows[n].status == check_asset.PASS for n in BOND_PASS), [rows[n] for n in BOND_PASS if rows[n].status != check_asset.PASS]
+    if identifier == "TOY 4.25 2034-11-15":
+        assert "to H 2026-07-06" in rows["bond_forward_parity"].detail and "settling on H" in rows["bond_carry_roll"].detail
+
+
+def test_a_coupon_date_one_day_off_is_within_a_day_of_repo():
+    """The plain toy forwards a Sunday coupon from its unadjusted date (the checker uses the Monday it is
+    paid): a day of reinvestment apart, inside the one-day-of-repo floor, even when Carry is small
+    (2026-10-30: ~128); the payment date the checker uses is shown."""
+    rows = _rows(check_asset.run_checks(ASSETS / "toy_usd_bond.yaml", dates=[date(2026, 10, 1), date(2026, 10, 5)], backtest=False,
+                                        kwargs={"identifier": "TOY 3.5 2027-05-15"}))
+    assert rows["bond_carry_roll"].status == check_asset.PASS, rows["bond_carry_roll"]
+    assert rows["bond_forward_parity"].status == check_asset.PASS and "paid 2026-11-16" in rows["bond_forward_parity"].detail
+
+
+_RATES_JUMP = ('(lambda m: m if m is None or pricebt_date < datetime.date(2024, 2, 13) else '
+               'tb.SimpleNamespace(curve=tri.bumped(m.curve, 0.0008), spread=m.spread, repo=m.repo))(tb.market(pricebt_date, "USD", pricebt_csa))')
+
+
+def test_holding_cash_jump_rule_allows_a_large_yield_move():
+    """A 30y position across its 2024-02-15 coupon (dropped 02-14) with an 8bp sell-off on 02-13: the
+    step's Price change (~ -13k on 1mm) exceeds half a coupon, but Theta and the yield move explain it."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("market",), {"expr": _RATES_JUMP, "key": "toy_usd_bond_jump"})
+    raw["imports"] = "import datetime\nimport toylib.bond as tb\nimport toylib.irrisk as tri\n"
+    rows = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False, kwargs={"identifier": "TOY 4.5 2054-02-15"}))
+    assert rows["bond_holding_cash"].status == check_asset.PASS, rows["bond_holding_cash"]
+
+
+def test_a_direction_dependent_repo_rate_folds():
+    """A short reverse-repos the bond at another rate than a long finances it: RepoRate (and the
+    financing measures built on it) are not required to fold, and the row says so."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("functions", "repo_rate", "expr"), 'tb.repo_rate(market, trade) + (0.0 if trade["face"] > 0 else 25.0)')
+    fold = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["bond_buy_sell_fold"]
+    assert fold.status == check_asset.PASS and "RepoRate depends on the direction" in fold.detail, fold
+
+
+def test_carry_reads_the_configs_own_accrued_at_the_horizon():
+    """A library whose accrued is not ACT/ACT in the period (here 1.05 x it, standing for another day
+    count), with Carry consistent with it: the checker reads AccruedInterest on the trade date settling
+    on H instead of recomputing ACT/ACT."""
+    raw = _set(_load("toy_usd_bond.yaml"), ("functions", "accrued", "expr"), "1.05 * tb.accrued(market, trade, pricebt_date)")
+    _set(raw, ("functions", "carry", "expr"), "tb.carry(market, trade) + 0.05 * (tb._accrued_at(trade, tb.horizon(tb.settle(market.curve.ref_date)))"
+                                              " - tb._accrued_at(trade, tb.settle(market.curve.ref_date)))")
+    carry = _rows(check_asset.run_checks(raw, dates=DATES, backtest=False))["bond_carry_roll"]
+    assert carry.status == check_asset.PASS and "the config's AccruedInterest" in carry.detail, carry

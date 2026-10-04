@@ -8,6 +8,7 @@ pricebt v2 is a gs_quant-compatible, event-driven backtester with **no pricing o
 2. `IMPLEMENTATION_PLAN.md` §0 (ground rules, DO-NOT list, commands) and §1 (phases, gates, the ultracode workflow recipe).
 3. For each task: the research sections it cites in `research/`.
 4. The interest-rate pricing and risk extension (branch `v2-ir-risk`): `IR_RISK_DESIGN.md` (§00 first), then `ASSET_CONFIG_GUIDE.md` "Measure contracts". Merging the concurrent swap P&L-explain branch: `MERGE_NOTES_pnl_explain.md`.
+5. Strict contracts (branch `v2-ir-required`): `IR_STRICT_CONTRACT.md`. Cash bonds and repo financing (branch `v2-bonds`, revision 4): `BOND_DESIGN.md`.
 
 ## Research notes (evidence; cite by section, e.g. R02§4)
 

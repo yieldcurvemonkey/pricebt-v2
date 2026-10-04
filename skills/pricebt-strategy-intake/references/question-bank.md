@@ -31,7 +31,9 @@ Questions are in priority order. **Must-ask** questions change what gets built. 
 
 ## Instrument-specific questions (swaptions and bonds)
 
-Ask these with question 2 whenever the idea trades a swaption or a bond. `spec.py validate` rejects a spec that leaves the starred ones unstated, because the asset config's default would decide them invisibly.
+Ask these with question 2 whenever the idea trades a swaption or a bond. `spec.py validate` rejects a spec that leaves the starred kwargs unstated, because the asset config's default would decide them invisibly.
+
+The repo terms (GC or special, overnight or term, haircut) are **not** gs `Bond` fields, so a spec cannot state them as `kwargs` (`spec.py validate` rejects a name that is not a field of the class). The bond asset config decides them, often as its own defaults (the toy `tests/assets/toy_usd_bond.yaml` defaults `repo_term: overnight` and `repo_haircut: 0.02`). Choose the config that finances the way the idea needs, and write the repo terms under `assumptions` (`spec.py` cannot check them, so the review does).
 
 | Question | Spec field (gs kwarg) | Why it matters | Default |
 |---|---|---|---|
@@ -45,19 +47,24 @@ Ask these with question 2 whenever the idea trades a swaption or a bond. `spec.p
 | Which bond? * | `identifier` (+ `identifier_type` if not the library's default, e.g. ISIN or CUSIP) | the static data (coupon, maturity, schedule) come from your library's bond master; fixed for the whole backtest | the on-the-run issue at the idea's tenor on the start date |
 | Long or short the bond? * | `buy_sell: Buy / Sell` | a long bond has **negative** `IRDelta` (it loses when yields rise). dv01 sizing signs its level negative | Buy |
 | How much? | `size` (face), not `notional_amount` | `sizing.notional` overrides `size` for a Bond | 10mm face |
-| Settlement date? | `settlement_date` | usually left to the library (T+1/T+2); only set it for a forward-settling trade | unset |
+| Settlement date? | `settlement_date` | usually left to the library (standard settlement: T+1 for US Treasuries). `Price` is the settlement-date value and repo accrues between settlement dates; only set it for a forward-settling trade | unset |
 | Roll into new issues? | an event or `dated_priceables` recipe (see the recipes catalogue) | the spec's `identifier` is fixed; rolling on-the-run needs identifiers known on each date (survivorship) | no roll: one issue |
-| Coupons and financing? | `financing.cash_accrual_rate` (repo proxy on the negative cash balance) | the engine books no coupons (gs parity). Plan to report `pnl_explain_table()`'s `economic_pnl` | repo = 0, noted under `assumptions` |
+| Coupons? | nothing to set | every Bond config maps `FinancingToDate`, so the engine books the coupons the bond drops as cash on the drop date (holding cash, DEV-E22). Coupons are paid out as cash, not reinvested in the bond; they sit in the cash balance (accruing only if a `cash_accrual` model runs, which a financed book should not use) | booked as cash, not reinvested |
+| Repo: general collateral or special? (must-ask) | the bond asset config (`assets:`), recorded under `assumptions` | the config's `RepoRate` decides it. An on-the-run issue often trades special (a lower repo rate), which is real carry; GC on a special issue understates it, special on an off-the-run issue overstates it | the config's choice, stated |
+| Repo: overnight or term? | the bond asset config, under `assumptions` | overnight re-fixes every day (repo risk inside the P&L); term locks the rate at the trade date for the holding period. A carry trade sized on a term rate but financed overnight is a different trade | the config's choice, stated |
+| Haircut? | the bond asset config, under `assumptions` | `RepoHaircut`: the share of the settlement value not financed, so it is not charged repo. Who funds it, and at what rate, is not in the backtest unless the config puts it in `FinancingToDate` | the config's haircut (e.g. 2%), stated |
+| Funding currency? | `result_ccy`, `fx` | repo is in the bond's currency. A bond funded in another currency is an FX-hedged position the backtest does not model; a non-local report converts each booking at its date's FX | the bond's currency |
+| Cash accrual on top? | `financing.cash_accrual_rate: 0.0` | the bond config's `FinancingToDate` already charges the repo, and the engine books it. A cash-accrual rate charges the funding loan a second time; the engine warns ("the funding is counted twice") | 0 for any book holding bonds |
 | Hedge with what, on which measure? | `instruments.hedge`, `risk_limits.hedge_measure` | e.g. delta-hedge a straddle with a swap on `IRDeltaParallel`; vega-hedge with another swaption on `IRVegaParallel`. Deltas across types are approximate (DEV-I12) | `IRDelta(aggregation_level='Type')` |
 
 ## Should-ask (only if the answer changes the build)
 
 9. **Rebalance cadence and pricing grid.** → `rebalance.frequency`, `dates.frequency`. *Default:* grid `1b`; rebalance at the idea's natural cadence (monthly for carry, daily for hedging).
 10. **Hedging.** Keep dv01-neutral? With what? → `archetype: delta_hedged`, `instruments.hedge`. *Default:* no hedge unless the idea is relative value.
-11. **Financing and cash.** Accrue cash? At what rate? Starting value? → `financing.cash_accrual_rate`, `initial_value`. *Default:* 0 and 0. `Total` is then cumulative P&L; a swap needs no cash.
+11. **Financing and cash.** Accrue cash? At what rate? Starting value? → `financing.cash_accrual_rate`, `initial_value`. *Default:* 0 and 0. `Total` is then cumulative P&L; a swap needs no cash. A bond is financed by its own config (repo, booked by the engine), so keep the rate at 0 for any book holding bonds.
 12. **Currency of the report.** Is it a mixed-currency book? → `result_ccy`, `fx`. *Default:* the asset's local currency. A mixed book needs an FX config.
 13. **Event calendar.** Which dates (central-bank meetings, auctions, month-ends)? → `event_dates`. *Default:* none; if the idea depends on events, this becomes must-ask.
-14. **Benchmark.** → `benchmark`. *Default:* `none` (cash), since swap P&L is already excess of funding. A bond or an option bought for cash is not: set `financing.cash_accrual_rate` or say so. For carry ideas, compare against the always-on version.
+14. **Benchmark.** → `benchmark`. *Default:* `none` (cash), since swap P&L is already excess of funding. A bond is too: its config's repo financing is booked. An option bought for cash is not: set `financing.cash_accrual_rate` or say so. For carry ideas, compare against the always-on version.
 15. **Parameter budget.** How many variants are you willing to test? → `trial_budget` (write it under `assumptions`). *Default:* 5. Every run is logged, and the significance test is deflated by the count.
 
 ## Nice-to-ask (report only)

@@ -406,3 +406,81 @@ fixings of the seasoned weekend-case swap, which came from the served market's o
 market was loaded.
 
 **Final rerun at `e757865`** (after the skills review fixes changed `ir_cashflow_drop`'s stage-2 roll term and moved the SIMM lists into `pricebt.risk.contracts`), 2026-10-02: `tests/test_live_arbs_contract.py` + `tests/test_live_arbs_pnl.py` + `tests/test_live_arbs.py` **41 passed in 400.9s**, including `test_check_asset_no_fail_and_every_contract_row_passes` and A-CHECK (no FAIL on this config).
+
+## US Treasury bonds (revision 4, branch `v2-bonds`): BLOCKED, no store-only access path
+
+**Status, 2026-10-03: the live tier for US Treasuries is blocked, and no ARBS bond config ships.**
+The task's rule was explicit: find a store-only access path and a safe date cap for prices and for repo, and "if
+no store-only path exists for prices or for repo, do not work around it. Document it, keep the live tier blocked,
+and finish everything else." Neither exists through ARBS's own API, so nothing here imported, constructed or ran
+any ARBS bond object. The findings come from reading the source (`MDP/FixedRateBonds`, `Query/FixedRateBonds`,
+`definitions/FixedRateBonds.py`, `MDP/USMoneyMarkets`, the fixings fetcher) and from four probes that read files
+only (an immutable read-only SQLite open of a diskcache shard, a `read_parquet`, a QuantLib enum read, greps). No
+ARBS module was imported and no store or cache was written. The bond pricing and financing contract, the engine's
+holding cash and every identity are built and tested on the toy library instead
+([`BOND_DESIGN.md`](BOND_DESIGN.md) §5).
+
+### Prices: every FedInvest read refreshes reference data keyed on today
+
+- `FixedRateBondsMDP` (default source `USTS_FEDINVEST_WSJ_LIVE-QL`) calls
+  `update_reference_data(source="fiscaldata")` on every request path: `get_data` (`FixedRateBondsMDP.py:1539`),
+  `bulk_get_data`'s per-timestamp worker (`:2432`, eight threads, no lock), and the intraday and cash-spline paths
+  (`:847`, `:1119`, `:1268`, `:1405`, `:2107`, `:2283`, `:2872`).
+- `update_reference_data` (`reference_data_cache/ust_reference_data.py:71-123`) keys the cache on **today's** last
+  US government business day (`:82`), never on the requested date. It then:
+  1. runs `mkdir` inside the ARBS repository (`:20`, `:89`);
+  2. on a miss, downloads from `api.fiscaldata.treasury.gov` (`_fetch_fiscaldata`, `:99`);
+  3. writes a parquet (`:117`);
+  4. deletes every dated directory but the newest three (`_cleanup_old_cache_dirs`, `:24-38`, `:121`).
+  The newest stored parquet is 2026-09-04, so the next call on any date would take the network path. The ARBS
+  checkout already shows deletions under `MDP/FixedRateBonds/reference_data_cache` that predate this work
+  (noted in the R3 section above): that is this cleanup at work.
+- Even with outbound sockets blocked, step 1 writes into the read-only ARBS repository before the download is
+  attempted, and the date class (`live`/`buffer`/historical) moves with the wall clock (`buffer` = within three US
+  business days of today, `:2072-2073`). So a network-blocked probe of the MDP is not safe either, and none was run.
+- `bulk_get_data(timestamps, cusips, *, show_tqdm, force_refresh, max_workers)` (`:2330-2338`) has no
+  `ignore_cache_miss`-style flag. `offline` exists only on the Citi Velocity (Excel) branches. Historical
+  `bulk_get_data` never reads the pricer cache; on a FedInvest cache miss `FedInvestFetcher.runner` posts to
+  `savingsbonds.gov` (with `verify=False`) and writes the cache. Every diskcache read also writes an LRU access
+  time.
+
+### Repo: no repo series in ARBS
+
+- `MDP/USMoneyMarkets` holds H.4.1 reserves, ON RRP volume, the TGA and GDP (`h41.py`, `bea_gdp.py`,
+  `dbnomics_fetcher.py`), no repo rate.
+- The fixings fetcher serves USD-SOFR-1D and EFFR; TGCR and BGCR are not served (the Citi Velocity fixings note
+  says so explicitly). The Citi repo store (`MDP/CitiVelocityExcel/repo/store.py`) reads a parquet that does not
+  exist, and its refresh opens Excel.
+- ARBS's own bond carry (`Query/FixedRateBonds/carry_roll.py`) finances at the SOFR fixing (EFFR fallback), not at a
+  repo rate. A SOFR proxy for general collateral is reachable store-only through the swap config's path
+  (`IRSwapsMDP`'s market `index()`, within `_LAST_SAFE`), but it does not unblock prices.
+
+### What would unblock it (needs the user's approval; not done)
+
+A reader that bypasses the MDP, which the IRS research note (R06 §8 item 3) already classed as needing approval:
+- prices: the FedInvest diskcache shards (`%LOCALAPPDATA%\ARBS\Cache\diskcache\dump\FedInvest_Prices_Cache\00{0..7}\cache.db`,
+  key `pd.Timestamp(date)`, value a frame `cusip, type, coupon, offer_price, bid_price, eod_price`; 4,182 stored dates,
+  2006-01-31..2026-08-21, dense from 2010), opened `?mode=ro&immutable=1`, dropping `eod_price <= 0` rows (4,457 such
+  note/bond rows exist and the historical paths do not guard them);
+- reference data: the 2026-09-04 fiscaldata parquet (coupon, issue and maturity by CUSIP; notes and bonds only);
+- pricing: `QLFixedRateBondPricer` (ACT/ACT ISMA, US government calendar, T+1, semiannual). Use `clean_price()` +
+  `accured()`, not its `dirty_price()`/`npv()`, which pass `ql.Semiannual` where QuantLib expects a compounding
+  (`ql.Semiannual == ql.Continuous == 2`); its `pv01()` without a notional raises;
+- repo: the SOFR fixings CSV as a general-collateral proxy (no special repo exists in ARBS);
+- date cap: 2026-08-21, the newest stored FedInvest date (and `_LAST_SAFE` 2026-08-20 for the SOFR path).
+
+With that approval, the config (`configs/assets/usd_ust_bond.yaml`, keyed by CUSIP) would map the 40-row Bond
+contract from those primitives exactly as `skills/pricebt-connect-pricing-library/references/config-template-bond.yaml`
+lays out, and the opt-in `tests/test_live_arbs_bond.py` would carry the checks the task lists (clean + accrued = dirty,
+yield ↔ price, duration and convexity against bumps, a coupon date, a financed one-month carry backtest, and
+`check_asset.py` with no FAIL).
+
+### The swap tier on `v2-bonds` (2026-10-04)
+
+The bond work changed code the live swap files exercise (`pnl_explain_table` gained `financing_pnl`; the checker's
+contract, fold and size rows were rewritten; the strict-contract error texts now name Bond). The swap config maps
+no `FinancingToDate`, so the engine's holding cash never applies to it. One deliberate rerun of
+`tests/test_live_arbs.py` + `tests/test_live_arbs_contract.py` + `tests/test_live_arbs_pnl.py` at `62eb52b`:
+**41 passed in 373.4s**, with no change to the test files. Side effect: the documented one only, an empty
+today-dated fixings-cache folder (`USD-SOFR-1D_fixings/2026-10-03`, 0 files). No bond object of ARBS was imported.
+

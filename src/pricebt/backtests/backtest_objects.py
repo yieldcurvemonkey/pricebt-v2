@@ -14,7 +14,7 @@ specific language governing permissions and limitations
 under the License.
 """
 # Ported to pricebt from gs_quant 2.1.17 (Apache-2.0); see NOTICE. Changes: DEV-R1, DEV-R2, DEV-R4,
-# DEV-R11, DEV-E12, DEV-E14, DEV-E15, DEV-E19, DEV-E20, DEV-E21; pricebt additions
+# DEV-R11, DEV-E12, DEV-E14, DEV-E15, DEV-E19, DEV-E20, DEV-E21, DEV-E22; pricebt additions
 # BackTest.pnl_explain_table, ir_pnl_definition, swaption_pnl_definition, bond_pnl_definition
 #
 # BackTest (+ pnl_bps, missing_market_dates/missing_market_moves -- pricebt-only additions, no DEV
@@ -223,6 +223,9 @@ class BackTest(BaseBacktest):
         # Empty when nothing was dropped/rolled.
         self.missing_market_dates = []
         self.missing_market_moves = []
+        # pricebt DEV-E22: {date: {position: (currency, cashflow, financing)}}, the holding cash
+        # GenericEngine booked on that date for each financed position (empty without one)
+        self.holding_cash = defaultdict(dict)
 
     @property
     def cash_dict(self):
@@ -561,10 +564,14 @@ class BackTest(BaseBacktest):
 
         Columns: `actual_pnl` (the sum of price_measure(t) - price_measure(t-1) over the held
         book), `cashflow_pnl` (the `payment_amount`s of the Cashflows held at t-1 paid in (t-1, t];
-        0.0 when Cashflows is not among the risks), `economic_pnl` (actual + cashflow), one column
-        per attribute (its P&L over the step, so the column's cumsum is exactly pnl_explain()'s
-        cumulative value), `explained_pnl` (the sum of the attributes) and `residual_pnl`
-        (economic - explained).
+        0.0 when Cashflows is not among the risks; for a financed position, the coupons the engine
+        booked as holding cash on t, pricebt DEV-E22), `financing_pnl` (the change of a financed
+        position's FinancingToDate the engine booked on t; 0.0 for every other position),
+        `economic_pnl` (actual + cashflow + financing), one column per attribute (its P&L over the
+        step, so the column's cumsum is exactly pnl_explain()'s cumulative value), `explained_pnl`
+        (the sum of the attributes plus financing_pnl: financing is known cash, not a market move)
+        and `residual_pnl` (economic - explained). For a book of financed positions with no
+        transaction costs, economic_pnl sums to the change in result_summary's Total.
 
         Raises ValueError when two attributes share a name or one is named like a fixed column, and
         when a step would add amounts in different units (the held book's price_measure units and
@@ -573,7 +580,7 @@ class BackTest(BaseBacktest):
             return None
         attributes = list(self.pnl_explain_def.attributes)
         names = [attribute.attribute_name for attribute in attributes]
-        fixed = ['actual_pnl', 'cashflow_pnl', 'economic_pnl', 'explained_pnl', 'residual_pnl']
+        fixed = ['actual_pnl', 'cashflow_pnl', 'financing_pnl', 'economic_pnl', 'explained_pnl', 'residual_pnl']
         clashes = sorted({name for name in names if names.count(name) > 1 or name in fixed})
         if clashes:
             raise ValueError(f"PnlAttribute names must be unique and not one of {fixed}; got {clashes}")
@@ -581,15 +588,22 @@ class BackTest(BaseBacktest):
         cashflows = Cashflows if Cashflows in self.risks else None
         rows, index = [], []
         for prev_date, cur_date, held in self._explain_steps():
-            actual = cash = 0.0
+            actual = cash = financing = 0.0
             steps = dict.fromkeys(by_name, 0.0)
             if held is not None:
                 units, currencies = set(), set()
-                for _, prev_results, cur_results in held:
+                booked = self.holding_cash.get(cur_date, {})
+                for inst, prev_results, cur_results in held:
                     prev, cur = prev_results[self.price_measure], cur_results()[self.price_measure]
                     units.update(getattr(prev, 'unit', None) or (), getattr(cur, 'unit', None) or ())
                     actual += float(cur) - float(prev)
-                    if cashflows is not None:
+                    if inst in booked:
+                        # pricebt DEV-E22: what the engine booked for this financed position
+                        ccy, coupons, funding = booked[inst]
+                        cash += coupons
+                        financing += funding
+                        currencies.add(ccy)
+                    elif cashflows is not None:
                         due = _cash_due(prev_results[cashflows], prev_date, cur_date)
                         if len(due):
                             cash += float(due['payment_amount'].sum())
@@ -600,10 +614,10 @@ class BackTest(BaseBacktest):
                         f" in {sorted(units)}, Cashflows paid in {sorted(currencies)}"
                     )
                 steps = {name: float(_attribute_step_pnl(a, held)) for name, a in by_name.items()}
-            rows.append([actual, cash, actual + cash, *steps.values()])
+            rows.append([actual, cash, financing, actual + cash + financing, *steps.values()])
             index.append(cur_date)
-        table = pd.DataFrame(rows, index=index, columns=['actual_pnl', 'cashflow_pnl', 'economic_pnl', *by_name])
-        table['explained_pnl'] = table[list(by_name)].sum(axis=1)
+        table = pd.DataFrame(rows, index=index, columns=['actual_pnl', 'cashflow_pnl', 'financing_pnl', 'economic_pnl', *by_name])
+        table['explained_pnl'] = table[list(by_name)].sum(axis=1) + table['financing_pnl']
         table['residual_pnl'] = table['economic_pnl'] - table['explained_pnl']
         return table
 

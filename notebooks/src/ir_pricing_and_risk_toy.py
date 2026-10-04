@@ -46,11 +46,10 @@ D = date(2024, 3, 4)
 # %% [markdown]
 # ## 1. The measure contract
 #
-# Every `IRSwap` and `IRSwaption` config must map each measure (and form) of its class's contract to
-# a function with an allowed unit; `unsupported_measures:` cannot satisfy them (the strict classes,
-# `docs/v2/IR_STRICT_CONTRACT.md`). A `Bond` config may still declare a measure it cannot compute,
-# with a reason. Loading fails otherwise, listing every gap (DEV-I11). The contract is data in
-# `pricebt.risk.contracts`:
+# Every `IRSwap`, `IRSwaption` and `Bond` config must map each measure (and form) of its class's
+# contract to a function with an allowed unit; `unsupported_measures:` cannot satisfy them (the strict
+# classes, `docs/v2/IR_STRICT_CONTRACT.md`, `docs/v2/BOND_DESIGN.md`). Loading fails otherwise,
+# listing every gap (DEV-I11). The contract is data in `pricebt.risk.contracts`:
 
 # %%
 contract = pd.DataFrame(
@@ -178,9 +177,11 @@ residual_summary.round(4)
 # %% [markdown]
 # ### A bond across a coupon date
 #
-# `Price` drops each coupon on its payment date and `Cashflows` lists the flows still to drop, so
-# `cashflow_pnl` carries the coupon (face 1mm x 4.25% / 2 = 21,250) on the step that pays it, and the
-# economic P&L stays smooth.
+# A bond's `Price` is its settlement-date (T+1) value, so it drops each coupon on the trade date whose
+# settlement reaches it (Tue 2024-05-14 for the Wed 05-15 coupon), the date `Cashflows` lists. The bond
+# is financed in repo (`FinancingToDate`), so the engine books the coupon and the repo interest as cash
+# (DEV-E22): `cashflow_pnl` carries the coupon (face 1mm x 4.25% / 2 = 21,250) on the step that drops
+# it, `financing_pnl` the interest, and the economic P&L stays smooth.
 
 # %%
 bond_bt = GenericEngine().run_backtest(
@@ -188,7 +189,7 @@ bond_bt = GenericEngine().run_backtest(
     start=date(2024, 5, 6), end=date(2024, 5, 20), frequency="1b", risks=[Cashflows],
     pnl_explain=bond_pnl_definition(), show_progress=False)
 bond_table = bond_bt.pnl_explain_table()
-bond_table[["actual_pnl", "cashflow_pnl", "economic_pnl", "explained_pnl", "residual_pnl"]].round(2)
+bond_table[["actual_pnl", "cashflow_pnl", "financing_pnl", "economic_pnl", "explained_pnl", "residual_pnl"]].round(2)
 
 # %% [markdown]
 # ### `PnlExplain` between two dates

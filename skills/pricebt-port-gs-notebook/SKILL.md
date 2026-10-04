@@ -48,8 +48,9 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    business-day schedule, so `GenericDataSource` never has to fill gaps.
 4. **Instruments need asset configs.** Each instrument class and currency must match exactly one
    registered asset (`match:` in the config). `IRSwap`, `IRSwaption` and `Bond` configs also carry
-   the **measure contract**: every contract measure is mapped (IRSwap, IRSwaption: always; a Bond may
-   declare one unsupported with a reason). The contract is not every gs IR measure: the ones left out
+   the **measure contract**: every contract measure is mapped (all three classes are strict; none
+   may declare a contract measure unsupported, and a Bond also maps the repo financing rows). The
+   contract is not every gs IR measure: the ones left out
    on purpose, each with its reason, are `pricebt.risk.contracts.EXCLUDED` (FX quoting, inflation,
    live-market and server-metadata measures, ...). No
    config yet? Go to [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md);
@@ -61,9 +62,10 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    cross-leg references such as `"=[foo].strike + 5bp"` (030010), a non-zero `premium`, and
    `notional_amount='100k'` all raise: replace them with numbers, or implement them in `resolve`.
 6. **Risk measures map 1:1.** `pricebt.risk` has every gs measure and preset under the same name.
-   A request for a measure a Bond config declares unsupported raises `UnsupportedMeasureError` with
-   the config's reason, where gs would return an `UnsupportedValue` (a swap or swaption config maps
-   every contract measure). `aggregation_level` Type, Asset or
+   A swap, swaption or bond config maps every contract measure. Only a class without a contract
+   (`ConfigInstrument`) may declare a measure unsupported; requesting it raises
+   `UnsupportedMeasureError` with the config's reason, where gs would return an `UnsupportedValue`.
+   `aggregation_level` Type, Asset or
    Class returns a float. A bare finite-difference measure (`IRDelta`, `IRVega`) returns the
    bucketed frame. `IRVanna` and `IRVolga` are finite-difference measures too, so request
    `IRVanna(aggregation_level='Type')` (DEV-I9). `bump_size`, `finite_difference_method`,
@@ -121,9 +123,18 @@ ones users notice:
 - **The `IRDelta` scalar is the own-rate delta** (swap par rate, swaption forward, bond yield;
   DEV-I12), and `Theta` is per calendar day (DEV-I15). `ExpiryInYears` is defined for swaps and
   bonds too (DEV-I17).
-- **A swap's vega is `0.0`**, where gs returns an empty frame (R2-8). An inapplicable measure a Bond
-  config declares raises `UnsupportedMeasureError`, where gs returns an `UnsupportedValue` (DEV-I11;
-  IRSwap and IRSwaption configs cannot declare).
+- **A swap's vega is `0.0`**, where gs returns an empty frame (R2-8); a bond's vega is `0.0` too
+  (`contracts.ZERO_BY_CONVENTION`). A measure a `ConfigInstrument` config declares raises
+  `UnsupportedMeasureError`, where gs returns an `UnsupportedValue` (DEV-I11; IRSwap, IRSwaption
+  and Bond configs cannot declare).
+- **A held bond's coupons and repo interest reach cash** (DEV-E22): gs books only entry and exit
+  prices, but pricebt books holding cash for any asset that maps `FinancingToDate` (every Bond
+  config), so a bond backtest's `Total` differs from gs's by the coupons and the financing.
+  Swaps and swaptions are unchanged.
+- **Bond analytics and financing are pricebt-only measures** (`pricebt.risk.PRICEBT_MEASURES`:
+  `CleanPrice`, `DirtyPrice`, `AccruedInterest`, `ModifiedDuration`, `Convexity`,
+  `DaysToSettlement`, `RepoRate`, `RepoHaircut`, `FinancingToDate`, `Carry`, `RollDown`; DEV-I20,
+  DEV-I21). gs has none of them; a bond's yield is `IRFwdRate`.
 - **`to_frame` labels each leaf from its own path** (DEV-R6). Where gs mislabels a level that mixes
   leaves and sub-portfolios (030009), pricebt differs from gs's printed output and is right.
 - **Table measures** (`Cashflows`) are left out of `result_summary`, `risk_summary` and
@@ -147,7 +158,7 @@ Fix these while porting (from `docs/v2/research/05-notebook-coverage.md` §8 and
 - The ledger's trade names and dates match the gs logic (the `Action<N>_<name>_<date>` naming is
   preserved).
 - No `* 1e4` / `* 10000` remains on a rate or vol level from a bp config, and every measure the code
-  requests is mapped (not declared) in the configs.
+  requests is mapped in the configs.
 - Each difference from gs's printed output is explained by a row in `docs/v2/DEVIATIONS.md` or in
   the notebook map.
 

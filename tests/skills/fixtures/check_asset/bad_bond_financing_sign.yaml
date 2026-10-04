@@ -1,5 +1,9 @@
+# Broken on purpose (check_asset fixture): FinancingToDate reported as the interest amount (positive for a long that PAYS the repo)
+# instead of holder-signed. Must FAIL bond_financing and nothing else (the engine books the config's own
+# numbers consistently, so bond_holding_cash passes).
+# Copy of tests/assets/toy_usd_bond.yaml with ONE thing broken: regenerate_bond_fixtures.py rewrites it from the toy.
 schema_version: 1
-asset: toy_usd_bond
+asset: bad_bond_financing_sign
 description: >
   Toy USD fixed-coupon bond with repo financing on the deterministic rates world
   (tests/toylib/bond.py): a tiny bond master keyed by identifier, a flat curve plus a sinusoidal
@@ -56,7 +60,7 @@ functions:
   days_to_settle:  {expr: 'tb.days_to_settlement(market, trade)', unit: number, scale_with_quantity: false}
   repo_rate:       {expr: 'tb.repo_rate(market, trade)', unit: bp}
   repo_haircut:    {expr: 'tb.repo_haircut(market, trade)', unit: decimal}
-  financing:       {expr: 'tb.financing_to_date(market, trade)', unit: ccy}
+  financing:       {expr: '-tb.financing_to_date(market, trade)', unit: ccy}   # MISTAKE: interest paid as a positive number
   carry:           {expr: 'tb.carry(market, trade)', unit: ccy}
   roll_down:       {expr: 'tb.roll_down(market, trade)', unit: ccy}
 portfolio_functions:

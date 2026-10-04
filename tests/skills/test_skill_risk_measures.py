@@ -1,6 +1,6 @@
 """skills/pricebt-risk-measures: measures.py (contract table, capability matrix, paste-ready mapping
-skeleton for IRSwap/IRSwaption, declaration block for Bond) on the toy configs, in-process and via the
-CLI; the catalogue reference lists every exported measure; the contract table of the SKILL.md lists
+skeleton for every contract class: Bond, IRSwap, IRSwaption are all strict) on the toy configs,
+in-process and via the CLI; the catalogue reference lists every exported measure; the contract table of the SKILL.md lists
 every row and the EXCLUDED list; and the runnable blocks of the references execute as written."""
 from __future__ import annotations
 
@@ -45,7 +45,8 @@ def _toy_irs() -> dict:
 
 
 def _bond_declaring(*measures) -> dict:
-    """toy_usd_bond with `measures` unmapped and declared (only a Bond may still declare)."""
+    """toy_usd_bond with `measures` unmapped and declared: a Bond is strict (BOND_DESIGN 4.1), so the
+    declarations satisfy nothing and are load problems."""
     raw = dict(yamlio.load_file(ASSETS / "toy_usd_bond.yaml"))
     raw["risk_measures"] = {k: v for k, v in raw["risk_measures"].items() if k not in measures}
     raw["unsupported_measures"] = {m: f"the bond library has no {m} call" for m in measures}
@@ -75,7 +76,8 @@ def test_contract_cli():
     assert proc.returncode == 0, proc.stderr
     assert "| ProbabilityOfExercise | prob | scalar |" in proc.stdout and "'<tail>;<expiry>'" in proc.stdout
     assert "every row must be MAPPED" in proc.stdout and "| PremiumCents | notional_level | scalar |" in proc.stdout
-    assert "or declare it" in _cli("contract", "Bond").stdout
+    bond = _cli("contract", "Bond").stdout
+    assert "every row must be MAPPED" in bond and "| FinancingToDate | value | scalar |" in bond and "| DaysToSettlement | days | scalar |" in bond
     bad = _cli("contract", "FXOption")
     assert bad.returncode == 2 and "no measure contract" in bad.stderr
 
@@ -96,22 +98,25 @@ def test_full_toy_configs_map_every_row(instrument):
         load_asset(path)  # the matrix agrees with the loader: loads, and without warnings
 
 
-def test_bond_declarations_show_reasons_and_hints(tmp_path):
-    """Bond keeps map-or-declare: declared rows are DECLARED with their reason, and a hint only where
-    every library can supply the measure."""
-    raw = _bond_declaring("Theta", "IRVega", "ExpiryInYears")
+def test_bond_declarations_stay_missing_with_reasons_and_hints(tmp_path):
+    """Bond is strict (BOND_DESIGN 4.1): declared rows stay MISSING with their reason shown, each
+    declaration is a load problem, and a hint appears where every library can supply the measure
+    (the zero-by-convention reason from contracts.ZERO_BY_CONVENTION, a bond recipe)."""
+    raw = _bond_declaring("Theta", "IRVega", "ExpiryInYears", "FinancingToDate")
     m = measures.capability_matrix(raw)
     st = _statuses(m)
     assert st[("IRDelta", "scalar")] == st[("IRDelta", "bucketed")] == st[("IRFwdRate", "scalar")] == measures.MAPPED
-    assert st[("Theta", "scalar")] == measures.DECLARED and measures.MISSING not in st.values() and measures.matrix_ok(m)
-    assert not measures.matrix_ok(m, strict=True)  # IRVega / ExpiryInYears: declarations any library can avoid
+    assert st[("Theta", "scalar")] == measures.MISSING and not measures.matrix_ok(m) and not measures.matrix_ok(m, strict=True)
+    assert {p.split(",")[0] for p in m["problems"] if p.startswith("unsupported_measures declares")} == {
+        f"unsupported_measures declares {x}" for x in ("Theta", "IRVega", "ExpiryInYears", "FinancingToDate")}
     rows = {(r["measure"], r["form"]): r for r in m["rows"]}
-    assert rows[("Theta", "scalar")]["reason"] == raw["unsupported_measures"]["Theta"]
-    assert "R2-8" in rows[("IRVega", "scalar")]["hint"] and "days / 365" in rows[("ExpiryInYears", "scalar")]["hint"]
-    assert rows[("Theta", "scalar")]["hint"] == ""  # hints only where every library can supply the measure
+    assert raw["unsupported_measures"]["Theta"] in rows[("Theta", "scalar")]["reason"] and "cannot satisfy" in rows[("Theta", "scalar")]["reason"]
+    assert contracts.ZERO_BY_CONVENTION["Bond"]["IRVega"] in rows[("IRVega", "scalar")]["hint"]
+    assert "days / 365" in rows[("ExpiryInYears", "scalar")]["hint"] and "RepoRate" not in rows[("Theta", "scalar")]["hint"]
+    assert "(1 - haircut) x Price(trade date" in rows[("FinancingToDate", "scalar")]["hint"]
     proc = _cli("matrix", str(_write(tmp_path, "bond.yaml", raw)))
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "| Theta | scalar | theta | ccy | DECLARED |" in proc.stdout and "TODO=0 MISSING=0" in proc.stdout
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "| Theta | scalar | theta | ccy | MISSING |" in proc.stdout and "MISSING=5" in proc.stdout and "mapping skeleton" in proc.stdout
 
 
 def test_a_strict_class_declaration_stays_missing_and_is_a_problem():
@@ -188,36 +193,36 @@ def test_strict_block_is_the_mapping_skeleton_and_loads_once_written(tmp_path):
     assert {("ParSpread", "scalar"), ("CompoundedFixedRate", "scalar"), ("IRGamma", "bucketed")} <= set(cfg_ok.provided_forms)
 
 
-def test_block_makes_an_incomplete_bond_load_and_the_matrix_flags_its_todos(tmp_path):
+def test_bond_block_is_the_mapping_skeleton_and_loads_once_written(tmp_path):
+    """A Bond gap gets the mapping skeleton too (never a declaration block, BOND_DESIGN 4.1): pasted
+    unchanged it does not load; with each expression written it loads, and `block` then says
+    nothing is missing. --reason is accepted and ignored."""
     raw = dict(yamlio.load_file(ASSETS / "toy_usd_bond.yaml"))
-    raw["risk_measures"] = {k: v for k, v in raw["risk_measures"].items() if k not in ("Theta", "IRVega")}
+    gone = ("Theta", "RepoRate", "FinancingToDate")
+    raw["risk_measures"] = {k: v for k, v in raw["risk_measures"].items() if k not in gone}
     with pytest.raises(ConfigError, match="measure-contract problem"):
         load_asset(raw)
     cfg = _write(tmp_path, "incomplete.yaml", raw)
-
-    proc = _cli("block", str(cfg))
-    assert proc.returncode == 0 and proc.stdout.startswith("unsupported_measures:\n"), proc.stderr
-    assert proc.stdout == measures.missing_block(cfg)
-    cfg.write_text(cfg.read_text(encoding="utf-8") + proc.stdout, encoding="utf-8")
-    assert load_asset(cfg).unsupported_measures["Theta"] == {"*": "TODO: why your library cannot compute this"}
-
-    flagged = _cli("matrix", str(cfg))
-    assert flagged.returncode == 1 and "| Theta | scalar | theta | ccy | TODO |" in flagged.stdout
-    assert {r["status"] for r in measures.capability_matrix(cfg)["rows"] if r["measure"] == "Theta"} == {measures.TODO}
-
-    # honest reasons clear the flag; nothing is missing any more
-    cfg.write_text(cfg.read_text(encoding="utf-8").replace("TODO: why your library", "toylib.rates: no function; your library"), encoding="utf-8")
-    assert _cli("matrix", str(cfg)).returncode == 0
-    again = _cli("block", str(cfg))
+    gaps = measures.capability_matrix(cfg)
+    assert not gaps["problems"] and not measures.matrix_ok(gaps)  # MISSING rows alone fail the matrix
+    assert _cli("matrix", str(cfg)).returncode == 1
+    proc = _cli("block", str(cfg), "--reason", "ignored")
+    missing = [(m, "scalar") for m in gone]
+    assert proc.returncode == 0 and proc.stdout == contracts.mapping_skeleton("Bond", missing) == measures.missing_block(cfg), proc.stderr
+    assert "unsupported_measures" not in proc.stdout and "merge each section" in proc.stderr
+    pasted = yaml.safe_load(proc.stdout)
+    written = {"Theta": "tb.theta_1d(market, trade)", "RepoRate": "tb.repo_rate(market, trade)", "FinancingToDate": "tb.financing_to_date(market, trade)"}
+    units = {"RepoRate": "bp"}
+    for measure, expr in written.items():
+        fname = pasted["risk_measures"][measure] if isinstance(pasted["risk_measures"][measure], str) else pasted["risk_measures"][measure]["scalar"]
+        pasted["functions"][fname] = {**pasted["functions"][fname], "expr": expr, **({"unit": units[measure]} if measure in units else {})}
+    raw["functions"] = {**raw["functions"], **pasted["functions"]}
+    raw["risk_measures"] = {**raw["risk_measures"], **pasted["risk_measures"]}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        load_asset(raw)
+    again = _cli("block", str(_write(tmp_path, "complete.yaml", raw)))
     assert again.returncode == 0 and again.stdout.startswith("# nothing missing") and "merge" not in again.stderr
-
-
-def test_block_warns_to_merge_into_an_existing_declaration_key(tmp_path):
-    raw = _bond_declaring("IRVega", "Theta")
-    del raw["unsupported_measures"]["Theta"]
-    cfg = _write(tmp_path, "partial.yaml", raw)
-    proc = _cli("block", str(cfg), "--reason", "no carry function")
-    assert proc.stdout == 'unsupported_measures:\n  Theta: "no carry function"\n' and "merge" in proc.stderr
 
 
 # ------------------------------------------------------------------------------------ references

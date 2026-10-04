@@ -262,3 +262,19 @@ def test_cli_validate_and_defaults(tmp_path):
     r = _cli("defaults", str(good), "--out", str(out))
     assert r.returncode == 0 and "costs = {model: dv01_bp, level: 0.25} (template default)" in r.stdout
     assert yaml.safe_load(out.read_text())["deliverables"]["out_dir"] == "reports/cli-idea"
+
+
+def test_bond_repo_terms_are_config_kwargs_and_cash_accrual_would_double_count():
+    """The bond's repo terms (GC vs special, overnight vs term, haircut) are its asset config's: a
+    `defaults:` key of a spec asset config is a valid kwarg (the toy bond's repo_term, repo_haircut),
+    a typo of one is not; and a cash accrual rate on a book holding a Bond is refused (its funding is
+    already FinancingToDate, booked as cash by the engine: pricebt DEV-E22)."""
+    bond_assets = {"assets": ["tests/assets/toy_usd_bond.yaml"]}
+    repo = {**_BOND, "repo_term": "term", "repo_haircut": 0.05}
+    assert _errors("Bond", repo, **bond_assets) == []
+    typo = _errors("Bond", {**_BOND, "repo_trem": "term"}, **bond_assets)
+    assert any("'repo_trem' is not a Bond field" in e and "config kwargs: repo_haircut, repo_term" in e for e in typo), typo
+    assert any("'repo_term' is not a Bond field" in e for e in _errors("Bond", repo))  # no bond config among the assets
+    accrual = _errors("Bond", _BOND, financing={"cash_accrual_rate": 0.03})
+    assert any("charge its funding twice" in e for e in accrual), accrual
+    assert not any("charge its funding twice" in e for e in _errors("IRSwap", _SWAP, financing={"cash_accrual_rate": 0.03}))

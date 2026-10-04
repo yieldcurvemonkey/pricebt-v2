@@ -455,12 +455,14 @@ def _add_attribution(blocks: List[tuple], pngs: Dict[str, bytes], table: Optiona
     status, totals = att.grade(stats), stats["totals"]
     attrs = [c for c in table.columns if c not in att.FIXED]
     econ = totals["economic_pnl"]
-    components = [*attrs, "explained_pnl", "residual_pnl", "actual_pnl", "cashflow_pnl", "economic_pnl"]
+    financed = bool(totals.get("financing_pnl"))  # pricebt DEV-E22: a financed position's repo interest, booked as cash
+    components = [*attrs, *(["financing_pnl"] if financed else []), "explained_pnl", "residual_pnl", "actual_pnl", "cashflow_pnl", "economic_pnl"]
     share = lambda v: v / econ if v is not None and econ else None  # noqa: E731
     section = [
         ("h2", "P&L attribution by greek"),
         ("p", f"Greeks x market moves per step (backtest.pnl_explain_table(), {stats['steps']} steps). "
-              "economic = actual (sum of the held book's price change) + cashflow (coupons paid); "
+              "economic = actual (sum of the held book's price change) + cashflow (coupons paid) + financing (the repo "
+              "interest a financed position paid, booked as cash: pricebt DEV-E22); explained = the attributes + financing; "
               "residual = economic - explained."),
         ("table", pd.DataFrame([{"component": c, "total": totals[c], "share of economic P&L": share(totals[c])} for c in components])),
         ("table", pd.DataFrame([
@@ -477,9 +479,9 @@ def _add_attribution(blocks: List[tuple], pngs: Dict[str, bytes], table: Optiona
                              "Diagnose with skills/pricebt-pnl-attribution/references/diagnosing-residuals.md "
                              "before reading the components."))
     if stats["finite"]:
-        cum = table[attrs + ["residual_pnl"]].astype(float).cumsum()
+        cum = table[attrs + (["financing_pnl"] if financed else []) + ["residual_pnl"]].astype(float).cumsum()
         cum.index = pd.to_datetime(cum.index)
-        colors = [SERIES, ACCENT, *plt.get_cmap("tab10").colors[2:]][: len(attrs)] + [MUTED]
+        colors = [SERIES, ACCENT, *plt.get_cmap("tab10").colors[2:]][: len(cum.columns) - 1] + [MUTED]
         fig, ax = _ax("Cumulative P&L attribution (stacked above/below zero; line = economic P&L)")
         ax.stackplot(cum.index, cum.clip(lower=0).T.values, colors=colors, labels=list(cum.columns), alpha=0.85)
         ax.stackplot(cum.index, cum.clip(upper=0).T.values, colors=colors, alpha=0.85)

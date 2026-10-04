@@ -39,7 +39,9 @@ declared units and checks them (DEV-E21). gs documents `IRDailyImpliedVol` in ba
 
 No gs notebook backtests a `Bond`, and none uses the backtest `pnl_explain`. For the decomposition
 of a swaption or bond backtest, use `swaption_pnl_definition` / `bond_pnl_definition` and
-`BackTest.pnl_explain_table()` (worked in `tests/test_pnl_ir.py`).
+`BackTest.pnl_explain_table()` (worked in `tests/test_pnl_ir.py`). A bond backtest's `Total`
+includes its coupons and repo interest (holding cash, DEV-E22), which a gs bond backtest would not
+book; the table shows them as `cashflow_pnl` and `financing_pnl`.
 
 ## Portfolios (`03_portfolios`)
 

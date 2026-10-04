@@ -465,4 +465,4 @@ risk_measures:                         # every row of the IRSwaption contract (s
   ProbabilityOfExercise: prob_exercise
 # No unsupported_measures: block -- an IRSwaption config must map every contract measure (IR_STRICT_CONTRACT
 # R3-0; declaring one is a load error). An ATM vol your surface cannot look up directly is still computable:
-# interpolate the strike smile at the forward. Only a Bond may still declare (config-template-bond.yaml).
+# interpolate the strike smile at the forward. No contract class may declare: Bond is strict too (BOND_DESIGN 4.1).

@@ -1,6 +1,6 @@
 ---
 name: pricebt-asset-config-cookbook
-description: Copy-paste patterns for pricebt asset configs - library shapes (service with market handles, in-process library with local curve files, curve + vol markets), resolve/pinning, unit and sign conversion, batching, attributes, CSA routing, multi-currency and FX - plus the recipes for every measure of the IR contract (IRSwap, IRSwaption, Bond) when your library lacks it (own-rate total delta, chain-rule gamma, translated-curve and constant-yield theta, vega/vanna/volga by normal-vol bumps, lognormal-to-normal vol and vega conversion, key-rate ladders, '<tail>;<expiry>' vega cubes, per-row buckets and PnlExplain, Cashflows frames, ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate and CRIF rows, bump_size pass-through, dead instruments, buy_sell/Straddle and bond size folding, zero-by-convention measures), and a catalogue of every pricebt error message with its fix. Use while writing or debugging an asset config.
+description: Copy-paste patterns for pricebt asset configs - library shapes (service, in-process, curve + vol markets), resolve/pinning, unit and sign conversion, batching, attributes, CSA routing, multi-currency and FX - plus the recipes for every measure of the IR contract (IRSwap, IRSwaption, Bond) when your library lacks it (own-rate delta, chain-rule gamma, translated-curve and constant-yield theta, normal-vol vega/vanna/volga, lognormal-to-normal conversion, key-rate ladders, vega cubes, PnlExplain, Cashflows, ParSpread, FairPremium, ForwardPrice, PremiumCents, LocalAnnuityInCents, CompoundedFixedRate, CRIF, bump_size pass-through, dead instruments, buy_sell/Straddle and bond size folding, zero-by-convention measures; bond accrued, clean/dirty price, yield, duration, convexity, settlement, repo rate, haircut, FinancingToDate, financed forward, carry, roll-down), and a catalogue of every pricebt error message with its fix. Use while writing or debugging an asset config.
 ---
 
 # Asset config cookbook
@@ -11,7 +11,7 @@ is `src/pricebt/risk/contracts.py`. The end-to-end procedure and the three contr
 in [`pricebt-connect-pricing-library`](../pricebt-connect-pricing-library/SKILL.md). Every pattern
 here is in the style of the configs the test suite runs: `tests/assets/toy_usd_irs_full.yaml`,
 `tests/assets/toy_usd_swaption.yaml`, `tests/assets/toy_usd_bond.yaml`, and
-`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`. The measure recipes (patterns 14-27 and 29) are
+`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`. The measure recipes (patterns 14-27 and 29-33) are
 executed as tested code in the templates, so this page describes the math and names the template
 helper instead of repeating it.
 
@@ -34,9 +34,9 @@ helper instead of repeating it.
    [`references/patterns.md`](references/patterns.md).
 2. For a contract measure, check whether your library computes it natively. If it does, convert it
    (unit, sign, bump convention) on the function's line. If it does not, keep the template's recipe
-   for it. An IRSwap or IRSwaption config must map every contract measure (no declarations); only
-   a Bond may declare a measure it cannot derive (pattern 14).
-3. Load with `python -W error` (a Bond's stale declaration then fails), and verify the number as the
+   for it. An IRSwap, IRSwaption or Bond config must map every contract measure; there are no
+   declarations (pattern 14). A Bond also maps its repo financing (patterns 31-32).
+3. Load with `python -W error` (every load warning then fails), and verify the number as the
    pattern says.
 4. Run the checker, [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md).
 5. For an error message, look it up in [`references/error-catalogue.md`](references/error-catalogue.md).
@@ -58,21 +58,25 @@ helper instead of repeating it.
 | 11 | **Several currencies** | one config per currency, selected by `match: {notional_currency: EUR}`, plus an FX config |
 | 12 | **FX** from a platform or a file | an FX config whose `rate(base, quote, d)` returns quote per base, or `None` |
 | 13 | **Slow** valuations | memoise on the market (a value also per `pricebt_date` and trade), batch, `build_on: resolve_date`, and never rebuild the client per call |
-| 14 | The **measure contract**: a measure your library has no call for | IRSwap/IRSwaption: map it (derive it from PV, a curve shift and a date; the load error ends with a paste-ready mapping skeleton). Bond: map it, or declare it under `unsupported_measures:` with a specific reason |
-| 15 | A swap's or bond's **vega, vanna, volga and vol levels** | map them to `0.0` (zero by convention, R2-8; `contracts.ZERO_BY_CONVENTION`) so mixed books work; a swap cannot declare them |
+| 14 | The **measure contract**: a measure your library has no call for | map it (derive it from PV, a curve or yield shift and a date); the load error ends with a paste-ready mapping skeleton. IRSwap, IRSwaption and Bond cannot declare a contract measure |
+| 15 | A swap's or bond's **vega, vanna, volga and vol levels** (and `IRBasis`, `IRXccyDelta`) | map them to `0.0` (zero by convention, R2-8; `contracts.ZERO_BY_CONVENTION`, each with its reason) |
 | 16 | **`IRDelta` scalar** when your library only bumps curves | the total own-rate derivative `[PV(+h) - PV(-h)] / [r(+h) - r(-h)]` (`own_rate_delta`); a curve DV01 or annuity pv01 is not it off the money |
 | 17 | **`IRGammaParallel`** | the chain-rule second derivative on the same bumps (`own_rate_gamma`); never d(pv01)/dr, which is half the gamma |
 | 18 | **Vol units, lognormal vols, vega** | normal vols in bp; a lognormal library uses the Bachelier-implied vol of its own premium; vega per bp of NORMAL vol |
 | 19 | **`IRVanna`, `IRVolga`** | normal-vol bumps of the own-rate delta and of PV; request with `aggregation_level='Type'` |
-| 20 | **`Theta`** | one calendar day on a TRANSLATED curve, forwards and vols fixed, plus the day's cash; bonds: the same yield one day later |
+| 20 | **`Theta`** | one calendar day on a TRANSLATED curve, forwards and vols fixed, plus the day's cash; bonds: the same yield over the step to the next business day, per calendar day |
 | 21 | **Ladders and the vega cube** | key-rate bumps; `IRGamma` diagonal; cube keys `"<tail>;<expiry>"` (`"10Y;1Y"`) |
 | 22 | **Several curves in one ladder; `PnlExplain`** | a list of row dicts (`mkt_type`, `mkt_asset`, `mkt_point`, `value`); PnlExplain names `market_to` |
-| 23 | **`Cashflows`** and coupons | `returns: frame`, `scale_columns: [payment_amount]`; empty for a total-return Price |
+| 23 | **`Cashflows`** and coupons | `returns: frame`, `scale_columns: [payment_amount]`; empty for a total-return Price; a bond's `payment_date` is the trade date Price drops the flow |
 | 24 | gs **`bump_size` / `finite_difference_method`** | name `pricebt_bump_size` in the expression; unnamed parameters raise (the honest default) |
 | 29 | **`ParSpread`, `FairPremium`, `ForwardPrice`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`** (IRSwap, IRSwaption) | K − own rate; Price / DF(settlement); Price / DF(expiry); Price / \|N\| × 1e4; Annuity / \|N\|; (1 + K/f)^f − 1; the trade's IRDelta ladder as SIMM CRIF rows |
 | 25 | **Dead instruments** | sensitivities `0.0`, levels finite (last live value), `Cashflows` empty; swaptions physically settled |
 | 26 | **Swaption** `buy_sell`, `Straddle`, strikes | fold `buy_sell` into the signed notional; a straddle is payer + receiver legs; reject server grammar at resolve |
-| 27 | **Bond** `size`, `buy_sell`, identifier | static data by identifier; signed face; `notional_amount` attribute + `size_attribute`; own rate = yield |
+| 27 | **Bond** `size`, `buy_sell`, identifier | static data by identifier; signed face; `notional_amount` attribute + `size_attribute`; own rate = yield; `Price` = settlement-date dirty value |
+| 30 | **Bond analytics**: accrued, clean and dirty price, yield, duration, convexity, settlement | AI to standard settlement; Clean = Dirty − 100·AI/face; Dirty = 100·Price/face; `IRFwdRate` = YTM; duration and convexity by yield bumps; `DaysToSettlement` `unit: number`, `scale_with_quantity: false` |
+| 31 | **Repo financing**: `RepoRate`, `RepoHaircut`, `FinancingToDate` | the rate in force (GC − special, or the term rate pinned at resolve); principal (1 − haircut)·Price(trade date) pinned at resolve; simple interest per calendar day |
+| 32 | **`ForwardPrice`, `Carry`, `RollDown`** (Bond) | forward to H = settlement + 1 month at `RepoRate`; Carry = clean now − clean forward; RollDown = clean at H on the rolled-down curve − clean now |
+| 33 | The bond's other strict rows (`FairPremium`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`, `LightningDV01`, `LightningOAS`, `ParSpread`) | Price; Price/\|face\| in pct; Annuity/\|face\|; (1 + c/f)^f − 1; the ladder as CRIF; IR + CREDIT rows; the yield DV01; the Z-spread |
 
 ## Unit and sign conversion table (the most common source of wrong P&L)
 
@@ -90,6 +94,7 @@ helper instead of repeating it.
 | theta per year | ccy per calendar day | `theta / 365`, and only if it holds forwards fixed (pattern 20) |
 | bond DV01 per 100 face, positive | ccy per +1bp, long < 0 | `-dv01 * face / 100` |
 | bond clean price per 100 | dirty PV in ccy | `(clean + accrued) / 100 * face` |
+| repo rate in percent; haircut in percent | `RepoRate` in bp; `RepoHaircut` decimal | `repo * 100`; `haircut / 100` |
 | bucket keys `"USD.SOFR:2Y"` | `"2Y"` (any str label) | `{k.split(":")[1]: -v for k, v in b.items()}` |
 | vega buckets keyed (expiry, tail) | `"<tail>;<expiry>"` | `f"{tail};{expiry}"` |
 | notional always positive, direction flag | the direction is in resolve's signed notional | `n * (1 if pay else -1)` |
@@ -103,15 +108,16 @@ conversion with the checker, [`pricebt-verify-asset-config`](../pricebt-verify-a
 
 Every pricebt error names the asset, the config key and the offending value. The causes and fixes
 are in [`references/error-catalogue.md`](references/error-catalogue.md), including the contract
-errors (the strict classes' gap and declaration errors and the mapping skeleton), the checker rows of
-the strict contract, `UnsupportedMeasureError`, stale-declaration warnings, refused measure parameters, and
-frame errors. `tests/skills/test_skill_asset_config_cookbook.py` raises the error behind each
+errors (the strict classes' gap and declaration errors and the mapping skeleton, a Bond missing its
+financing rows, the bond rows' units), the checker rows of the strict contract,
+`UnsupportedMeasureError` (classes without a contract), stale-declaration warnings, refused measure
+parameters, frame errors, and the `cash_accrual` double-funding warning. `tests/skills/test_skill_asset_config_cookbook.py` raises the error behind each
 literal fragment and checks that the catalogue quotes it verbatim. Rows with placeholders, or that
 need a whole backtest, are copied from the source only.
 
 ## Checks
 
-- `python -W error` loads the config (no contract problem, no stale declaration; an IRSwap/IRSwaption has no `unsupported_measures:` at all).
+- `python -W error` loads the config (no contract problem, no warning; an IRSwap, IRSwaption or Bond has no `unsupported_measures:` at all).
 - `python skills/pricebt-verify-asset-config/scripts/check_asset.py <config>` passes.
 - Every conversion line in the config has a comment: `# vendor: <convention> -> pricebt: <convention>`.
 - Each native measure you mapped agrees with the template recipe to about 1e-4 relative, or you can
@@ -122,8 +128,11 @@ need a whole backtest, are copied from the source only.
 - **A placeholder `0.0`** for a contract measure outside `contracts.ZERO_BY_CONVENTION` (say
   `IRDiscountDeltaParallel` "because there is one curve") loads, but silently zeroes risk and P&L;
   the checker FAILs it (`ir_fake_constant`). Compute it.
-- **Declaring a zero-by-convention measure** on a bond breaks mixed books with vol attribution (on
-  a swap it is a load error). Map `0.0` instead (pattern 15).
+- **Declaring a zero-by-convention measure** is a load error on a swap, swaption or bond. Map `0.0`
+  instead (pattern 15).
+- **Financing counted twice.** A financed bond's repo interest reaches the cash through
+  `FinancingToDate` (DEV-E22); a `cash_accrual` model on the same run charges the funding loan
+  again, and the engine warns (pattern 31).
 - **Mixed units across one book.** Every asset that can sit in one book must declare the same unit
   for `IRFwdRate` and the vol levels. The `ir_pnl_definition` family checks each level's unit and
   raises (DEV-E21); a hand-written `PnlAttribute` without `market_data_unit` is silently off by

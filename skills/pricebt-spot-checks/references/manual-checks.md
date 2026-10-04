@@ -1,6 +1,6 @@
 # Manual spot checks
 
-The automated pass ([`spot_check.py`](../scripts/spot_check.py)) proves that pricebt's bookkeeping agrees with your asset config. These five checks cover what it cannot see: pricing bugs inside the config, strategy logic that does not do what the idea says, and look-ahead. Do all five for any result that goes into a report. Write one line per check: what you did, what you expected, what you saw.
+The automated pass ([`spot_check.py`](../scripts/spot_check.py)) proves that pricebt's bookkeeping agrees with your asset config. These checks cover what it cannot see: pricing bugs inside the config, strategy logic that does not do what the idea says, look-ahead, and the cash a financed position books between its entry and exit. Do checks 1 to 5 for any result that goes into a report, and check 6 when the book holds a financed position (every `Bond`). Write one line per check: what you did, what you expected, what you saw.
 
 Throughout, `backtest` is the finished `BackTest`, `run(**overrides)` is your function that rebuilds the strategy with some parameters changed and returns a new `BackTest`, and the working directory is the repository root.
 
@@ -72,6 +72,25 @@ Anything that moves the wrong way, or does not move at all, is a bug in the stra
    - Slow strategies (monthly rolls, carry): little change is expected.
 4. Put both numbers in the report next to each other.
 
+## 6. Holding cash of a financed position (bonds)
+
+**Why:** gs books only entry and exit prices. pricebt also books, for every position whose asset maps `FinancingToDate` (every `Bond`: the Bond contract requires it), the coupons the position dropped and the repo interest it paid since its previous mark, as cash on each mark and exit (holding cash, DEV-E22; `docs/v2/BOND_DESIGN.md` §4). A wrong `Cashflows.payment_date` books a coupon on the wrong step, and a `FinancingToDate` that is not cumulative books the wrong interest, straight into `Total`. Swaps and swaptions book none of this (gs parity).
+
+1. Pick one financed position and two consecutive marks p < d across a coupon date. Read the engine's record:
+
+   ```python
+   position = next(i for i in backtest.holding_cash[d] if i.name == trade_name)   # keyed by the position object
+   ccy, cashflow, financing = backtest.holding_cash[d][position]
+   ```
+
+   `ccy` is `result_ccy` when the run sets one (each flow FX-converted at its payment date, the financing change on d), else the position's `FinancingToDate` currency.
+2. Recompute both parts by hand from the asset config's measures on p and d: `cashflow` = the sum of the `Cashflows(p)` rows with `p < payment_date ≤ d`; `financing` = `FinancingToDate(d) − FinancingToDate(p)`. For a long, financing is ≤ 0: one day is about `−(1 − h) × Price(trade date) × RepoRate × days / basis` (days between the two settlement dates; basis 360 for USD repo).
+3. For a book that holds only that position, with no transaction costs and no `cash_accrual`: `Total(d) − Total(p)` = `Price(d) − Price(p) + cashflow + financing`, i.e. ΔPV + coupons − repo interest for a long. Expect equality to rounding.
+4. Over the whole holding, `Σ financing` = `FinancingToDate` on the exit date (it is 0 on the trade date), and `Σ cashflow` = the coupons paid while held.
+5. If the run also has a `cash_accrual` model, the engine warns once that the funding is counted twice: the accrual charges the `-Price` funding loan that `FinancingToDate` already finances. Record it as a finding unless the accrual was removed.
+
+`tests/test_holding_cash.py` shows the same reconciliation on the toy bond (`tests/assets/toy_usd_bond.yaml`).
+
 ## Recording the results
 
 Add a table like this under the spot-check section of the tearsheet (`build_tearsheet(..., notes=...)`, or edit the Markdown):
@@ -83,3 +102,4 @@ Add a table like this under the spot-check section of the tearsheet (`build_tear
 | notional × 2 | P&L × 2 | × 2.000 | yes |
 | costs × 2 | net − 10,569 | net − 10,569 | yes |
 | signal lagged 1 day | degrades, same sign | Sharpe 0.9 → 0.6 | yes |
+| holding cash (financed bond) | ΔTotal = ΔPV + coupons − repo interest | equal to 1e-8 | yes |

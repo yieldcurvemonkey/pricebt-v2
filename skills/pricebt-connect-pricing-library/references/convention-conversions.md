@@ -24,7 +24,7 @@ whatever the [discovery questionnaire](discovery-questionnaire.md) found. Write 
 | `Theta` | `ccy` **per calendar day** (never per year) |
 | `strike` kwarg and resolved strike (swaption) | **decimal**; `'A-50'` / `'ATM+25'` offsets in bp |
 | `buy_sell` (swaption, bond) | folded by `resolve` into the signed notional or face (bought > 0) |
-| bond PV | holder-signed **dirty** PV in ccy for the resolved face (dirty price / 100 x face) |
+| bond PV | holder-signed **dirty** value in ccy for the resolved face (dirty price / 100 x face) at standard settlement, not discounted to the pricing date |
 | `ParSpread` (swap, swaption) | the floating-leg spread making PV 0, rate unit (`bp`), **the same** for payer and receiver: `K - IRFwdRate` on one curve with matching schedules |
 | `FairPremium` / `ForwardPrice` | `ccy`: PV / DF(premium settlement) and PV / DF(the date `ExpiryInYears` counts to); never PV x DF |
 | `PremiumCents` / `LocalAnnuityInCents` | PV / abs(notional) x 1e4 in `bp` (1 cent per 100 = 1bp of notional) / Annuity / abs(notional) in `decimal`; intensive |
@@ -87,6 +87,12 @@ annuity N·A about 8.2mm) and a 1mm 10y 4.25% bond.
 | modified duration D | `ccy_per_bp` | `-D * dirty_pv * 1e-4` | D ~ 8 → about -800 |
 | convexity C | `ccy_per_bp2` | `C * dirty_pv * 1e-8` | C ~ 75 → about 0.75 |
 | yield in percent, semiannual street | the own rate in `bp` | `x * 100`, and `lib_pv_at_yield` must invert the same convention | ~425 |
+| modified duration D, convexity C (native) | `ModifiedDuration`, `Convexity` as levels | `unit: decimal` as is (years, years²); in the `IRFwdRate` yield convention | D ~ 8, C ~ 75 |
+| clean price, dirty price per 100 | `CleanPrice`, `DirtyPrice` | `unit: pct` as is (the dirty price must be at standard settlement) | ~99.5, ~100.2 |
+| accrued per 100 face | `AccruedInterest` in ccy, holder-signed | `x * face / 100` (signed face) | ~7,100 two months into a 4.25% semiannual period |
+| repo rate in percent | `RepoRate` in `bp` | `x * 100` (simple, the repo day count: USD ACT/360) | ~530 |
+| haircut in percent | `RepoHaircut` in `decimal` | `x / 100` | 2 → 0.02 |
+| settlement lag in business days | `DaysToSettlement` in **calendar** days | count the calendar days to the settlement date; `unit: number`, `scale_with_quantity: false` | 1, or 3 on a Friday |
 | gs `IRFwdRate` / `IRAnnualImpliedVol` read in a notebook | the config's declared unit | gs returns decimals (despite "in percent" in its docstrings); the shipped pricebt configs return bp, so delete a notebook's `* 1e4` | |
 
 ## Signs: a 30-second self-test
@@ -107,9 +113,12 @@ annuity N·A about 8.2mm) and a 1mm 10y 4.25% bond.
 
 **A bond** (long 1mm 10y):
 
-10. `npv` is about dirty price x face / 100, the delta is **< 0** (about -800 per bp) and gamma > 0.
-11. `Theta` is about `dirty PV x yield / 365` per day. For a continuously compounded yield between
-    coupons it is exactly `dirty PV x (exp(y / 365) - 1)`, because it is total return at a constant
-    yield. On the day before a coupon, the coupon is in Theta's cash term.
-12. `buy_sell="Sell"` negates every extensive measure; the yield, spreads and `ExpiryInYears` are
-    unchanged.
+10. `npv` is dirty price x face / 100 at standard settlement (not discounted to the pricing date),
+    the delta is **< 0** (about -800 per bp) and gamma > 0.
+11. `Theta` is about `dirty PV x yield / 365` per calendar day. It is measured over the step to the
+    next business day at a constant yield and divided by that step's calendar days (3 on a Friday),
+    and the coupon dropped in the step is in its cash term. Financing is not in `Theta`.
+12. `buy_sell="Sell"` negates every extensive measure; the yield, spreads, `CleanPrice`,
+    `DirtyPrice`, `RepoRate` and `ExpiryInYears` are unchanged.
+13. `FinancingToDate` is 0 on the trade date and ≤ 0 for a long after it; over one weekday it
+    changes by about `-(1 - haircut) x Price(trade date) x RepoRate / 360`.

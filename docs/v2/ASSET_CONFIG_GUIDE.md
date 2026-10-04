@@ -15,8 +15,8 @@ description: "..."                    # optional
 instrument: IRSwap                    # required: a class name in pricebt.instrument
 match: {notional_currency: USD}       # optional: equality rules on kwargs that select this asset
 currency: USD                         # required ISO-4217: default currency of every ccy-unit function
-# unsupported_measures:               # Bond only (an IRSwap/IRSwaption config must map every contract measure, so
-#   LightningOAS: "no OAS model in my_lib"    #   this block is a load error here): measure -> reason; see "Measure contracts" below
+# unsupported_measures:               # classes without a contract only (an IRSwap/IRSwaption/Bond config maps every
+#   FXDelta: "no FX model in my_lib"          #   contract measure, so declaring one is a load error): measure -> reason
 defaults:                             # optional: fill kwargs that are absent/None, at resolve time
   pay_or_receive: Receive
 imports: |                            # optional Python source, exec'd once (lazily) into a private namespace
@@ -139,14 +139,13 @@ thing. Requesting an FX conversion of a non-currency unit is a `ConfigError`.
   `HistoricalPricingContext` a scalar becomes a `SeriesWithInfo` indexed by date, a bucketed result
   one `DataFrameWithInfo` indexed by `date` (a date with no buckets simply has no rows), and a
   table one table with a `date` column first.
-- **Measure contracts.** An `IRSwap` or `IRSwaption` config must **map** every measure of its
-  class's contract: declaring a contract measure under `unsupported_measures:` is a load error. A
-  `Bond` config must map every measure of its contract or declare it with a reason. The load error
-  lists every gap and prints a paste-ready block: a mapping skeleton for IRSwap/IRSwaption, a
-  declaration block for Bond (DEV-I11; the tables are in "Measure contracts" below). A preset or
-  LocalCcy key (`IRDeltaParallel`, `IRGammaParallelLocalCcy`, ...) counts toward its base measure
-  and also prices the base's requests. On a Bond, declare the base measure, never a preset: a
-  declared preset name, a form outside the contract row, or an unknown name loads with a warning.
+- **Measure contracts.** An `IRSwap`, `IRSwaption` or `Bond` config must **map** every measure
+  of its class's contract: declaring a contract measure under `unsupported_measures:` is a load
+  error. The load error lists every gap and ends with a paste-ready mapping skeleton (DEV-I11; the
+  tables are in "Measure contracts" below). A preset or LocalCcy key (`IRDeltaParallel`,
+  `IRGammaParallelLocalCcy`, ...) counts toward its base measure and also prices the base's
+  requests. A declared name outside the contract that cannot mean what it says (a preset of a
+  non-contract measure, an unknown name) loads with a warning.
 - **Security: configs are trusted code.** Both `imports` and `code` are `exec`'d, and every
   expression is `eval`'d, in a plain Python namespace with no sandboxing. Only load a config whose
   contents you trust — pricebt loads a config only from a path (or in-memory mapping) the calling
@@ -158,32 +157,29 @@ thing. Requesting an FX conversion of a non-currency unit is a `ConfigError`.
 gs answers every IR measure on every IR instrument (a swap's vega is 0) and returns
 `UnsupportedValue` for what its server cannot compute. pricebt has no server, so a config whose
 `instrument:` has a contract must say, **for every measure and form of that contract**, how to
-compute it, or, for a `Bond` only, why it cannot (DEV-I11; design:
-[`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §2 and §00, and for the strict rule
-[`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md); code: `src/pricebt/risk/contracts.py`). Classes
+compute it (DEV-I11; design: [`IR_RISK_DESIGN.md`](IR_RISK_DESIGN.md) §2 and §00, for the
+strict rule [`IR_STRICT_CONTRACT.md`](IR_STRICT_CONTRACT.md), and for bonds and financing
+[`BOND_DESIGN.md`](BOND_DESIGN.md); code: `src/pricebt/risk/contracts.py`). Classes
 without a contract (`FXOption`, `EqOption`, `InflationSwap`, `Cash`, `FXForward`,
 `ConfigInstrument`) keep the plain rule: only `Price` is required.
 
-A form of a contract row is satisfied when:
-- a `risk_measures:` slot maps it to a function whose unit is allowed for the row's kind (and that
-  is intensive when the kind says so; a `table` row needs a `returns: frame` function), or
-- **Bond only:** `unsupported_measures:` declares the whole measure or that form, with a non-empty
-  reason.
+A form of a contract row is satisfied when a `risk_measures:` slot maps it to a function whose
+unit is allowed for the row's kind (and that is intensive when the kind says so; a `table` row
+needs a `returns: frame` function).
 
-**IRSwap and IRSwaption are strict** (`contracts.STRICT_CLASSES`): only a mapping satisfies a row,
+**Every contract class is strict** (`contracts.STRICT_CLASSES`: Bond, IRSwap, IRSwaption): only a mapping satisfies a row,
 and declaring a contract measure (the measure, one of its forms, or a preset/fallback resolving to
 one, such as `IRDeltaParallel`, `IRGammaParallelLocalCcy` or `PnlExplainClose`) is itself a load
 error, mapped or not. Declaring a name outside the contract keeps the warnings below. A measure
-the contract text defines as 0 for the class (`contracts.ZERO_BY_CONVENTION`: vol measures on a
-swap, `IRBasis` for a single-curve library, `IRXccyDelta` for a single-currency instrument) maps
+the contract text defines as 0 for the class (`contracts.ZERO_BY_CONVENTION`, each with its
+reason: vol measures on a swap or a bullet bond, `IRBasis` for a single-curve library or a bond
+discounted on one curve, `IRXccyDelta` for a single-currency instrument) maps
 honestly to a literal `'0.0'` function; a literal constant for any other contract measure is a
 checker FAIL. Every IR-relevant `pricebt.risk` measure outside the contract is listed, with the
 reason, in `contracts.EXCLUDED`.
 
-Anything else fails the load with **one** `ConfigError` that lists every gap. For a Bond it ends
-with a paste-ready `unsupported_measures:` block (`TODO` reasons; replace each with the real
-reason, the `pricebt-verify-asset-config` checker flags reasons still starting with `TODO`). For
-IRSwap/IRSwaption it ends with a paste-ready **mapping skeleton** (`contracts.mapping_skeleton`): a
+Anything else fails the load with **one** `ConfigError` that lists every gap. It ends with a
+paste-ready **mapping skeleton** (`contracts.mapping_skeleton`): a
 `functions:` stub per missing scalar or frame form and a `portfolio_functions:` stub per missing
 bucketed form, each with an allowed unit, then the `risk_measures:` lines. Every stub's `expr` is
 `'... TODO'`, which does not compile, so the skeleton loads only once each stub computes its
@@ -205,6 +201,7 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `time` | `decimal`, `number` | yes |
 | `prob` | `decimal`, `number` | yes |
 | `notional_level` | `bp`, `decimal`, `number`, `pct` | yes |
+| `days` | `number` | yes |
 | `table` | frame (`returns: frame`) | - |
 
 **`IRSwap`** (27 measures)
@@ -272,11 +269,11 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `PnlExplain` | `value` | bucketed | as `IRSwap` |
 | `ProbabilityOfExercise` | `prob` | scalar | probability (0..1) of finishing in the money under the annuity measure. Intensive. |
 
-**`Bond`** (22 measures)
+**`Bond`** (40 measures)
 
 | Measure | Kind | Forms | Contract |
 |---|---|---|---|
-| `Price` | `value` | scalar | as `IRSwap` |
+| `Price` | `value` | scalar | the position's settlement-date market value: (clean price + accrued interest at standard settlement) per 100 face x face / 100, holder-signed (a long is positive), not discounted from the settlement date to the pricing date (DEV-I20). It drops a flow on the first trade date whose standard settlement is on or after the flow's payment date; Cashflows lists the flows still to drop. |
 | `IRDelta` | `sens1` | scalar, bucketed | as `IRSwap` |
 | `IRDiscountDeltaParallel` | `sens1` | scalar | as `IRSwap` |
 | `IRGammaParallel` | `sens2` | scalar | as `IRSwap` |
@@ -291,13 +288,31 @@ outside the contract (e.g. a custom `IRTheta`) are unrestricted.
 | `IRAnnualImpliedVol` | `vol` | scalar | as `IRSwap` |
 | `IRAnnualATMImpliedVol` | `vol` | scalar | as `IRSwap` |
 | `IRDailyImpliedVol` | `vol` | scalar | as `IRSwap` |
-| `Theta` | `theta` | scalar | as `IRSwap` |
+| `Theta` | `theta` | scalar | carry per calendar day with the yield (IRFwdRate) held fixed, over the step to the next business day nb: [Price(nb, same yield) + flows Price drops in (t, nb] - Price(t)] / (nb - t).days, ccy per day (DEV-I15). Price is a settlement-date value, so one calendar day can move settlement by 0 or 3 days; spreading the next-business-day step makes Theta x step days exact on a business-day grid. Financing is not in Theta (FinancingToDate). |
 | `ExpiryInYears` | `time` | scalar | as `IRSwap` |
 | `Annuity` | `annuity` | scalar | as `IRSwap` |
-| `Cashflows` | `table` | frame | as `IRSwap` |
+| `Cashflows` | `table` | frame | the flows still included in Price, one row each, holder-signed; payment_date is the trade date on which Price drops the flow: the first date whose standard settlement is on or after the flow's payment date (T+1: the business day before a business-day coupon date). Required columns payment_date, payment_amount, currency, payment_type; returns: frame with scale_columns including payment_amount. A financed position's engine books these rows as cash on payment_date (DEV-E22). |
 | `LightningDV01` | `sens1` | scalar | yield DV01: Price change for +1bp of yield (= the IRDelta scalar for a bond). |
 | `LightningOAS` | `rate` | scalar | option-adjusted spread over the library's reference curve (a bullet bond: its Z-spread). Intensive. |
 | `ParSpread` | `rate` | scalar | par asset-swap spread (or the library's par spread) in the declared unit. Intensive. |
+| `FairPremium` | `value` | scalar | the amount the holder pays at standard settlement for the position: Price itself, since Price is already the settlement-date value (DEV-I20). ccy. |
+| `ForwardPrice` | `value` | scalar | the forward (financed) value at the horizon H = settlement + 1 calendar month (following business day): Price x (1 + RepoRate x tau(s, H)) - sum over flows c paid in (s, H] of C x (1 + RepoRate x tau(c, H)), tau in the repo day count, RepoRate held flat to H, the whole Price financed (a forward price does not depend on the haircut); ccy, holder-signed. Dead (nothing left to pay): 0 (DEV-I21; the swap and swaption rows forward to expiry instead). |
+| `PremiumCents` | `notional_level` | scalar | Price / \|face\| in the declared unit (pct: the dirty price per 100). Intensive (DEV-I19). |
+| `LocalAnnuityInCents` | `notional_level` | scalar | Annuity / \|face\|: the PV of 1.0 per annum per unit of face. Intensive (DEV-I19). |
+| `CompoundedFixedRate` | `rate` | scalar | the coupon restated as an annually compounded rate: (1 + c/f)^f - 1 for f coupons a year. A trade term, finite on every date. Intensive (DEV-I19). |
+| `CRIFIRCurve` | `table` | frame | as `IRSwap` |
+| `PnlExplain` | `value` | bucketed | the change in value from market to market_to by risk factor, no time component (IR_RISK_DESIGN section 8): a returns: buckets portfolio function receiving market_to and pricebt_to_date, rows labelled by mkt_type (IR for the curve, e.g. CREDIT for the bond's spread to it), summing to Price(market_to) - Price(market), ccy. PnlExplainClose resolves here. |
+| `CleanPrice` | `notional_level` | scalar | the quoted clean price per 100 face for standard settlement: DirtyPrice - 100 x AccruedInterest / face (signed face). Dead (Price 0): 0. Intensive (DEV-I20). |
+| `DirtyPrice` | `notional_level` | scalar | 100 x Price / face (signed face): the invoice price per 100, the same for a long and a short. Dead (Price 0): 0. Intensive (DEV-I20). |
+| `AccruedInterest` | `value` | scalar | the coupon accrued from the last coupon date to the standard settlement date in the bond's accrual convention (US Treasuries: ACT/ACT ICMA), holder-signed, ccy; 0 when settlement is a coupon date and after maturity (DEV-I20). |
+| `ModifiedDuration` | `time` | scalar | -(1/P) dP/dy in years per unit of decimal yield, y in the IRFwdRate convention, P the dirty price; 0 when dead. Intensive (DEV-I20). |
+| `Convexity` | `time` | scalar | (1/P) d2P/dy2 in years^2, y and P as ModifiedDuration; 0 when dead. Intensive (DEV-I20). |
+| `DaysToSettlement` | `days` | scalar | calendar days from the pricing date to the standard settlement date (US Treasuries T+1: 1, or 3 over a weekend or a holiday). Intensive (DEV-I20). |
+| `RepoRate` | `rate` | scalar | the funding rate in force on the pricing date for this position: overnight general collateral or special, or a term rate locked at the trade date; the library or the data decides. Simple interest in the config's repo day count (USD: ACT/360). Finite on every held date. Intensive (DEV-I21). |
+| `RepoHaircut` | `rate` | scalar | the fraction of the settlement value not financed, in the declared unit (decimal 0.02 = 2%). Intensive (DEV-I21). |
+| `FinancingToDate` | `value` | scalar | cumulative repo interest on the position's funding leg from the settlement of its trade date to the settlement of the pricing date (or maturity, if earlier), holder-signed: a long pays (<= 0), a short lends the cash and receives (>= 0). Principal (1 - RepoHaircut) x Price on the trade date (pinned by resolve); simple interest at each calendar day's RepoRate (the last business day's fixing over weekends and holidays); 0 on the trade date. The engine books its change over each step as cash (DEV-E22). ccy (DEV-I21). |
+| `Carry` | `value` | scalar | clean value now minus clean forward value at H: (Price - AccruedInterest) - (ForwardPrice - accrued at H) = coupon income over (s, H] minus financing at RepoRate; ccy, holder-signed; dead: 0 (DEV-I21). |
+| `RollDown` | `value` | scalar | clean value at H on the library's reference curve rolled down (unchanged in time to maturity, spread held) minus clean value now; on a flat curve, the pull to par at constant yield. Carry + RollDown is the P&L to H, the whole Price financed at RepoRate and coupons paid in (s, H] reinvested at it, if the curve does not move (a backtest finances (1 - h) of Price, FinancingToDate, and holds coupons as cash). ccy, holder-signed; dead: 0 (DEV-I21). |
 
 Required frame columns: `Cashflows`: `payment_date`, `payment_amount`, `currency`, `payment_type` (scale columns must include `payment_amount`); `CRIFIRCurve`: `RiskType`, `Qualifier`, `Bucket`, `Label1`, `Label2`, `Amount`, `AmountCurrency` (scale columns must include `Amount`).
 <!-- END generated contract tables -->
@@ -322,13 +337,45 @@ raises on a mismatch rather than mis-scaling the P&L by 10⁴.
 `Theta` is **ccy per calendar day** (DEV-I15); `ExpiryInYears` is `max(final_or_expiry − t,
 0).days / 365` for every class (DEV-I17). A swap or bond maps its vol measures to `0.0` (R2-8)
 rather than declaring them: a declaration breaks a mixed book whose P&L definition reads vega
-(and on a swap or swaption a declaration does not load at all).
+(and on a contract class a declaration does not load at all).
 
-### `unsupported_measures:` (Bond)
+### Bonds: analytics, settlement and financing
 
-Only a `Bond` (and a class without a contract) may declare a contract measure; an IRSwap or
-IRSwaption config that declares one does not load, so `UnsupportedMeasureError` never arises for
-them.
+A `Bond` config maps the IR base, the gs measures a cash bond can answer, the pricebt bond
+analytics (DEV-I20) and the financing contract (DEV-I21); [`BOND_DESIGN.md`](BOND_DESIGN.md) §3
+explains each row, the contract text in `src/pricebt/risk/contracts.py` is authoritative.
+
+- **`Price` is the settlement-date market value**: (clean + accrued at standard settlement) per 100
+  × face / 100, holder-signed, not discounted to the pricing date. So `FairPremium == Price`,
+  `DirtyPrice = 100·Price/face`, `CleanPrice = DirtyPrice − 100·AccruedInterest/face`, and
+  `Cashflows.payment_date` is the trade date `Price` drops a flow (T+1: the business day before a
+  business-day coupon date). `DaysToSettlement` is the settlement lag in calendar days.
+- **`Theta`** holds the yield fixed over the step to the next business day and divides by its
+  calendar days, so `Theta × step days` is exact on a business-day grid even though one calendar
+  day moves settlement by 0 or 3 days.
+- **The yield to maturity is `IRFwdRate`** (DEV-I12), in your library's quoting convention; there
+  is no second yield measure. `ModifiedDuration` and `Convexity` are in years per unit of decimal
+  yield (years²), on the dirty price.
+- **Financing is required.** `RepoRate` (overnight GC or special, or a term rate locked at the
+  trade date; your library or data decides), `RepoHaircut`, and `FinancingToDate`: the cumulative
+  repo interest on `(1 − haircut) × Price(trade date)` (pin it in `resolve`) from the trade's
+  settlement to the pricing date's, holder-signed (a long pays). `ForwardPrice`, `Carry` and
+  `RollDown` are to the horizon H = settlement + 1 calendar month: `ForwardPrice = Price·(1 +
+  RepoRate·τ) − coupons·(1 + RepoRate·τ_c)`, `Carry` = clean spot − clean forward, `RollDown` =
+  clean value at H on your reference curve rolled down − clean value now.
+- **Holding cash (DEV-E22).** For every position whose asset maps `FinancingToDate`, the engine
+  books, on each date it marks or exits the position, the `Cashflows` rows dropped since the
+  previous mark plus the change of `FinancingToDate`, as cash (`backtest.holding_cash` records each
+  part). A financed bond's `Total` is therefore ΔPV + coupons − repo interest, exactly (in its own currency), on any
+  grid; `pnl_explain_table` shows `financing_pnl`. Assets that do not map `FinancingToDate` are
+  unchanged. Do not also set a `cash_accrual` model: the cash balance already holds the repo loan
+  (`−Price` at entry), so the funding would be counted twice (the engine warns).
+
+### `unsupported_measures:` (classes without a contract)
+
+Only a class without a contract (e.g. `ConfigInstrument`) may declare a measure; an IRSwap,
+IRSwaption or Bond config that declares a contract measure does not load, so
+`UnsupportedMeasureError` never arises for them.
 
 ```yaml
 unsupported_measures:                                  # top level
@@ -341,9 +388,7 @@ unsupported_measures:                                  # top level
   "no mapping for risk measure X".
 - A mapping always wins: a measure both mapped and declared loads, uses the mapping, and warns
   that the declaration is stale (R2-9).
-- Declare the **base** measure, never a preset (`IRDelta`, not `IRDeltaParallel`). A declared
-  preset, a form outside the contract row, or a name that is neither in the contract nor in
-  `pricebt.risk` loads with a `UserWarning`.
+- Declare the **base** measure, never a preset (`IRDelta`, not `IRDeltaParallel`).
 
 ### Frames (`returns: frame`)
 
@@ -389,9 +434,9 @@ included); otherwise the request raises `NotSupportedError`.
 
 `PnlExplain(CloseMarket(date=T))` maps to a `returns: buckets` portfolio function that also
 receives `market_to` (the market of `T`, same csa) and `pricebt_to_date`, and must name one of
-them (DEV-M2). It is in the IRSwap and IRSwaption contracts as a **bucketed** form (a
+them (DEV-M2). It is in every contract (IRSwap, IRSwaption, Bond) as a **bucketed** form (a
 `returns: buckets` portfolio function always fills the bucketed slot; a `PnlExplainClose` key
-counts too) and optional for a Bond. Under
+counts too). Under
 `PricingContext(market=CloseMarket(date=t))` every function sees the market of `t` while
 `pricebt_date` stays the pricing date (DEV-M1); value on `pricebt_date` if you want the time value
 to stay that of the pricing date.

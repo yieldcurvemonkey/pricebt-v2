@@ -34,7 +34,9 @@ trade names would change from one build to the next.
   previous observation instead (a look-ahead check).
 - **Holding window.** A trade created on `c` with final date `f` is held on grid dates `c <= s < f`; its
   entry cash is `-PV(c)` and its exit cash `+PV(f)`. Coupons while held are not booked separately (the
-  PV carries them). `trade_duration=None` holds to the end of the backtest.
+  PV carries them), except for a financed position (an asset that maps `FinancingToDate`: every `Bond`),
+  whose dropped coupons and repo interest the engine books as cash on each mark and exit (DEV-E22).
+  `trade_duration=None` holds to the end of the backtest.
 - **`'next schedule'`** means "exit at the next date of the trigger that fired": Periodic (and an
   Aggregate containing one) and DateTrigger provide it; after the last date the trade is held to the
   end. A lone `MktTrigger` or a `StrategyRiskTrigger` provides no info, and `'next schedule'` raises.
@@ -329,19 +331,30 @@ entry cash already *is* the premium).
 
 Each recipe below is a spec in `skills/pricebt-strategy-recipes/example/`, run by
 `tests/skills/test_skill_recipes.py` on the toy assets. For decomposition of the P&L (delta, gamma, vega,
-vanna, volga, theta, coupons), pass a definition to the engine; the spec has no field for it yet:
+vanna, volga, theta, coupons, financing), pass a definition to the engine; the spec has no field for it yet:
 
 ```python
 from pricebt.backtests.backtest_objects import swaption_pnl_definition, bond_pnl_definition, ir_pnl_definition
 built = recipes.build("SPEC.yaml")
 bt = GenericEngine().run_backtest(built.strategy, **built.run_kwargs, pnl_explain=swaption_pnl_definition())
-table = bt.pnl_explain_table()     # actual, cashflow, economic, one column per attribute, explained, residual
+table = bt.pnl_explain_table()     # actual, cashflow, financing, economic, one column per attribute, explained, residual
 ```
 
 Reading and diagnosing that table (units, residuals, mixed books) is
 [`pricebt-pnl-attribution`](../../pricebt-pnl-attribution/SKILL.md). How your library produces each measure
-named below (bump recipes, units, signs, dead instruments; `unsupported_measures:` for a Bond only) is
-[`pricebt-risk-measures`](../../pricebt-risk-measures/SKILL.md).
+named below (bump recipes, units, signs, dead instruments, the bond financing contract) is
+[`pricebt-risk-measures`](../../pricebt-risk-measures/SKILL.md). Every `IRSwap`, `IRSwaption` and `Bond`
+config maps its whole contract (no contract measure may be declared unsupported), so every measure below
+exists on a config that loads.
+
+**Bonds are financed positions.** A Bond config maps `RepoRate`, `RepoHaircut` and `FinancingToDate`
+(the financing contract, DEV-I21). For every held position whose asset maps `FinancingToDate`, the engine
+books, on each date it marks or exits the position, the coupons it dropped since its previous mark plus the
+change of `FinancingToDate`, as cash (holding cash, DEV-E22; per date and position in
+`bt.holding_cash[d][position] = (ccy, cashflow, financing)`). So a bond book's `Total` = ΔPV + coupons − repo
+interest, exactly on any grid. Swaps and swaptions are unchanged (gs parity: entry and exit prices only).
+Keep `financing.cash_accrual_rate` at 0 on a book holding bonds: the cash balance already holds the funding
+loan (−Price at entry), so an accrual charges it a second time (the engine warns once).
 
 ### Swaption bought and held to expiry, rolled monthly
 
@@ -426,10 +439,10 @@ as the primary (the trigger sells it when vol is above its mean).
 **Decomposition.** `swaption_pnl_definition()`: Theta against Gamma is the vol-carry trade; vega, vanna and
 volga come from the straddle only; the hedge swaps contribute delta, gamma and theta.
 
-### Bond carry and roll-down, re-entered monthly
+### Financed bond carry and roll-down, re-entered monthly
 
-**Archetype.** `periodic_roll` with a `Bond` primary and `trade_duration: next schedule`. Spec:
-`skills/pricebt-strategy-recipes/example/toy_bond_carry_roll.yaml`.
+**Archetype.** `periodic_roll` with a `Bond` primary and `trade_duration: next schedule`, financed in repo
+by the bond config. Spec: `skills/pricebt-strategy-recipes/example/toy_bond_carry_roll.yaml`.
 
 ```python
 bond = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=10e6, settlement_currency="USD", name="primary")
@@ -439,29 +452,48 @@ bt = GenericEngine().run_backtest(Strategy(None, [trigger]), start=start, end=en
                                   risks=[Price, IRDeltaParallel, Theta, Cashflows], pnl_explain=bond_pnl_definition())
 ```
 
-**What your config must answer.**
-- `Price`: the holder-signed PV of the position. A bond analytics package quoting dirty price per 100:
-  `dirty / 100 × face × sign(buy_sell)`. A curve library: the NPV of the flows not yet paid.
-- `IRDelta` scalar per bp of **yield** (long < 0), `IRFwdRate` = the yield in your library's convention with
-  its unit declared (a yield signal reads it), `Theta` = one day at the same yield plus a coupon paid that day.
+**What your config must answer** (the whole Bond contract loads or nothing does; these are the rows this
+recipe leans on).
+- `Price`: the position's **settlement-date** market value, (clean + accrued at standard settlement) × face
+  / 100, holder-signed, not discounted to the pricing date. A bond analytics package quoting dirty price per
+  100: `dirty / 100 × face × sign(buy_sell)`.
+- `IRDelta` scalar per bp of **yield** (long < 0), `IRFwdRate` = the yield to maturity in your library's
+  convention with its unit declared (a yield signal reads it), `Theta` = carry per calendar day at the same
+  yield over the step to the next business day, with no financing in it.
 - `Cashflows` (`returns: frame` with `payment_date`, `payment_amount`, `currency`, `payment_type`): the flows
-  your `Price` will drop. `pnl_explain_table` books them as `cashflow_pnl`.
+  your `Price` will drop, `payment_date` = the trade date `Price` drops each one (T+1: the business day
+  before a business-day coupon date). The engine books them as holding cash on that date.
+- `RepoRate`, `RepoHaircut`, `FinancingToDate`: the financing. GC or special, overnight or term and the
+  haircut are the config's choice (the toy defaults `repo_term: overnight`, `repo_haircut: 0.02`, and its
+  `TOY 4.25 2034-11-15` trades 20bp special); record the choice under `assumptions`.
+- `Carry` and `RollDown`: the expected financed P&L to the horizon H = settlement + 1 calendar month if the
+  curve does not move (`Carry` = coupon income minus repo to H; `RollDown` = the clean-price change from
+  rolling down the curve). Report them per roll as the ex-ante carry, or read either as a signal
+  (`signal.measure: Carry`; it is a currency amount per position, so compare it with 0, not a z-score).
 - An attribute `notional_amount` (face × quantity) if the spec uses `costs.model: notional_bp`: the cost
   model reads that attribute, and gs `Bond` has no such field.
 
-**Checks** (the test asserts them). Each roll closes on the next roll date; the long bond's book
-`IRDeltaParallel` < 0 on every date; on the coupon date `cashflow_pnl` equals face × coupon / frequency,
-`actual_pnl` falls by about that amount and the residual is tiny.
+**Checks** (the test asserts the first three). Each roll closes on the next roll date; the long bond's
+book `IRDeltaParallel` < 0 on every date; on the coupon drop date `cashflow_pnl` equals face × coupon /
+frequency, `actual_pnl` falls by about that amount and the residual is tiny. Then: `financing_pnl` ≤ 0
+on every step of a long; `bt.holding_cash` has an entry for each held bond on each mark; and with no costs
+and no cash accrual, `Σ economic_pnl` equals the change in `Total`.
 
-**Caveats.** The **engine never books coupons** (gs parity; IR_RISK_DESIGN decision 0.10). With a `Price`
-that drops paid coupons, `Total` understates carry by every coupon paid while held. Either map a
-total-return `npv` in the config (paid flows never drop, `Cashflows` empty) or report `economic_pnl` from
-`pnl_explain_table`. Financing: `financing.cash_accrual_rate` accrues on the negative cash balance the
-purchase leaves, i.e. a flat repo cost. The identifier is fixed: to roll into the new on-the-run issue, use
+**Caveats.** `Total` is the financed P&L: coupons and repo interest are booked as holding cash (DEV-E22),
+so `financing.cash_accrual_rate` must stay 0 (the engine warns it counts the funding twice). The haircut
+share of the settlement value is not financed by repo and earns or costs nothing unless the config puts it
+in `FinancingToDate`. Coupons sit in cash; they are not reinvested in the bond. Overnight repo re-fixes
+daily, so the realised financing can differ from the `Carry` estimated at entry; a term repo locks it. The
+identifier is fixed: to roll into the new on-the-run issue (which usually trades special), use
 `AddScaledTradeAction(..., dated_priceables={date: [Bond(identifier=...)]})`, and pick each identifier from
 data known on that date (survivorship).
 
-**Decomposition.** `bond_pnl_definition()` (delta, gamma and theta on the yield) plus `cashflow_pnl`.
+**Decomposition.** `bond_pnl_definition()` (delta, gamma and theta on the yield) plus `cashflow_pnl`
+(coupons) and `financing_pnl` (repo interest, counted as explained). `PNL_theta + financing_pnl` is the
+realised financed carry at constant yield. On a sloped curve the roll-down is a fall in the bond's yield,
+so it shows up in `PNL_delta`, not `PNL_theta`; compare the month's `PNL_theta + financing_pnl` and the
+yield-roll part of `PNL_delta` with the `Carry + RollDown` estimated at entry as a sanity check, not an
+identity.
 
 ### Bond against a pay-fixed swap (asset-swap-like), dv01-matched
 
@@ -477,8 +509,16 @@ trigger = PeriodicTrigger(PeriodicTriggerRequirements(frequency="1m", end_date=e
 ```
 
 **What your configs must answer.** The `IRDelta` scalar on both (the sizing measure is
-`IRDelta(aggregation_level='Type')`); on the bond, `LightningOAS` or `ParSpread` if a signal reads the
-spread (e.g. `mean_reversion` with `signal.instrument: primary`, `signal.measure: ParSpread`).
+`IRDelta(aggregation_level='Type')`); on the bond, the spread a signal reads. Three ways to define the
+bond-vs-swap spread, all contract rows:
+- `ParSpread`: the bond's par asset-swap spread (or the library's par spread), an intensive rate in the
+  declared unit. The natural signal: `mean_reversion` with `signal.instrument: primary`,
+  `signal.measure: ParSpread`.
+- `LightningOAS`: the spread over the library's reference curve (a bullet bond: its Z-spread).
+- the swap spread, yield minus swap rate: the bond's `IRFwdRate` (its yield) minus the maturity-matched
+  swap's `IRFwdRate` (its par rate). Not one measure: build the series yourself (both in the same unit)
+  and use a custom trigger. Yield and par rate differ in compounding and day count, so state the
+  conventions next to the number.
 
 **Checks** (the test asserts them). Both legs keep a positive quantity (Buy stays long, Pay stays a payer:
 the long bond's level is signed −), the bond leg's dv01 is −target, the swap's +target, and the book nets to
@@ -487,10 +527,15 @@ the long bond's level is signed −), the bond leg's dv01 is −target, the swap
 **Caveats.** The book is neutral to a parallel move of both own rates, not to the bond-vs-swap spread: the
 spread is the trade. Each leg is sized on its own rate (yield vs par rate), so neutrality is approximate
 (DEV-I12) and drifts between rolls. This is a dv01-matched spread package, not a par-par asset swap (swap
-notional = face, fixed rate = coupon): build that by hand with `AddTradeAction` and fixed kwargs. The bond's
-coupons are not booked (above); the swap config may price total return: check each config's `Cashflows`.
+notional = face, fixed rate = coupon): build that by hand with `AddTradeAction` and fixed kwargs. The two
+legs book cash differently: the bond's coupons and repo interest are holding cash (DEV-E22), so its
+financing is in `Total`; the swap's coupons are not booked (gs parity), so with a swap `Price` that drops
+paid flows, `Total` misses them and `economic_pnl` (with `Cashflows` in `risks=`) does not. The swap is
+unfunded, the bond is funded at repo: the package earns the bond-vs-swap spread **net of repo**, so the
+repo choice (GC or special) is part of the trade. Keep `financing.cash_accrual_rate` at 0.
 
-**Decomposition.** `ir_pnl_definition(vega=False, vanna=False, volga=False)` over the whole book.
+**Decomposition.** `ir_pnl_definition(vega=False, vanna=False, volga=False)` (the same attributes as
+`bond_pnl_definition()`) over the whole book, plus `cashflow_pnl` and `financing_pnl` (the bond leg's repo).
 
 ## custom
 

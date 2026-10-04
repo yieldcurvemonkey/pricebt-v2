@@ -69,9 +69,13 @@ def _pv(pricing, obj, d, measure) -> float:
 
 
 def _payments_by_date(backtest) -> pd.Series:
-    return pd.Series(
-        {d: sum(sum(cp.cash_paid.values()) for cp in cps) for d, cps in backtest.cash_payments.items()}, dtype=float
-    ).sort_index()
+    """Cash booked per date: the trades' cash payments plus, for a financed position (pricebt
+    DEV-E22), the coupons and repo interest the engine booked as holding cash."""
+    pays = {d: sum(sum(cp.cash_paid.values()) for cp in cps) for d, cps in backtest.cash_payments.items()}
+    for d, day in getattr(backtest, "holding_cash", {}).items():
+        if day:
+            pays[d] = pays.get(d, 0.0) + sum(cash + financing for _ccy, cash, financing in day.values())
+    return pd.Series(pays, dtype=float).sort_index()
 
 
 # --- the checks. Each docstring names the mistake it catches. ------------------------------------
@@ -150,9 +154,10 @@ def check_book_repricing(bt, pricing, sample, seed) -> CheckResult:
 
 
 def check_cash_rollforward(bt) -> CheckResult:
-    """Cumulative Cash moves only on cash-payment dates and equals initial cash + the running sum of
-    payments. Catches: cash booked on the wrong date, double-booked exits, an accrual model that is
-    on when you thought it was off."""
+    """Cumulative Cash moves only on cash-payment dates (and, for a financed position, its holding-cash
+    dates, pricebt DEV-E22) and equals initial cash + the running sum of payments. Catches: cash
+    booked on the wrong date, double-booked exits, an accrual model that is on when you thought it
+    was off."""
     if getattr(bt.strategy, "cash_accrual", None) is not None:
         return CheckResult("cash roll-forward", INFO, "cash accrual on: cash moves every day, roll-forward check skipped")
     rs = bt.result_summary
@@ -337,8 +342,48 @@ def check_pnl_attribution_generic(bt, warn: Optional[float] = None, fail: Option
     return CheckResult(name, status, detail)
 
 
+def check_holding_cash(bt, pricing, sample, seed) -> CheckResult:
+    """pricebt DEV-E22: every holding-cash booking of a sampled financed position, recomputed with
+    cold caches from its asset config: the Cashflows rows its previous mark p listed with
+    p < payment_date <= d (each converted at its payment date's FX when the run has a result_ccy),
+    plus FinancingToDate(d) - FinancingToDate(p) (at d's FX). With the ledger identity and the cash roll-forward this is
+    "Total change = Price change + coupons + financing" for the financed book. Catches: a coupon
+    booked on the wrong date or twice, a financing leg booked from the wrong mark, a booking that
+    does not match what the config says the position paid."""
+    from pricebt.risk import Cashflows, FinancingToDate
+
+    booked = {d: day for d, day in getattr(bt, "holding_cash", {}).items() if day}
+    if not booked:
+        return CheckResult("holding cash", INFO, "no financed position (no asset maps FinancingToDate): coupons and financing are not booked as cash (gs parity)")
+    positions = sorted({inst for day in booked.values() for inst in day}, key=lambda i: i.name)  # the engine keys them by instrument
+    picked = random.Random(seed).sample(positions, min(sample, len(positions)))
+    bad, count, coupons, financing = [], 0, 0.0, 0.0
+    for inst in picked:
+        marks = sorted(d for d, insts in bt.portfolio_dict.items() if any(i.name == inst.name for i in insts))
+        local = pricing.asset_for(inst).currency
+        for d in sorted(x for x, day in booked.items() if inst in day):
+            prev = [m for m in marks if m < d]
+            if not prev:
+                bad.append(f"{inst.name} on {d}: booked with no earlier mark")
+                continue
+            p = prev[-1]
+            ccy, cash, fin = booked[d][inst]
+            fx = (lambda x: 1.0) if ccy == local else (lambda x: pricing.fx(local, ccy, x))  # noqa: E731
+            frame = pricing.value(inst, p, Cashflows, None) if pricing.maps(inst, Cashflows) else None
+            due = 0.0 if frame is None or not len(frame) else float(sum(
+                a * fx(pd.Timestamp(x).date()) for x, a in zip(frame["payment_date"], frame["payment_amount"]) if p < pd.Timestamp(x).date() <= d))
+            want_fin = (float(pricing.value(inst, d, FinancingToDate, None)) - float(pricing.value(inst, p, FinancingToDate, None))) * fx(d)
+            if not (_close(cash, due) and _close(fin, want_fin)):
+                bad.append(f"{inst.name} on {d}: booked coupons {cash:,.4f}, financing {fin:,.4f} vs the config's {due:,.4f}, {want_fin:,.4f} (marked {p})")
+            count, coupons, financing = count + 1, coupons + cash, financing + fin
+    if bad:
+        return CheckResult("holding cash", FAIL, "; ".join(bad[:4]))
+    return CheckResult("holding cash", PASS, f"{count} bookings of {len(picked)} of {len(positions)} financed positions (cold-cache reprice): coupons {coupons:,.2f}, financing {financing:,.2f} == the configs' Cashflows dropped + FinancingToDate change")
+
+
 LIMITATIONS = [
-    "coupons paid between marks are not booked as cash (gs parity): carry-heavy P&L is understated",
+    "coupons paid between marks are booked as cash only for positions whose asset maps FinancingToDate (pricebt DEV-E22: every Bond"
+    " config, with its repo financing); for every other asset (swaps, swaptions) they are not (gs parity): carry-heavy P&L is understated",
     "signal and execution on the same close: no next-day fill, no slippage beyond the cost model",
 ]
 
@@ -371,6 +416,7 @@ def run_spot_checks(
         ("trade repricing", lambda: check_trade_repricing(backtest, pricing, sample, seed)),
         ("book repricing", lambda: check_book_repricing(backtest, pricing, sample, seed)),
         ("cash roll-forward", lambda: check_cash_rollforward(backtest)),
+        ("holding cash", lambda: check_holding_cash(backtest, pricing, sample, seed)),
         ("P&L explain", lambda: check_pnl_explain(backtest, risk, rate_measure)),
         ("attribution residual", lambda: check_pnl_attribution_generic(backtest)),
         ("P&L attribution", lambda: check_pnl_attribution(pnl_stats)),

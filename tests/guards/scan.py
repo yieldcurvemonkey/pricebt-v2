@@ -132,7 +132,8 @@ def scan_gs_quant_tokens(path: Path, root: Path) -> List[Hit]:
 # ------------------------------------------------------------------------------------ item 4: asset-agnostic scan
 ASSET_AGNOSTIC_RE = re.compile(
     r"(?<![a-z])(notional|tenor|swaption|swap|fixed_rate|termination_date|expiration_date"
-    r"|pay_or_receive|strike|dv01|pv01|par_rate|sofr|libor|estr)(?![a-z])",
+    r"|pay_or_receive|strike|dv01|pv01|par_rate|sofr|libor|estr"
+    r"|bond|coupon|repo|haircut|accrued_interest|cusip|treasury|clean_price|dirty_price|ytm)(?![a-z])",
     re.I,
 )
 
@@ -151,10 +152,11 @@ def all_py_files(pkg: Path) -> List[Path]:
 
 def asset_agnostic_files(pkg: Path) -> List[Path]:
     """DESIGN.md section 12.2 item 4's scope: assets/**, markets/**, risk/results.py, risk/transform.py,
-    risk/core.py."""
+    risk/core.py, and backtests/generic_engine.py (the engine books holding cash generically, DEV-E22;
+    docs/v2/BOND_DESIGN.md decision 4.9)."""
     out = []
     for p in all_py_files(pkg):
         parts = p.relative_to(pkg).parts
-        if parts[0] in ("assets", "markets") or parts in (("risk", "results.py"), ("risk", "transform.py"), ("risk", "core.py")):
+        if parts[0] in ("assets", "markets") or parts in (("risk", "results.py"), ("risk", "transform.py"), ("risk", "core.py"), ("backtests", "generic_engine.py")):
             out.append(p)
     return sorted(out)

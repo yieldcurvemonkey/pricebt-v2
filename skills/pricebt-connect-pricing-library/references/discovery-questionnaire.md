@@ -84,11 +84,12 @@ for that, and use this table for the mechanics of each code:
 
 ## 9. Contract-driven capability discovery
 
-An `IRSwap` or `IRSwaption` config must **map every row** of its class's measure contract to a
-function with an allowed unit: declaring a contract measure is a load error (DEV-I11 amended,
-[`docs/v2/IR_STRICT_CONTRACT.md`](../../../docs/v2/IR_STRICT_CONTRACT.md)). A `Bond` config may
-instead declare a row under `unsupported_measures:` with a reason. The contract is code, not prose.
-Print it for your instrument before you start:
+An `IRSwap`, `IRSwaption` or `Bond` config must **map every row** of its class's measure contract
+to a function with an allowed unit: declaring a contract measure under `unsupported_measures:` is a
+load error (DEV-I11 amended, [`docs/v2/IR_STRICT_CONTRACT.md`](../../../docs/v2/IR_STRICT_CONTRACT.md),
+[`docs/v2/BOND_DESIGN.md`](../../../docs/v2/BOND_DESIGN.md)). `unsupported_measures:` is legal only
+for a class without a contract (`ConfigInstrument`). The contract is code, not prose. Print it for
+your instrument before you start:
 
 ```powershell
 python -c "from pricebt.risk import contracts; [print(f'{r.measure:24} {r.kind:7} {r.forms}  {r.doc}') for r in contracts.contract_for('IRSwaption')]"
@@ -107,12 +108,14 @@ For each row, answer four questions **about your library**, with evidence:
 4. **How will you verify it?** Use a known answer, or an independent bump in your own library (the
    last column below).
 
-For a swap or swaption there is no fourth answer: every row is derived from primitives you can name.
-Only a **Bond** may declare a measure unsupported, and only when the library has no primitive to
-derive it from; a request for it then raises `UnsupportedMeasureError` with your reason. A fake
+There is no "not supported" answer: every row is derived from primitives you can name. A fake
 `0.0` or a NaN is never acceptable. The exceptions are the rows that are zero *by convention*
-(`contracts.ZERO_BY_CONVENTION`, R2-8, marked "swaps and bonds 0.0" below): a swap's vega really is
-0. The checker's `ir_fake_constant` FAILs a literal constant on any other swap or swaption row.
+(`contracts.ZERO_BY_CONVENTION`, R2-8, marked "swaps and bonds 0.0" below): a swap's or a bullet
+bond's vega really is 0. The checker's `ir_fake_constant` FAILs a literal constant on any other row.
+
+The table below is written for swaps and swaptions. A `Bond` gives several rows its own text
+(`Price`, `Theta`, `Cashflows`, `FairPremium`, `ForwardPrice`, ...) and adds the bond analytics and
+the repo financing: use the 40-row worksheet in [section 14](#14-the-bond-contract-worksheet-40-rows).
 
 | Measure (forms) | pricebt expects (unit, sign, convention) | Derive it from (template recipe) | Verify with |
 |---|---|---|---|
@@ -132,7 +135,7 @@ derive it from; a request for it then raises `UnsupportedMeasureError` with your
 | `IRAnnualImpliedVol` (s) | **normal** vol at the strike, intensive; swaps and bonds 0.0; after expiry the last live value | `lib_normal_vol`; a lognormal or SABR library: `bachelier_implied_vol` of its own premium | reprices the option through Bachelier |
 | `IRAnnualATMImpliedVol` (s) | normal vol at the money forward, same expiry and tail; swaps and bonds 0.0 | `lib_atm_normal_vol` | equals `IRAnnualImpliedVol` for an ATM strike |
 | `IRDailyImpliedVol` (s) | `IRAnnualImpliedVol / sqrt(252)` | the expression itself | the ratio is exactly sqrt(252) |
-| `Theta` (s) | `ccy` **per calendar day**, total return: `PV(t+1d) + flows paid in (t, t+1d] - PV(t)`, with the own rate and vol held fixed: the curve is **translated**, never rolled (DEV-I15). A per-year theta is 365 x this | `theta_one_day`, from `lib_translate` and `lib_cashflows`; a bond: the same yield one day later | in a frozen world the sum of daily Theta equals the PV drift |
+| `Theta` (s) | `ccy` **per calendar day**, total return: `PV(t+1d) + flows paid in (t, t+1d] - PV(t)`, with the own rate and vol held fixed: the curve is **translated**, never rolled (DEV-I15). A per-year theta is 365 x this | `theta_one_day`, from `lib_translate` and `lib_cashflows`; a bond: the same yield over the step to the next business day (section 14) | in a frozen world the sum of daily Theta equals the PV drift |
 | `ExpiryInYears` (s) | `max(final_or_expiry - t, 0).days / 365`, `decimal` (DEV-I17) | `years_to` over the resolved dates | needs no library call |
 | `Annuity` (s) | `ccy`, PV of 1.0 per annum on the fixed schedule (1e4 x the fixed-leg pv01) times the **signed notional**: pay-fixed > 0, receive-fixed < 0, bought swaption > 0, long bond > 0. A QuantLib-style `fixedLegBPS` has the opposite sign for a payer | `lib_annuity` (`-1e4 x fixedLegBPS`); else `-[PV(K+1bp) - PV(K-1bp)] / 2e-4` | an ATM swap's `IRDelta` equals `Annuity x 1e-4`, same sign |
 | `Cashflows` (frame) | the flows Price still includes and will drop, one row each; columns `payment_date, payment_amount, currency, payment_type`; `scale_columns: [payment_amount]`; empty for a total-return Price | `lib_cashflows` | the coupons equal what Price drops on each payment date |
@@ -145,8 +148,6 @@ derive it from; a request for it then raises `UnsupportedMeasureError` with your
 | `CRIFIRCurve` (frame, swap, swaption) | SIMM CRIF rows `RiskType, Qualifier, Bucket, Label1, Label2, Amount, AmountCurrency`, `Label1` a lower-case SIMM tenor, `scale_columns: [Amount]`; empty when dead | `crif_frame`, from the trade's key-rate ladder | `sum(Amount)` == the `IRDelta` ladder's sum |
 | `PnlExplain` (b, swap, swaption) | a buckets portfolio function reading `market_to`: rows by `mkt_type` (`IR`, `IR VOL`, `CROSSES`), both markets seen from the pricing date (no time passes) | `pnl_explain`, from `lib_at` (+ `lib_with_vols` for the vol row) | the rows sum to `Price` under `CloseMarket(date=...)` minus `Price` |
 | `ProbabilityOfExercise` (s, swaption) | 0..1 under the annuity measure, `decimal` | `lib_prob_exercise`, or the strike bump of PV / annuity | payer + receiver = 1 |
-| `LightningDV01` (s, bond) | the yield DV01, which is the bond's IRDelta scalar | map the same function as `IRDelta` | minus modified duration x dirty PV x 1e-4 |
-| `LightningOAS`, `ParSpread` (s, bond) | spreads in the declared rate unit | `lib_oas`, `lib_par_spread` | a bullet bond: OAS equals the Z-spread |
 
 Record the answers in a worksheet before writing YAML, one line per row above:
 
@@ -154,7 +155,7 @@ Record the answers in a worksheet before writing YAML, one line per row above:
 |---|---|---|---|---|---|
 | e.g. `IRVega` (s) | `yourlib.risk(t, "VEGA_LN_1PCT")` | per 1% lognormal, holder view | pattern 18 | `vol_bump_vega` on a normal re-quote | mapped |
 | e.g. `IRGamma` (b) | recipe: `diagonal_gamma_ladder` | n/a | none | finite per pillar, sum near the parallel gamma | mapped |
-| e.g. `IRGamma` (b), a Bond only | none | none | none | none | declared: "yourlib bumps the bond's curve only in parallel" |
+| e.g. `IRVega` (s), a Bond | literal `'0.0'` | n/a | none | `ZERO_BY_CONVENTION["Bond"]` lists it | zero by convention |
 
 ## 10. Finite-difference controls (measure parameters)
 
@@ -184,13 +185,87 @@ the request raises `NotSupportedError` (DEV-I10). `mkt_marking_options` always r
 
 ## 12. Bonds
 
+A bond's `Price` is its **settlement-date market value**: (clean + accrued at standard settlement) x
+face / 100, holder-signed, never discounted back to the pricing date (DEV-I20). Its own rate
+(`IRFwdRate`) is the yield to maturity; there is no separate yield measure.
+
 | Question | How to find out | Goes into |
 |---|---|---|
-| Which identifier types (ISIN, CUSIP, ticker), and which static-data call? Is it point in time (no survivorship)? | resolve a matured bond as of a past date | `lib_bond_static` |
-| How are bonds marked: from a curve plus a spread, or from quoted clean prices? | docs, data source | `lib_market`; with quoted prices only, see the curve question below |
-| Price basis: clean or dirty? Per 100 or per unit of face? | price one bond | `lib_pv` returns dirty PV x face / 100, in ccy |
-| Accrued-interest convention, ex-coupon period, settlement lag? | docs; price around a coupon date | `lib_pv`, `lib_cashflows` and Theta's cash term |
-| Yield convention: compounding, day count, street or true yield? | invert a price yourself | `lib_yield` and `lib_pv_at_yield` must use the same one |
-| Is there a discount curve to shift under the bond while holding its spread? | docs | `lib_shift_discount` and `lib_shift_pillar`. If there is none, declare `IRDiscountDeltaParallel`, `IRDelta` bucketed and `IRGamma` with that reason |
-| Is `size` a face amount or a number of bonds? `buy_sell`? | gs `Bond` has `size`, not `notional_amount` | `resolve_bond` folds `buy_sell` x sign(size) into a signed face |
-| A repo or financing rate for carry? | docs | not in the contract: `Theta` is the constant-yield carry, and financing is a backtest cost |
+| Which identifier types (ISIN, CUSIP, ticker), and which security-master call? Is it point in time (no survivorship, no reopened issue sizes from the future)? | resolve a matured bond as of a past date | the template's static-data primitive, called once in `resolve` |
+| How are bonds marked: from a curve plus a spread, or from quoted clean prices? | docs, data source | the market primitive; with quoted prices only, see the curve question below |
+| Price basis: clean or dirty? Per 100 or per unit of face? Valued at settlement or at the pricing date? | price one bond and compare with a published invoice | `Price` = dirty x face / 100 at standard settlement, undiscounted |
+| Settlement lag and calendar (UST: T+1 on the SIFMA-style bond calendar)? | price on a Friday and before a holiday | `DaysToSettlement`, and every "at settlement" date below |
+| Accrual day count (UST: ACT/ACT ICMA) and the accrued convention (to settlement, not to the trade date)? | compute the accrued of one bond by hand | `AccruedInterest`, `CleanPrice` |
+| Ex-coupon rules (none for UST; some markets go ex 7 business days early)? | price across an ex-date | the contract text assumes no ex period (a flow drops when settlement reaches its payment date): for a bond with one, write down how `Cashflows`' drop date and `AccruedInterest` treat it before you map them |
+| Yield convention: compounding (UST street: semiannual), day count, street or true yield? | invert a price yourself | `IRFwdRate`, `ModifiedDuration`, `Convexity`: one convention for all three |
+| Is there a discount curve to shift under the bond while holding its spread? | docs | the shift primitives. With quoted prices only: solve the Z-spread over a reference curve once per date and shift the curve with the spread held; every row must still be mapped |
+| Which reference curve gives the roll-down (the bond's own fitted curve, a par curve, a swap curve)? | docs | `RollDown` (section 13) |
+| Is `size` a face amount or a number of bonds? `buy_sell`? | gs `Bond` has `size`, not `notional_amount` | `resolve` folds `buy_sell` x sign(size) into a signed face |
+
+## 13. Repo and financing
+
+A `Bond` config maps the financing contract (DEV-I21): `RepoRate`, `RepoHaircut`,
+`FinancingToDate`, `Carry`, `RollDown` and the financed `ForwardPrice`. A config that does not map
+them does not load. The engine books the change of `FinancingToDate` and the coupons the position
+drops as cash (DEV-E22), so a financed bond's `Total` = ΔPV + coupons − repo interest.
+
+| Question | How to find out | Goes into |
+|---|---|---|
+| Where do historical repo fixings come from (a repo index, a GC fixing history, a dealer feed)? Point in time? | load a past date's fixing and compare with the published value | the repo primitive; `RepoRate` must be finite on every held date |
+| General collateral or special? Per identifier? Where do specials come from, and how far back? | compare an on-the-run issue's rate with GC | `RepoRate` (GC − special spread) |
+| Overnight (re-fixes daily) or term (locked at the trade date)? Which term? | the desk's funding practice | a resolve kwarg pinned at the trade date (the term rate is pinned too) |
+| Repo day count and compounding (USD: simple ACT/360)? | the fixing's methodology | `FinancingToDate`, `ForwardPrice` |
+| Haircut: what fraction is not financed? Fixed or per collateral type? | the clearing house's or the desk's schedule | `RepoHaircut` (decimal 0.02 = 2%), and the financed principal `(1 − haircut) x Price(trade date)` |
+| Which rate applies over weekends and holidays? | the fixing calendar | the last business day's fixing (the contract text) |
+| How is the haircut capital funded? | the desk | inside `FinancingToDate` if you model it; never also as a `cash_accrual` model (the engine warns: funding counted twice) |
+| Which currency is the funding leg in? | the trade | `FinancingToDate`'s currency (the bond's) |
+
+## 14. The Bond contract worksheet (40 rows)
+
+One line per row of `contracts.contract_for('Bond')`, in contract order. "ZBC" = zero by convention
+(`contracts.ZERO_BY_CONVENTION["Bond"]`): map a literal 0.0 (or `{}` for the vega cube). H, the
+carry horizon, is the standard settlement date s plus one calendar month, rolled to the following
+business day. The runnable reference is `tests/assets/toy_usd_bond.yaml` on `tests/toylib/bond.py`.
+
+| # | Measure (forms) | Kind: units | Bond meaning (the contract text is in `src/pricebt/risk/contracts.py`) | Verify with |
+|---|---|---|---|---|
+| 1 | `Price` (s) | value: `ccy` | settlement-date market value, holder-signed, undiscounted; drops a flow on the first trade date whose settlement is on or after its payment date | long > 0; `= DirtyPrice x face / 100` |
+| 2 | `IRDelta` (s, b) | sens1: `ccy_per_bp` | s: dPrice/dy per +1bp of yield along the parallel curve shift; b: key-rate ladder | long < 0; ladder sums to the parallel curve delta |
+| 3 | `IRDiscountDeltaParallel` (s) | sens1 | discount curve +1bp only; fixed coupons project nothing, so a single-curve bond's equals its whole-curve bump | equals the parallel curve delta on one curve |
+| 4 | `IRGammaParallel` (s) | sens2: `ccy_per_bp2` | chain-rule d²Price/dy² per bp² | long > 0; ≈ `Convexity x Price x 1e-8` |
+| 5 | `IRGamma` (b) | sens2 | diagonal key-rate gamma ladder | finite per pillar |
+| 6-8 | `IRVega` (s, b), `IRVanna`, `IRVolga` (s) | sens1 / sens2 | ZBC: a bullet bond has no optionality | 0.0 and `{}` |
+| 9 | `IRBasis` (s) | sens1 | ZBC: one discount curve | 0.0 |
+| 10 | `IRXccyDelta` (s) | sens1 | ZBC: one currency | 0.0 |
+| 11 | `IRFwdRate` (s) | rate: `bp`/`pct`/`decimal` | the yield to maturity, finite on every held date | price ↔ yield round trip |
+| 12 | `IRSpotRate` (s) | rate | the yield | equals `IRFwdRate` |
+| 13-15 | `IRAnnualImpliedVol`, `IRAnnualATMImpliedVol`, `IRDailyImpliedVol` (s) | vol | ZBC | 0.0 in your vol unit |
+| 16 | `Theta` (s) | theta: `ccy` | per calendar day at a constant yield over the step to the next business day nb: `[Price(nb, same y) + flows dropped in (t, nb] − Price(t)] / (nb − t).days`; no financing | about Price x y / 365 between coupons |
+| 17 | `ExpiryInYears` (s) | time: `decimal` | `max(maturity − t, 0).days / 365` | no library call |
+| 18 | `Annuity` (s) | annuity: `ccy` | PV of 1.0 a year on the remaining coupon schedule x signed face; long > 0 | `= LocalAnnuityInCents x abs(face)` |
+| 19 | `Cashflows` (frame) | table | the flows still in Price; `payment_date` = the trade date Price drops it (T+1: the business day before a business-day coupon date) | Price falls by the coupon on that date |
+| 20 | `LightningDV01` (s) | sens1 | the yield DV01 = the `IRDelta` scalar | equal within 1% |
+| 21 | `LightningOAS` (s) | rate | OAS over the reference curve (bullet: Z-spread) | reprices the bond |
+| 22 | `ParSpread` (s) | rate | par asset-swap spread (or the library's par spread) | intensive: the same long and short |
+| 23 | `FairPremium` (s) | value | `= Price` (already the settlement-date value) | identity |
+| 24 | `ForwardPrice` (s) | value | `Price x (1 + RepoRate x τ(s, H)) − Σ_{s<c≤H} C x (1 + RepoRate x τ(c, H))`, τ in the repo day count; dead: 0 | forward parity |
+| 25 | `PremiumCents` (s) | notional_level | `Price / abs(face)` in the declared unit (`pct`: the dirty price) | `= DirtyPrice` in `pct` for a long (`−DirtyPrice` for a short) |
+| 26 | `LocalAnnuityInCents` (s) | notional_level | `Annuity / abs(face)` | identity |
+| 27 | `CompoundedFixedRate` (s) | rate | the coupon as `(1 + c/f)^f − 1` | constant over time |
+| 28 | `CRIFIRCurve` (frame) | table | SIMM rows from the `IRDelta` ladder; empty when dead | Σ `Amount` = Σ ladder |
+| 29 | `PnlExplain` (b) | value | `Price(market_to) − Price(market)` by factor (`IR` for the curve, e.g. `CREDIT` for the spread) | rows sum to the change |
+| 30 | `CleanPrice` (s) | notional_level | quoted clean price per 100 at standard settlement, `DirtyPrice − 100 x AccruedInterest / face`; dead: 0 | identity; matches the screen |
+| 31 | `DirtyPrice` (s) | notional_level | `100 x Price / face` (signed face: the same long and short); dead: 0 | identity |
+| 32 | `AccruedInterest` (s) | value: `ccy` | accrued from the last coupon date to standard settlement (UST: ACT/ACT ICMA), holder-signed; 0 on a coupon settlement date and after maturity | a hand computation |
+| 33 | `ModifiedDuration` (s) | time: `decimal`/`number` | `−(1/P) dP/dy`, years per unit decimal yield, P dirty, y in the `IRFwdRate` convention; dead: 0 | ≈ `−1e4 x IRDelta / Price` |
+| 34 | `Convexity` (s) | time | `(1/P) d²P/dy²`, years²; dead: 0 | ≈ `1e8 x IRGammaParallel / Price` |
+| 35 | `DaysToSettlement` (s) | days: `number`, `scale_with_quantity: false` | calendar days to standard settlement (UST T+1: 1, or 3 over a weekend or holiday) | 3 on a Friday |
+| 36 | `RepoRate` (s) | rate | the funding rate in force (overnight GC or special, or the term rate locked at the trade date), simple, repo day count; finite on every held date | the source's fixing on a known date |
+| 37 | `RepoHaircut` (s) | rate | the fraction not financed (`decimal` 0.02 = 2%) | the pinned term |
+| 38 | `FinancingToDate` (s) | value: `ccy` | cumulative repo interest from the trade date's settlement to the pricing date's (or maturity); principal `(1 − RepoHaircut) x Price(trade date)` pinned at resolve; each calendar day at its `RepoRate`; long ≤ 0, short ≥ 0; 0 on the trade date | one-day change `= −(1 − h) x Price(t₀) x RepoRate x days / basis` |
+| 39 | `Carry` (s) | value | `(Price − AccruedInterest) − (ForwardPrice − accrued at H)`: coupon income over (s, H] minus financing | identity |
+| 40 | `RollDown` (s) | value | clean value at H on the reference curve rolled down (time to maturity unchanged, spread held) minus clean value now; dead: 0 | `Carry + RollDown = 0` on a flat curve when the repo equals the yield |
+
+The ranges (6-8, 13-15) are one measure each, so the table covers all 40. The checker's bond pack
+([`pricebt-verify-asset-config`](../../pricebt-verify-asset-config/SKILL.md)) checks these
+identities and the financing on your config.

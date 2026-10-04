@@ -5,6 +5,7 @@ notebook itself is not executed here (the slow `notebook` test covers only 04030
 from __future__ import annotations
 
 import runpy
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,8 @@ def test_hedged_swaption_and_bond_explain(ns):
     bond = ns["bond_table"]
     coupon_steps = bond[bond.cashflow_pnl != 0]
     assert list(coupon_steps.cashflow_pnl) == [pytest.approx(21250.0)]
+    assert list(coupon_steps.index) == [date(2024, 5, 14)]  # T+1: the weekday before the Wed 05-15 coupon
+    assert (bond.financing_pnl < 0).all()  # a financed long pays repo every step (DEV-E22)
     assert (bond.residual_pnl.abs() < 5.0).all()
 
 

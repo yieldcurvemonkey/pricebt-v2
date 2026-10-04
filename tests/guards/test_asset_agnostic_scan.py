@@ -1,7 +1,8 @@
 """DESIGN.md section 12.2 item 4 (MUST-5): assets/**, markets/**, risk/results.py,
-risk/transform.py and risk/core.py must not name a rates/swap vocabulary word -- the engine and the pricing layer
-must not special-case any asset class. instrument/, risk/__init__.py and backtests/ are exempt:
-gs names and the ported gs text legitimately live there."""
+risk/transform.py, risk/core.py and backtests/generic_engine.py must not name a rates, swap, bond
+or financing vocabulary word -- the engine and the pricing layer must not special-case any asset
+class (docs/v2/BOND_DESIGN.md decision 4.9). instrument/, risk/__init__.py and the rest of
+backtests/ are exempt: gs names and the ported gs text legitimately live there."""
 from __future__ import annotations
 
 import pytest

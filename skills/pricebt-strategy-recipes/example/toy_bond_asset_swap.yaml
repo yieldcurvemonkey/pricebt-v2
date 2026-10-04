@@ -1,6 +1,9 @@
 # Recipe (tested by tests/skills/test_skill_recipes.py): an asset-swap-like package -- buy the bond and
 # pay fixed on a maturity-matched swap, each leg sized to the same |IRDelta| every month, so the book
-# is neutral to a parallel move of both rates and earns (or loses) the bond-vs-swap spread.
+# is neutral to a parallel move of both rates and earns (or loses) the bond-vs-swap spread. The bond leg
+# is financed in repo (its config's FinancingToDate, booked as cash with its coupons: pricebt DEV-E22);
+# the swap leg books only entry and exit (gs parity), so Total carries the bond's coupon less its repo
+# against the swap's PV carry. ParSpread reports each leg's own spread (the bond's par asset-swap spread).
 # Toy assets: tests/assets/toy_usd_bond.yaml and tests/assets/toy_usd_irs_full.yaml.
 name: toy-bond-asset-swap
 idea: Long the 10y bond against a pay-fixed swap to the same maturity, dv01-matched, rolled monthly.
@@ -21,4 +24,4 @@ signal: {type: none}
 rebalance: {frequency: 1m, trade_duration: next schedule}
 sizing: {method: dv01_target, dv01_target: 5000}   # each leg +/-5000 per bp; the long bond's level is signed negative
 costs: {model: dv01_bp, level: 0.25}
-risks_to_report: [Price, IRDeltaParallel]
+risks_to_report: [Price, IRDeltaParallel, ParSpread]

@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import sys
-from typing import Any, List
+from typing import Any, Iterable, List
 
 DIRECTION_KWARG = {"IRSwap": "pay_or_receive", "IRSwaption": "buy_sell", "Bond": "buy_sell"}
 SIZE_KWARG = {"IRSwap": "notional_amount", "IRSwaption": "notional_amount", "Bond": "size"}
@@ -41,10 +41,12 @@ def build(cls_name: str, kwargs: dict, name: str = None):
     return getattr(_instrument_mod, cls_name)(**(kwargs or {}), name=name)
 
 
-def kwarg_problems(cls_name: str, kwargs: dict) -> List[str]:
+def kwarg_problems(cls_name: str, kwargs: dict, config_kwargs: Iterable[str] = ()) -> List[str]:
     """Spec kwargs that would build the wrong trade: a bad enum value (`buy_sell: Hold`), a name that
-    is not a field of the generated gs class (gs accepts and ignores it, so a typo such as `expiry`
-    silently falls back to the config default), and a missing required direction kwarg."""
+    is neither a field of the generated gs class nor a kwarg the spec's asset configs read (their
+    `defaults:` keys, e.g. a bond config's repo terms `repo_term`, `repo_haircut`; gs accepts and
+    ignores any other name, so a typo such as `expiry` silently falls back to the config default),
+    and a missing required direction kwarg."""
     try:
         inst = build(cls_name, kwargs)
     except (TypeError, ValueError) as e:
@@ -55,8 +57,10 @@ def kwarg_problems(cls_name: str, kwargs: dict) -> List[str]:
     if cls_name in GS_FIELDS:  # a generated gs class: its signature is the field list
         params = inspect.signature(type(inst).__init__).parameters
         fields = {n for n, p in params.items() if p.kind is p.POSITIONAL_OR_KEYWORD} - {"self", "name"}
-        out += [f"{k!r} is not a {cls_name} field (gs would silently ignore it); fields: {', '.join(sorted(fields))}"
-                for k in inst.kwargs if k not in fields]
+        extra = set(config_kwargs) - fields
+        out += [f"{k!r} is not a {cls_name} field (gs would silently ignore it) nor a default of the spec's asset configs; fields: "
+                f"{', '.join(sorted(fields))}" + (f"; config kwargs: {', '.join(sorted(extra))}" if extra else "")
+                for k in inst.kwargs if k not in fields | extra]
     out += [f"{k} is required for {cls_name}: state it, the asset config's default is invisible in the spec"
             for k in REQUIRED_KWARGS.get(cls_name, ()) if inst.kwargs.get(k) is None]
     out += [f"{k} {inst.kwargs[k]!r} must be 0 in a backtest: the engine books only entry -Price and exit +Price, so an "
@@ -148,10 +152,11 @@ def notes(insts: dict, trade_duration: Any = None, hedge_key: str = "hedge") -> 
                 out.append(f"{key}: exits on expiration_date book the library's Price on that date (intrinsic, or the "
                            "exercised underlying's PV for physical settlement); no swap position is carried past expiry")
         if cls == "Bond":
-            out.append(f"{key}: Bond {_word(kw.get('buy_sell'))} {kw.get('identifier')!r} size {kw.get('size')}: coupons "
-                       "paid while held are NOT booked as cash by the engine (gs parity); if the library's Price drops "
-                       "paid coupons, carry is understated across coupon dates -- reconcile with "
-                       "BackTest.pnl_explain_table() (cashflow_pnl) or use a total-return npv")
+            repo = ", ".join(f"{k} {kw[k]!r}" for k in sorted(kw) if k.startswith("repo")) or "the asset config's defaults"
+            out.append(f"{key}: Bond {_word(kw.get('buy_sell'))} {kw.get('identifier')!r} size {kw.get('size')}: financed in repo "
+                       f"({repo}); the engine books its coupons and the change of FinancingToDate as cash on every mark (pricebt "
+                       "DEV-E22), so Total = Price change + coupons - repo interest; BackTest.pnl_explain_table() shows them as "
+                       "cashflow_pnl and financing_pnl")
     if hedge_key in insts and len(set(classes.values())) > 1:
         out.append("mixed instrument types: own-rate deltas (swap par rate, swaption forward, bond yield) are summed "
                    "across types by HedgeAction / triggers / sizing -- approximate (DEV-I12 additivity caveat), exact "

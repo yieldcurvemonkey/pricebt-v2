@@ -63,7 +63,7 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
 | "gamma scalp", "long vol hedged" | the same with `buy_sell: Buy` |
 | "vega-neutral", "calendar" | `delta_hedged` with a swaption hedge and `risk_limits.hedge_measure: IRVegaParallel` |
 | "vol is rich / cheap" | `archetype: mean_reversion`, `signal.measure: IRAnnualImpliedVol`, a bought straddle primary |
-| "bond carry and roll-down", "own the 10y" | `archetype: periodic_roll`, Bond primary, `trade_duration: next schedule`; repo as `financing.cash_accrual_rate` |
+| "bond carry and roll-down", "own the 10y" | `archetype: periodic_roll`, Bond primary, `trade_duration: next schedule`; repo from the bond config (GC or special, overnight or term, haircut under `assumptions`), `financing.cash_accrual_rate: 0.0` |
 | "asset swap", "bonds vs swaps", "swap spread" | `archetype: curve_trade`, Bond `buy_sell: Buy` + IRSwap `pay_or_receive: Pay`, `sizing.method: dv01_target` |
 
 ## Checks
@@ -79,7 +79,7 @@ Every strategy study starts here. The output is one file, `strategy_spec.yaml`, 
 - **Unlimited lookback tuning.** Pick the lookback from a coarse grid declared in advance (e.g. 20/60/120 business days), and log every one you try.
 - **Swaption direction.** "Short payers" is `pay_or_receive: Pay`, `buy_sell: Sell`, not `pay_or_receive: Receive`. The option type and the position are separate kwargs, and both must be stated.
 - **Signal measure names.** Prefer the gs level measure (`signal.measure: IRFwdRate`: a swap's par rate, a swaption's forward, a bond's yield) over a config function name such as `par_rate`, which only some configs define. The name is resolved through each asset config's `risk_measures:`.
-- **Bond coupons and financing.** The engine books no coupons (gs parity), so bond carry is understated in `Total` across coupon dates. Record this under `assumptions`, and plan to report `pnl_explain_table()`'s `economic_pnl`. Bond funding: `financing.cash_accrual_rate` accrues on the negative cash balance (a flat repo rate).
+- **Bond coupons and financing.** Every Bond config maps the financing contract (`RepoRate`, `RepoHaircut`, `FinancingToDate`), and the engine books a held bond's coupons and repo interest as cash (holding cash, DEV-E22), so `Total` is the financed P&L. The repo terms live in the config, not the spec: ask GC or special, overnight or term, and the haircut, choose the config that matches, and write them under `assumptions` ([question bank](references/question-bank.md)). Keep `financing.cash_accrual_rate` at 0: a cash-accrual model charges the funding a second time (the engine warns). Swaps and swaptions are unchanged: the engine books no coupons for them (gs parity).
 
 ## Related skills
 

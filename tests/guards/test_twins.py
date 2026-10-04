@@ -108,7 +108,9 @@ def test_twin_asset_agnostic_scan_must_pass_a_neutral_module(tmp_path):
 VENDOR_WORDS = ("arbs", "rateslib", "quantlib", "irswapsmdp", "mdp", "rlirswapcurve", "bulk_get_data", "build_irswap",
                 "ignore_cache_miss", "supabase", "nojumps", "eris", "erisfutures", "bloomberg", "refinitiv", "marquee")
 ASSET_WORDS = ("notional", "tenor", "swaption", "swap", "fixed_rate", "termination_date", "expiration_date",
-               "pay_or_receive", "strike", "dv01", "pv01", "par_rate", "sofr", "libor", "estr")
+               "pay_or_receive", "strike", "dv01", "pv01", "par_rate", "sofr", "libor", "estr",
+               # docs/v2/BOND_DESIGN.md decision 4.9: bond and financing vocabulary
+               "bond", "coupon", "repo", "haircut", "accrued_interest", "cusip", "treasury", "clean_price", "dirty_price", "ytm")
 
 
 @pytest.mark.parametrize("word", VENDOR_WORDS)
@@ -130,7 +132,7 @@ def test_twin_both_scans_must_fail_a_docstring(tmp_path):
     assert [h.token for h in scan.scan_vendor_tokens(src / "pricebt" / "b.py", src)] == ["arbs"]
 
 
-def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_three_risk_files(tmp_path):
+def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_three_risk_files_and_the_engine(tmp_path):
     pkg = (
         tree(
             tmp_path,
@@ -144,9 +146,10 @@ def test_twin_asset_agnostic_file_set_is_scoped_to_assets_markets_and_three_risk
                 "pricebt/risk/__init__.py": "",
                 "pricebt/instrument/__init__.py": "",
                 "pricebt/backtests/actions.py": "",
+                "pricebt/backtests/generic_engine.py": "",
             },
         )
         / "pricebt"
     )
     got = sorted(p.relative_to(pkg).as_posix() for p in scan.asset_agnostic_files(pkg))
-    assert got == ["assets/a.py", "markets/b.py", "risk/core.py", "risk/results.py", "risk/transform.py"]
+    assert got == ["assets/a.py", "backtests/generic_engine.py", "markets/b.py", "risk/core.py", "risk/results.py", "risk/transform.py"]

@@ -1,11 +1,11 @@
 ---
 name: pricebt-pnl-attribution
-description: Decompose a pricebt backtest's P&L into greeks times market moves (delta, gamma, vega, vanna, volga, theta) for swaps, swaptions and bonds with gs-style PnlDefinition/PnlAttribute, read BackTest.pnl_explain_table (actual, coupons, economic, explained, residual), and diagnose a large residual; also instrument-level PnlExplain(CloseMarket) between two dates. Tells you, per attribute, what your own pricing library must return (unit, sign, bump recipe) and how to verify it. Use when asked to "explain the P&L", "attribute P&L to greeks", "why does this make money", "P&L explain/attribution/residual", or after wiring a library's greeks, to prove they explain the P&L.
+description: Decompose a pricebt backtest's P&L into greeks times market moves (delta, gamma, vega, vanna, volga, theta) for swaps, swaptions and bonds with gs-style PnlDefinition/PnlAttribute, read BackTest.pnl_explain_table (actual, coupons, financing, economic, explained, residual), and diagnose a large residual; also instrument-level PnlExplain(CloseMarket) between two dates. Tells you, per attribute, what your own pricing library must return (unit, sign, bump recipe) and how to verify it. Use when asked to "explain the P&L", "attribute P&L to greeks", "why does this make money", "P&L explain/attribution/residual", or after wiring a library's greeks, to prove they explain the P&L.
 ---
 
 # P&L attribution: greeks × market moves
 
-A backtest's P&L is only understood once it is split into what the book was paid for: rate moves (delta, gamma), vol moves (vega, vanna, volga) and time (theta), plus what nothing explains (the residual).
+A backtest's P&L is only understood once it is split into what the book was paid for: rate moves (delta, gamma), vol moves (vega, vanna, volga) and time (theta), plus known cash (coupons, and repo interest on a financed bond) and what nothing explains (the residual).
 
 pricebt ports gs's machinery (`PnlAttribute`, `PnlDefinition`, `BackTest.pnl_explain()`) and adds IR definitions and a per-step table (`BackTest.pnl_explain_table()`). The numbers come from **your** pricing library, through the asset configs. This skill tells you:
 
@@ -26,11 +26,11 @@ pricebt ports gs's machinery (`PnlAttribute`, `PnlDefinition`, `BackTest.pnl_exp
 
 - A `PricebtSession` holding the asset configs of every instrument the book will hold.
 - The strategy, and `GenericEngine().run_backtest` arguments.
-- For coupon-paying instruments whose `Price` drops paid flows: `Cashflows` must be mapped, and passed in `risks=`.
+- For coupon-paying instruments whose `Price` drops paid flows: `Cashflows` must be mapped, and passed in `risks=`. A financed position (its asset maps `FinancingToDate`: every `Bond`) does not need it: the engine records its coupons itself (DEV-E22, below).
 
 ## Outputs
 
-- **`bt.pnl_explain_table()`**: per step, `actual_pnl`, `cashflow_pnl`, `economic_pnl`, one column per attribute, `explained_pnl`, `residual_pnl`.
+- **`bt.pnl_explain_table()`**: per step, `actual_pnl`, `cashflow_pnl`, `financing_pnl`, `economic_pnl`, one column per attribute, `explained_pnl`, `residual_pnl`.
 - **`bt.pnl_explain()`**: gs's `{attribute: {date: cumulative}}`.
 - **`attribution.explain_stats(table)`**: component totals, r2, the residual variance share, the residual ratios, the graded `unexplained` share, worst date, the residual's correlation with each attribute, and the `signatures` (attributes the residual names).
 - **`attribution.grade(stats)`**: PASS, WARN, FAIL or INFO; **`attribution.grade_reason(stats)`** says why in one line.
@@ -53,6 +53,13 @@ Per step t−1 → t, per instrument held at t−1: `k · R(t−1) · Δm` (firs
 - **Unit check.** A level read in a different unit raises `ValueError` (DEV-E21). Theta has no unit check.
 - **After expiry.** `ExpiryInYears` stays 0 from expiry on, so `PNL_theta` is 0 then. An exercised (physically settled) swaption still carries like its underlying swap (non-zero `Theta`, R2-7): that carry lands in the residual.
 
+**The fixed columns.** `economic_pnl = actual_pnl + cashflow_pnl + financing_pnl`; `explained_pnl = Σ attributes + financing_pnl`; `residual_pnl = economic − explained`.
+
+- `cashflow_pnl` holds the coupons. For a financed position they come from the engine's record (`bt.holding_cash`); otherwise from the `Cashflows` frame held at t−1 (paid in (t−1, t]), and 0.0 when `Cashflows` is not in `risks=`.
+- `financing_pnl` is the change of a financed position's `FinancingToDate` that the engine booked as cash on t (≤ 0 for a long: the repo interest paid). It is 0.0 for every other position, so swap and swaption books are unchanged (gs parity: no holding cash).
+- Financing is known cash, not a market move, so it counts as explained: it never reaches the residual. The contract keeps it out of `Theta` ("Financing is not in Theta"), so `PNL_theta` and `financing_pnl` never overlap.
+- For a book of financed positions with no transaction costs, `economic_pnl` sums to the change in `result_summary`'s `Total`.
+
 ## What your library must return, per measure
 
 Say it in your library's terms before you write the YAML. "Own rate" r = swap par rate, swaption forward swap rate, bond yield to maturity; h = your library's ±1bp bump. Details, library shapes and verification probes: [references/definitions.md](references/definitions.md) §3. The full recipe for every contract measure, with a capability-matrix worksheet, is [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md).
@@ -65,28 +72,25 @@ Say it in your library's terms before you write the YAML. "Own rate" r = swap pa
 | `IRVega` scalar | per +1bp of **normal** vol; swaps/bonds 0.0 | lognormal library: Bachelier-implied normal vol as the level, bumped through Bachelier. Never rescale a Black vega per 1% |
 | `IRVanna`, `IRVolga` | `d(Δ)/dσ` per bp·bp; `∂²PV/∂σ²` per bp²; swaps/bonds 0.0 | the delta at σ ± 1bp; `PV(σ+h) + PV(σ−h) − 2PV(σ)` |
 | `IRAnnualImpliedVol` | normal vol at the strike; swaps/bonds 0.0 | Bachelier-implied vol of your price |
-| `Theta` | one calendar day, total return, r and σ held: `Price(t+1d) + cash paid in (t, t+1d] − Price(t)` | a **translated** curve `DF(x)/DF(t+1d)` (never rolled), same vol; bond: same yield, settle +1d. Never per year |
+| `Theta` | one calendar day, total return, r and σ held: `Price(t+1d) + cash paid in (t, t+1d] − Price(t)` | a **translated** curve `DF(x)/DF(t+1d)` (never rolled), same vol. Never per year. **Bond:** the same yield over the step to the next business day nb, spread per calendar day: `[Price(nb) + flows dropped in (t, nb] − Price(t)] / (nb − t).days`; no financing |
 | `ExpiryInYears` | `max(expiry or final − t, 0).days / 365` | date arithmetic in the config |
-| `Cashflows` | frame of the flows `Price` will drop, `payment_date > t`; empty for a total-return `Price` | from the schedule |
+| `Cashflows` | frame of the flows `Price` will drop, `payment_date > t`; empty for a total-return `Price`. **Bond:** `payment_date` is the trade date on which `Price` drops the flow (T+1: the business day before a business-day coupon date) | from the schedule |
+| `FinancingToDate` (Bond) | cumulative repo interest since the trade date's settlement, holder-signed (a long ≤ 0), 0 on the trade date | principal `(1 − RepoHaircut) · Price(trade date)` pinned at resolve, simple interest at each calendar day's `RepoRate` |
 
-**Cannot compute one?**
-
-- **IRSwap and IRSwaption configs map every contract measure** or do not load (`docs/v2/IR_STRICT_CONTRACT.md`): derive it from PV, a curve shift and a date (the recipes above). A literal `0.0` is honest only for `contracts.ZERO_BY_CONVENTION`.
-- **A Bond** may declare it under `unsupported_measures:` with the real reason; then build the definition without it (for example `vanna=False, volga=False`). The term shows up in the residual; report it.
-- For bonds in a vol-attributed book, **map** the 0.0 convention instead of declaring it: every measure is priced for every held instrument, and a declared one raises `UnsupportedMeasureError`.
+**Cannot compute one?** Every class with a contract (`IRSwap`, `IRSwaption`, `Bond`) maps every contract measure or does not load (`docs/v2/IR_STRICT_CONTRACT.md`, `docs/v2/BOND_DESIGN.md`): derive it from PV, a curve or yield shift and a date (the recipes above). A literal `0.0` is honest only for `contracts.ZERO_BY_CONVENTION` (for a bond: the vol measures, `IRBasis`, `IRXccyDelta`). No contract class can declare a measure under `unsupported_measures:`, so every attribute of every definition is priceable on these books.
 
 The runnable reference is the closed-form toy library: `tests/toylib/swaption.py` and `tests/toylib/bond.py`, wired in `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`.
 
 ## Procedure
 
-1. **Check the book can be attributed**, from the configs alone. This prints the definition the book gets, or every gap: an unmapped measure, a Bond's declared-unsupported one, or mixed level units.
+1. **Check the book can be attributed**, from the configs alone. This prints the definition the book gets, or every gap: an unmapped measure (on a `ConfigInstrument`, which has no contract, also a declared-unsupported one), or mixed level units.
 
    ```powershell
    $env:PYTHONPATH = "src;tests"
    python skills/pricebt-pnl-attribution/scripts/attribution.py --definition configs/assets/<a>.yaml configs/assets/<b>.yaml
    ```
 
-   Fix a gap in the config (map the measure, or map the 0.0 convention for a bond), or drop the attribute (`--kind bond`, or flags in-process). Try it on the toys first: `tests/assets/toy_usd_swaption.yaml`.
+   Fix a gap in the config (map the measure; for a bond's vol rows, map the 0.0 convention), or drop the attribute (`--kind bond`, or flags in-process). Try it on the toys first: `tests/assets/toy_usd_swaption.yaml`.
 
 2. **Choose the definition.** `attribution.definition_for(session)` picks one:
 
@@ -107,7 +111,7 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
    from pricebt.risk import Cashflows
    definition = attribution.definition_for(session)
    bt = GenericEngine().run_backtest(strategy, start=start, end=end, frequency="1b",
-                                     risks=[Cashflows], pnl_explain=definition)   # Cashflows: coupon-dropping Price only
+                                     risks=[Cashflows], pnl_explain=definition)   # Cashflows: coupon-dropping Price that is not financed
    ```
 
    **From a strategy spec** (the workflow skills): the spec's `pnl_explain:` block (`enabled`, `gamma`, `carry`, `cash`) wires `swap_pnl_definition` into the run, for an **IRSwap primary only** (`recipes.build`; any other primary is skipped with a note). For a swaption or bond book, or for this skill's six-attribute definitions, add the definition to the recipe's run arguments yourself:
@@ -148,16 +152,19 @@ The runnable reference is the closed-form toy library: `tests/toylib/swaption.py
 
 - `stats["finite"]` is True: no NaN anywhere. A NaN poisons every later cumulative value.
 - `grade(stats)` is PASS: the `unexplained` share, the worst of the residual variance share, 1 − r2 and `|Σ residual| / Σ|economic|`, is ≤ 5%. The variance share alone misses a steady bias: a sign-flipped `Theta` leaves it near 1.7%. Or it is WARN with a named cause from the taxonomy, written into the report. FAIL (above 25%, a NaN, or a residual signature on a material residual) blocks the report. A book with almost no P&L (an option expiring worthless) can FAIL on cents: read the totals before you chase it.
-- The component signs make sense for the book: a long option has positive gamma P&L and negative theta. A long bond has positive theta (it accrues at its yield).
-- On a book bought at PV with no costs and no coupons, `stats["totals"]["economic_pnl"]` equals `Total(end) − Total(start)` of `result_summary`.
+- The component signs make sense for the book: a long option has positive gamma P&L and negative theta. A long bond has positive theta (it accrues at its yield) and negative `financing_pnl` (it pays repo).
+- On a book bought at PV with no costs, `stats["totals"]["economic_pnl"]` equals `Total(end) − Total(start)` of `result_summary` when the book has no coupons, or when every coupon payer is financed (the engine books its coupons and repo interest as cash). A swap that pays coupons breaks the equality by its coupons (gs parity: the engine does not book them).
 - On a coupon step, `cashflow_pnl` equals face × coupon / frequency, and the residual stays small.
+- For a financed bond, `financing_pnl` over one step equals `−(1 − haircut) · Price(trade date) · RepoRate · days / basis`, with days counted between settlement dates (ACT/360 for USD).
 
 ## Pitfalls
 
 - **An annuity pv01 as the `IRDelta` scalar** is exact only at the money. Off-market, the residual is `N·(F−K)·ΔA`. The shipped swap configs are at-the-money exact.
 - **Half gamma**: `d(pv01)/dr`, or a finite-difference gamma without the chain-rule term.
 - **Theta per year, or on a rolled curve.** Per year inflates `PNL_theta` 365-fold. The loader and the DEV-E21 unit check cannot see it; `check_asset.py`'s `ir_theta` ("looks per year") and this grade (FAIL) catch it. A rolled curve double counts the roll-down with delta.
-- **Coupons.** A `Price` that drops coupons needs `Cashflows` in `risks=`, or every coupon date shows a −coupon residual. The engine itself never books coupons (gs parity).
+- **Coupons.** A `Price` that drops coupons needs `Cashflows` in `risks=`, or every coupon date shows a −coupon residual. The engine books coupons only for a financed position (an asset that maps `FinancingToDate`, DEV-E22); swaps and swaptions keep gs parity (no coupon cash).
+- **Financing double counted.** A financed bond's repo interest is already in `financing_pnl` and `Total`. A `cash_accrual` model on the same run charges the funding loan again; the engine warns once (`UserWarning`, "the funding is counted twice"). Drop the cash accrual, or model the haircut capital's funding inside `FinancingToDate`.
+- **Financing in Theta.** A bond `Theta` that nets repo interest double counts it with `financing_pnl` (the residual then mirrors `financing_pnl`). The contract's `Theta` is at constant yield, with no financing.
 - **Mixed units, or a bp definition on a pct config.** `definition_for` refuses the first; the unit check raises on the second. A level *declared* bp that returns pct or decimals is invisible to both. [`pricebt-verify-asset-config`](../pricebt-verify-asset-config/SKILL.md) catches it: `swap_par_rate_atm` and `swaption_fwd_unit` FAIL it; `bond_yield_unit` and `swaption_vol_unit` WARN on a percent and FAIL on a decimal. Here the residual's signature names the attribute (implied scale about 100).
 - **Near expiry**, and on long steps (weekends, weekly grids), time cross terms (charm, veta) and third-order terms grow. That residual is real, not a bug to tune away.
 - **A swaption held past its expiry.** An exercised leg is the underlying swap, but `PNL_theta` stops at expiry (`ExpiryInYears` floors at 0), so the swap's carry goes to the residual (about +11 a day on a 1mm 1m ITM payer, toy). Exit at expiry (`AddTradeAction(..., 'expiration_date')`), or book the exercised swap as its own trade.

@@ -1,6 +1,6 @@
 ---
 name: pricebt-spot-checks
-description: Verify a finished pricebt backtest before believing or reporting it — accounting identities, independent repricing of trades and of the book, cash roll-forward, P&L explain, frictions, missing data, determinism — plus the manual checks (reprice by hand, look-ahead shift, costs doubled). Use after every backtest run and before any tearsheet, or when a result "looks too good" or a number surprises you.
+description: Verify a finished pricebt backtest before believing or reporting it — accounting identities, independent repricing of trades and of the book, cash roll-forward, P&L explain, frictions, missing data, determinism — plus the manual checks (reprice by hand, look-ahead shift, costs doubled, a financed bond's holding cash, where the Total change = ΔPV + coupons − repo interest). Use after every backtest run and before any tearsheet, or when a result "looks too good" or a number surprises you.
 ---
 
 # pricebt spot checks
@@ -51,6 +51,7 @@ A list of `CheckResult(name, status, detail)` with status `PASS | WARN | FAIL | 
    3. **Perturb one parameter** (threshold, lookback, notional) and confirm the direction of change is sensible (double notional: P&L doubles exactly; higher entry threshold: fewer trades).
    4. **Run with costs doubled**: net P&L falls by exactly the original cost total (for linear cost models). If the strategy only works with cheap costs, say so.
    5. **Shift the signal by one day** (use yesterday's signal to trade today). If the strategy claims timing skill, P&L must degrade but not collapse. If it *improves*, or collapses from great to nothing, suspect look-ahead.
+   6. **Holding cash of a financed position** (any asset that maps `FinancingToDate`: every `Bond`): over a step, the change in `Total` = ΔPrice + coupons dropped + ΔFinancingToDate (for a long: ΔPV + coupons − repo interest), and `backtest.holding_cash[d][position]` = `(ccy, cashflow, financing)` shows each date's part.
 4. **Record** the automated table and a one-line result for each manual check. They go into the tearsheet's spot-check section.
 
 ### What the automated checks do
@@ -70,6 +71,8 @@ A list of `CheckResult(name, status, detail)` with status `PASS | WARN | FAIL | 
 | open at end | count and gross notional of trades still open at the end | mean-reversion "exits" that are really offsetting trades held forever |
 | known limitation | always printed | coupons between marks are not booked; signal and execution on the same close |
 
+The coupon limitation is gs parity and holds for swaps and swaptions. It does **not** hold for a position whose asset maps `FinancingToDate` (every `Bond`, since the Bond contract requires it): the engine books that position's `Cashflows` dropped since its previous mark plus the change of its `FinancingToDate` as cash on each mark and exit (holding cash, DEV-E22), and records it in `backtest.holding_cash`. Such a book's cash therefore moves on every marked date, not only on payment dates: reconcile the cash roll-forward with `holding_cash` (symptom table below) and do manual check 6.
+
 The repricing checks use a fresh `PricingService` built on the session's registry, so they re-evaluate the asset configs rather than reading back the engine's cache. They still go through **your asset config**, so a pricing bug inside the config is invisible to them. That is what manual check 1 is for.
 
 ## Symptom → cause
@@ -82,6 +85,8 @@ The repricing checks use a fresh `PricingService` built on the session's registr
 | book repricing FAIL on dates after a trade closes | a position left in the book past its exit, or PV ffilled on a flat date | check `trade_duration`; report as an engine bug with a minimal repro if the strategy is right |
 | cash roll-forward FAIL with no stray dates | a payment's `cash_paid` edited or double-counted | compare `backtest.cash_payments[d]` with `backtest.cash_dict[d]` |
 | cash roll-forward FAIL, stray dates | cash accrual or `initial_value` you did not intend | check `strategy.cash_accrual` and `run_backtest(initial_value=...)` |
+| cash roll-forward FAIL, stray dates, book holds a bond | holding cash (DEV-E22): coupons and repo interest booked on every mark of a financed position | each stray move must equal the sum of `backtest.holding_cash[d]`'s `cashflow + financing` (plus that date's payments); anything else is a real finding |
+| `UserWarning` "... so the funding is counted twice (pricebt DEV-E22)" | a `cash_accrual` model on a run that holds a financed position: the accrual charges interest on the `-Price` funding loan already financed by `FinancingToDate` | drop the `cash_accrual` model, or model the haircut capital's funding inside `FinancingToDate` |
 | P&L explain corr near -1 | risk sign convention opposite to P&L (receiver dv01 quoted positive) | fix the asset config's dv01 sign, not the P&L |
 | P&L explain corr low on a directional book | rate series is not the one that drives the book (tenor, curve), in %, or the book is dominated by carry/roll | pass the right `rate_measure`; quantify carry separately |
 | attribution residual WARN/FAIL | the attribution does not explain the P&L: see the residual taxonomy | follow `skills/pricebt-pnl-attribution/references/diagnosing-residuals.md`; the detail names the worst date |
@@ -96,7 +101,7 @@ You are done when all of these hold:
 
 - no FAIL in the automated table (or each one is traced to a documented cause, and the backtest was rerun after a fix);
 - every WARN has a one-line justification in the report;
-- all five manual checks were run and their results written down;
+- all five manual checks (six when the book holds a financed position) were run and their results written down;
 - `determinism` is PASS (you passed `rerun`), and `P&L explain` ran (you passed `risk` and `rate_measure`) for any rates strategy.
 
 ## Pitfalls
@@ -109,7 +114,7 @@ You are done when all of these hold:
 
 ## Related skills
 
-- [`pricebt-architecture`](../pricebt-architecture/SKILL.md): the engine semantics behind these checks (holding window, same-close execution, coupons).
+- [`pricebt-architecture`](../pricebt-architecture/SKILL.md): the engine semantics behind these checks (holding window, same-close execution, coupons, holding cash).
 - [`pricebt-tearsheet-report`](../pricebt-tearsheet-report/SKILL.md): takes these results into the report.
 - [`pricebt-adversarial-review`](../pricebt-adversarial-review/SKILL.md): attacks the strategy once the numbers are known to be right.
 - [`pricebt-strategy-intake`](../pricebt-strategy-intake/SKILL.md): the spec that says what the backtest was supposed to do.

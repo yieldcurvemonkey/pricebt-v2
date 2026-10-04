@@ -60,18 +60,32 @@ These are the contract semantics (IR_RISK_DESIGN R2-1 to R2-8, DEV-I12/I15/I17),
 | `IRVolga` (request `IRVolga(aggregation_level='Type')`) | `∂²PV/∂σ²` per bp². Swaps and bonds: 0.0 | rare | `PV(σ+h) + PV(σ−h) − 2·PV(σ)` | an ATM option under a normal model has volga = 0 (its price is linear in σ) |
 | `IRAnnualImpliedVol` (level) | the annualised normal vol at the strike, in the unit you declare. Swaps and bonds: `0.0` (R2-8) | the vol-cube lookup at (expiry, tail, strike) | the Bachelier-implied vol of the library's price | an ATM value matches the cube's quote |
 | `Theta` | **one calendar day, total return**: `Price(t+1d; r and σ held) + cash paid in (t, t+1d] − Price(t)`, ccy **per day** (DEV-I15) | object library: value on a **translated** curve `DF'(x) = DF(x)/DF(t+1d)` (forwards fixed), same vol, expiry one day closer; bond analytics: price at the same yield with settlement +1 day, plus a coupon paid that day | never a rolled curve (same zero rates by tenor one day later): that moves the forwards and so double counts with delta; never per year (`IRTheta` = 365 × `Theta`) | reprice by hand on t's curve translated one day (and the same vol), add the cash paid that day, subtract `Price(t)`: equals `Theta` |
+| `Theta` on a **Bond** | `Price` is a settlement-date value, so the contract spreads the step to the next business day nb: `[Price(nb, same yield) + flows Price drops in (t, nb] − Price(t)] / (nb − t).days`, ccy per calendar day. **Financing is not in Theta** (it is `FinancingToDate`) | bond analytics: price at the same yield for nb's settlement date, plus a coupon dropped in (t, nb] | price → yield at t, yield → price at nb's settlement | `Theta × (nb − t).days` equals the hand repricing; on a business-day grid `PNL_theta` is then exact at constant yield |
 | `ExpiryInYears` | `max(expiry − t, 0).days / 365`. Swaps and bonds: to the final date (DEV-I17) | | date arithmetic in the config | exactly 1/365 less per calendar day |
-| `Cashflows` (frame; not in the definition, read by `pnl_explain_table` when among the risks) | holder-signed flows with `payment_date > t` that `Price` **will drop** when paid (R2-6); columns `payment_date, payment_amount, currency, payment_type`; `scale_columns: [payment_amount, ...]`. A total-return `Price` returns an **empty** frame | the library's cashflow table | from the schedule | on a coupon date, `cashflow_pnl` equals face × coupon / frequency |
+| `Cashflows` (frame; not in the definition, read by `pnl_explain_table` when among the risks) | holder-signed flows with `payment_date > t` that `Price` **will drop** when paid (R2-6); columns `payment_date, payment_amount, currency, payment_type`; `scale_columns: [payment_amount, ...]`. A total-return `Price` returns an **empty** frame. **Bond:** `payment_date` is the trade date on which `Price` drops the flow (T+1: the business day before a business-day coupon date) | the library's cashflow table | from the schedule | on a coupon date, `cashflow_pnl` equals face × coupon / frequency |
 
 Full recipes for every contract measure, with the capability worksheet, are in [`pricebt-risk-measures`](../../pricebt-risk-measures/SKILL.md) ([implementing-measures.md](../../pricebt-risk-measures/references/implementing-measures.md)) and `docs/v2/ASSET_CONFIG_GUIDE.md`. Reference implementations on a closed-form toy library: `tests/toylib/irrisk.py` (swap), `tests/toylib/swaption.py`, `tests/toylib/bond.py`, wired in `tests/assets/toy_usd_irs_full.yaml`, `tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_bond.yaml`.
 
-### Declaring a measure unsupported (Bond only), and what it costs attribution
+### No contract class declares a measure unsupported
 
-- **IRSwap and IRSwaption cannot declare.** Their configs map every contract measure or fail to load (`docs/v2/IR_STRICT_CONTRACT.md`), so a swap or swaption never makes a definition refuse by a declaration. What follows is about a Bond.
-- **Honest use.** Your bond library genuinely cannot compute the measure: no vol model, so no vanna or volga; no cashflow table. Declare it under `unsupported_measures:` with the real reason.
-- **Build the definition without that attribute**, for example `definition_for(session, vanna=False, volga=False)`. The missing term then lands in the residual; say so in the report.
-- **What happens if you do not.** A definition that still reads the measure fails at the first calc with `UnsupportedMeasureError`, naming the measure and your reason. `definition_for` refuses it earlier and lists every gap.
-- **Bonds in a book with vol attribution** must *map* the 0.0 convention (a swap always does) (a `'0.0'` function with unit `ccy_per_bp`, `ccy_per_bp2` or the vol unit), not declare it. A risk of exactly 0 is skipped before its level is read, but every measure is still *priced* for every held instrument, and a declared-unsupported measure raises.
+- **`IRSwap`, `IRSwaption` and `Bond` map every contract measure** or fail to load (`docs/v2/IR_STRICT_CONTRACT.md`, `docs/v2/BOND_DESIGN.md` decision 4.1). A declaration of a contract measure under `unsupported_measures:` is itself a load error. So a definition built from contract measures never refuses one of these books for a gap.
+- **The vol rows of a bond are 0.0 by convention** (`contracts.ZERO_BY_CONVENTION["Bond"]`: a bullet bond has no optionality), mapped as `'0.0'` functions with unit `ccy_per_bp`, `ccy_per_bp2` or the vol unit. A risk of exactly 0 is skipped before its level is read, so a bond in a swaption book adds nothing to the vol attributes.
+- **`unsupported_measures:` remains for classes without a contract** (`ConfigInstrument`). A definition that reads a measure such an asset declares fails at the first calc with `UnsupportedMeasureError`; `definition_for` refuses it earlier and lists every gap. Build the definition without that attribute and report the term the residual then carries.
+
+### Bonds: carry, financing and coupons
+
+A financed bond's step P&L has four parts, and the table keeps them apart:
+
+| part | where it lands | what it is |
+|---|---|---|
+| move in the yield | `PNL_delta`, `PNL_gamma` | `IRDelta` and `IRGammaParallel` against `IRFwdRate` (the yield to maturity, DEV-I12) |
+| time at constant yield | `PNL_theta` | `Theta × days`: accrual of the coupon plus pull to par, at the yield of t−1. No financing |
+| coupons | `cashflow_pnl` | the flows `Price` dropped in the step (the engine's holding-cash record for a financed position) |
+| repo interest | `financing_pnl` | the change of `FinancingToDate` the engine booked as cash: a long pays (≤ 0), a short receives (≥ 0) |
+
+- `bond_pnl_definition(rate_unit)` is `ir_pnl_definition(rate_unit, vega=False, vanna=False, volga=False)`: delta, gamma and theta against the bond's own yield. It has no spread attribute: a move in the bond's spread to the curve is already a move in its yield, so it is in `PNL_delta`.
+- `PNL_theta` and `financing_pnl` are disjoint by construction: the contract's `Theta` holds the yield and leaves financing out ("Financing is not in Theta"), and `financing_pnl` is cash the engine booked, not a greek. Their sum over a quiet step is the financed carry: coupon accrual and pull to par minus repo interest.
+- `Carry` and `RollDown` (the financing contract, DEV-I21) are a forward-looking estimate to the horizon H = settlement + 1 calendar month; they are not attributes. On an unmoved flat curve, `Carry + RollDown` at entry is close to `Σ (PNL_theta + financing_pnl)` over the next month (RollDown is then the pull to par at constant yield, which `PNL_theta` carries). On a sloped curve the roll-down is a fall in the bond's yield, so it lands in `PNL_delta`. Either way it is a sanity check, not an identity: `Carry` and `RollDown` hold the repo rate flat to H and use clean values, the backtest uses each day's repo fixing.
 
 ## 4. The step semantics of `pnl_explain` (gs, ported verbatim)
 
@@ -90,14 +104,18 @@ Full recipes for every contract measure, with the capability worksheet, are in [
 | column | meaning |
 |---|---|
 | `actual_pnl` | Σ over the held set of `price_measure(t) − price_measure(t−1)` (exits valued from the exit results) |
-| `cashflow_pnl` | Σ `payment_amount` of the `Cashflows` held at t−1 with `t−1 < payment_date ≤ t`; 0.0 when `Cashflows` is not among the risks |
-| `economic_pnl` | `actual_pnl + cashflow_pnl` |
+| `cashflow_pnl` | for a financed position (its asset maps `FinancingToDate`), the coupons the engine booked as holding cash on t (DEV-E22); for any other, Σ `payment_amount` of the `Cashflows` held at t−1 with `t−1 < payment_date ≤ t`, and 0.0 when `Cashflows` is not among the risks |
+| `financing_pnl` | the change of a financed position's `FinancingToDate` the engine booked on t; 0.0 for every other position |
+| `economic_pnl` | `actual_pnl + cashflow_pnl + financing_pnl` |
 | one column per attribute | its P&L over the step; the column's `cumsum()` is exactly `pnl_explain()[name]` |
-| `explained_pnl` | Σ attributes |
-| `residual_pnl` | `economic_pnl − explained_pnl` |
+| `explained_pnl` | Σ attributes + `financing_pnl` (financing is known cash, not a market move) |
+| `residual_pnl` | `economic_pnl − explained_pnl` (so financing never reaches it) |
 
-- **Error cases.** Attribute names must be unique and must not collide with the fixed columns (`ValueError`). A step mixing price units or cash currencies raises `ValueError`.
-- **Reconciling with `result_summary`.** For a book bought at PV, with no transaction costs, no cash accrual and no coupons, `Σ actual_pnl = Total(end) − Total(start)`. Coupons are **not** booked by the engine (gs parity, decision 0.10), so on a coupon-paying `Price` the `economic_pnl` (with `cashflow_pnl`) is the P&L you would have had, and `Total` understates it.
+- **Error cases.** Attribute names must be unique and must not collide with the fixed columns (`actual_pnl`, `cashflow_pnl`, `financing_pnl`, `economic_pnl`, `explained_pnl`, `residual_pnl`; `ValueError`). A step mixing price units or cash currencies raises `ValueError`.
+- **Where the engine's numbers live.** `bt.holding_cash[d][position] = (ccy, cashflow, financing)`: per date and per financed position, what the engine booked as cash on d since the position's previous mark (in `result_ccy` when the run sets one). The table reads it; read it yourself to tie a step to the cash ledger. `tests/test_holding_cash.py` is the reference.
+- **Reconciling with `result_summary`.** For a book bought at PV, with no transaction costs and no cash accrual:
+  - a book of financed positions (every `Bond`): `Σ economic_pnl = Total(end) − Total(start)`, because the engine books coupons and the change of `FinancingToDate` as cash, exactly on any grid. `Total` changes by ΔPV + coupons + ΔFinancingToDate, i.e. ΔPV + coupons − repo interest for a long;
+  - a book of swaps or swaptions with no coupons in the period: `Σ actual_pnl = Total(end) − Total(start)`. Their coupons are **not** booked by the engine (gs parity, decision 0.10), so on a coupon-paying `Price` the `economic_pnl` (with `cashflow_pnl`) is the P&L you would have had, and `Total` understates it.
 
 ## 5. Mixed books
 

@@ -12,7 +12,7 @@ library such as ARBS is named only inside those config files, never in pricebt's
 
 [`skills/README.md`](skills/README.md) is a skills library for AI agents (and people). It covers two jobs:
 
-- **Hook up a pricing/data library and reach a first backtest fast.** You get a fast path, a discovery questionnaire, a fictional bank-SDK worked example and an automated config checker. For swaps, swaptions and bonds it also covers the IR risk-measure contract: what each measure means, how to derive it from your library by bump-and-reprice, why a swap or swaption must map every one (only a bond may declare one unsupported), and how to verify it. It also covers pricing and risking portfolios.
+- **Hook up a pricing/data library and reach a first backtest fast.** You get a fast path, a discovery questionnaire, a fictional bank-SDK worked example and an automated config checker. For swaps, swaptions and bonds it also covers the IR risk-measure contract: what each measure means, how to derive it from your library by bump-and-reprice, why a swap, swaption or bond must map every one (a bond also maps its repo financing), and how to verify it. It also covers pricing and risking portfolios.
 - **Take a plain-English strategy idea to a reviewed tearsheet.** The steps are intake questions, implementation recipes, adversarial review, spot checks, P&L attribution by greek and a report generator.
 
 Start with [`skills/pricebt-start-here/SKILL.md`](skills/pricebt-start-here/SKILL.md).
@@ -68,9 +68,12 @@ pricebt ports gs_quant's IR pricing and risk surface for swaps, swaptions and bo
   `IRVega`, `IRVanna`, `IRVolga`, `IRFwdRate`, `IRAnnualImpliedVol`, `Theta`, `Annuity`,
   `Cashflows`, ...) importable from `pricebt.risk`, with measure parameters (`bump_size`, ...)
   passed through to the config functions that name them.
-- **Contracts.** An `IRSwap` or `IRSwaption` asset config must map every measure of its class's
-  contract (no declarations; the load error prints a mapping skeleton). A `Bond` config maps each
-  measure or declares it unsupported with a reason. Loading fails otherwise. The tables,
+- **Contracts.** An `IRSwap`, `IRSwaption` or `Bond` asset config must map every measure of its
+  class's contract (no declarations; the load error prints a mapping skeleton). A `Bond` config maps
+  bond analytics (clean and dirty price, accrued, duration, convexity, settlement) and its repo
+  financing, and the engine books a financed position's coupons and repo interest as cash, so a
+  bond backtest's `Total` is the financed P&L ([`docs/v2/BOND_DESIGN.md`](docs/v2/BOND_DESIGN.md)).
+  Loading fails otherwise. The tables,
   units and signs are in the guide's
   ["Measure contracts"](docs/v2/ASSET_CONFIG_GUIDE.md#measure-contracts-irswap-irswaption-bond) section.
 - **Portfolio.** gs `Portfolio` and `PortfolioRiskResult` semantics: nested portfolios, paths,

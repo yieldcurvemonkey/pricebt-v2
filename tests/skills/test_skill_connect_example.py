@@ -3,8 +3,9 @@ IRSwap contract, docs/v2/IR_STRICT_CONTRACT.md), and the three deliberate-mistak
 tests assert the WRONG behaviour, so the example stays honest); and the three contract templates
 (references/config-template*.yaml): each maps the whole measure contract of `pricebt.risk.contracts`,
 loads blank, fails loudly when priced unfilled, answers a gap with the paste-ready mapping skeleton
-(IRSwap, IRSwaption) or declaration block (Bond), and -- with its library primitives filled by the toy
-library -- prices every contract measure like the toy reference config, which proves its recipes."""
+(every contract class is strict: IRSwap, IRSwaption, Bond), and -- with its library primitives filled by
+the toy library -- prices every contract measure like the toy reference config, which proves its recipes
+(for the bond: settlement-date Price, drop-date Cashflows, the repo financing contract)."""
 from __future__ import annotations
 
 import math
@@ -284,13 +285,13 @@ def test_one_vendor_call_per_trade_and_date_and_a_strict_matrix(tmp_path):
     rows = {(x["measure"], x["form"]): x for x in measures.capability_matrix(CONFIG)["rows"]}
     assert {x["status"] for x in rows.values()} == {measures.MAPPED}           # the whole strict contract, no declaration
     assert {m for m, _f in rows} == {r.measure for r in contracts.contract_for("IRSwap")}
-    # --strict still refuses a declaration every library can avoid -- on a Bond, the one class that may declare
+    # a Bond is strict too (BOND_DESIGN 4.1): a declaration satisfies nothing, with or without --strict
     bond = yaml.safe_load((ROOT / "tests" / "assets" / "toy_usd_bond.yaml").read_text(encoding="utf-8"))
     del bond["risk_measures"]["IRVanna"]
     bond["unsupported_measures"] = {"IRVanna": "no vol bump in this library"}
     path = tmp_path / "bond_declares_a_zero.yaml"
     path.write_text(yaml.safe_dump(bond, sort_keys=False), encoding="utf-8")
-    assert measures.main(["matrix", str(path)]) == 0 and measures.main(["matrix", "--strict", str(path)]) == 1
+    assert measures.main(["matrix", str(path)]) == 1 and measures.main(["matrix", "--strict", str(path)]) == 1
 
 
 def _contract_values(s, r, d):
@@ -549,15 +550,25 @@ def lib_bond_static(m, identifier, identifier_type):
     coupon, maturity, frequency = tb.BONDS[identifier]
     return {"coupon": coupon, "maturity": maturity, "frequency": frequency}
 def lib_bond(m, r): return dict(r)
-def lib_pv(m, t): return tb.npv(m, t)
+def lib_settlement_date(d): return tb.settle(d)
+def lib_next_business_day(d): return tb.next_weekday(d)
+def lib_flows(t, after): return tb._flows(t, after)
+def lib_pv(m, t): return tb._pv(m.curve, m.spread, t)
+def lib_at(m, d): return _NS(curve=tri.at(m.curve, d), spread=m.spread, repo=m.repo)
+def lib_with_marks(m, marks): return _NS(curve=m.curve, spread=marks.spread, repo=m.repo)
 def lib_yield(m, t): return tb._yield(m.curve, m.spread, t)
-def lib_pv_at_yield(t, y, d): return sum(a * _math.exp(-y * (p - d).days / 365.0) for p, a, *_ in tb._flows(t, d))
-def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), spread=m.spread)
+def lib_pv_at_yield(t, y, x): return sum(a * _math.exp(-y * (p - x).days / 365.0) for p, a, *_ in tb._flows(t, x))
+def lib_accrued(t, x): return tb._accrued_at(t, x)
+def lib_pv_rolled(m, t, x):   # each flow at today's DF for its time to payment from x, spread held
+    c, r = m.curve, m.curve.ref_date
+    return sum(a * c.discount_factor(r + (p - x)) / c.discount_factor(r) * _math.exp(-m.spread * (p - x).days / 365.0) for p, a, *_ in tb._flows(t, x))
+def lib_shift_discount(m, h): return _NS(curve=tri.bumped(m.curve, h), spread=m.spread, repo=m.repo)
 def lib_annuity(m, t): return tb.annuity(m, t)
-def lib_cashflows(m, t): return tb.cashflows(m, t).to_dict("records")
 def lib_oas(m, t): return m.spread
 def lib_par_spread(m, t): return m.spread
-def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), spread=m.spread)
+def lib_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0)
+def lib_term_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0)   # the toy locks the trade date's rate
+def lib_shift_pillar(m, pillar, h): return _NS(curve=_KeyRateCurve(m.curve, pillar, h), spread=m.spread, repo=m.repo)
 '''
 
 # instrument class -> (template, toy reference config, toy primitives, pricing date, two instruments)
@@ -572,15 +583,17 @@ CASES = {
         lambda: IRSwaption(pay_or_receive="Straddle", buy_sell="Sell", expiration_date="2y", termination_date="5y",
                            notional_currency="USD", strike="ATM", notional_amount=3e6),
     )),
-    # 2024-05-14: both toy bonds pay a coupon on 05-15, inside Theta's one-day window
-    "Bond": ("config-template-bond.yaml", "toy_usd_bond.yaml", _TOY_BOND, date(2024, 5, 14), (
+    # 2024-05-13: both toy bonds pay a coupon on 05-15 (Wednesday), dropped from Price on 05-14 (T+1), inside
+    # Theta's step to the next business day; the second is a short on a term repo with a 5% haircut
+    "Bond": ("config-template-bond.yaml", "toy_usd_bond.yaml", _TOY_BOND, date(2024, 5, 13), (
         lambda: Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD"),
-        lambda: Bond(buy_sell="Sell", identifier="TOY 3.5 2027-05-15", size=5e5, settlement_currency="USD"),
+        lambda: Bond(buy_sell="Sell", identifier="TOY 3.5 2027-05-15", size=5e5, settlement_currency="USD", repo_term="term", repo_haircut=0.05),
     )),
 }
 # (instrument, measure) -> rel tolerance where the template's recipe is a different (equally valid) method
 # than the toy's: a finite-difference vega/DV01 vs an analytic one, yield bumps vs curve bumps on the bond
-TOL = {("IRSwaption", "IRVega"): 2e-5, ("Bond", "LightningDV01"): 1e-5, ("Bond", "IRDelta"): 1e-7, ("Bond", "IRGammaParallel"): 1e-6}
+TOL = {("IRSwaption", "IRVega"): 2e-5, ("Bond", "LightningDV01"): 1e-5, ("Bond", "IRDelta"): 1e-7, ("Bond", "IRGammaParallel"): 1e-6,
+       ("Bond", "ModifiedDuration"): 1e-6, ("Bond", "Convexity"): 1e-6}
 
 
 def _template_raw(instrument):
@@ -639,6 +652,8 @@ def _compare(instrument, got, ref):
             assert dict(zip(v["mkt_type"], v["value"])) == pytest.approx(dict(zip(r["mkt_type"], r["value"])), rel=1e-9, abs=1e-9)
         elif form == "frame":
             assert len(v) == len(r) and v["payment_amount"].sum() == pytest.approx(r["payment_amount"].sum())
+            if instrument == "Bond":  # the drop dates (BOND_DESIGN 4.5): the trade date whose settlement reaches each flow
+                assert list(pd.to_datetime(v["payment_date"])) == list(pd.to_datetime(r["payment_date"]))
         elif measure == "IRDelta":   # key-rate ladder (hats summing to 1): sums to the PARALLEL whole-curve delta, up to
             assert tuple(v["mkt_point"]) == TOY_PILLARS   # an option's third-order finite-difference terms. Not
             # IRDiscountDeltaParallel (it holds the forwards: about 0 at the money) except on a bond, whose fixed flows
@@ -678,25 +693,12 @@ def _price_only(instrument):
     return raw, missing, str(exc.value)
 
 
-def test_bond_template_declaration_path_pastes_back():
-    """Bond keeps map-or-declare: map only Price, and the load error carries the paste-ready block for
-    the rest; pasting it loads."""
-    raw, missing, err = _price_only("Bond")
-    block = contracts.unsupported_block("Bond", missing)
-    assert block in err
-    raw["unsupported_measures"] = yaml.safe_load(block)["unsupported_measures"]
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        cfg = load_asset(raw)
-    assert set(cfg.unsupported_measures) == {r.measure for r in contracts.contract_for("Bond")} - {"Price"}
-
-
-@pytest.mark.parametrize("instrument", ["IRSwap", "IRSwaption"])
+@pytest.mark.parametrize("instrument", ["IRSwap", "IRSwaption", "Bond"])
 def test_strict_template_gap_gets_the_mapping_skeleton_never_a_declaration_block(instrument):
-    """IRSwap/IRSwaption (IR_STRICT_CONTRACT R3-0): map only Price, and the load error lists every gap
-    and ends with the paste-ready mapping skeleton, not an unsupported_measures block. The skeleton's
-    stub expressions do not compile, so pasting it unchanged still does not load; and declaring the
-    gaps instead is itself refused."""
+    """Every contract class is strict (IR_STRICT_CONTRACT R3-0, BOND_DESIGN 4.1): map only Price, and the
+    load error lists every gap and ends with the paste-ready mapping skeleton, not an unsupported_measures
+    block. The skeleton's stub expressions do not compile, so pasting it unchanged still does not load; and
+    declaring the gaps instead is itself refused."""
     raw, missing, err = _price_only(instrument)
     skeleton = contracts.mapping_skeleton(instrument, missing)
     assert skeleton in err and "unsupported_measures:" not in err
@@ -708,8 +710,8 @@ def test_strict_template_gap_gets_the_mapping_skeleton_never_a_declaration_block
     with pytest.raises(ConfigError):
         load_asset(raw)
     declared = _price_only(instrument)[0]
-    declared["unsupported_measures"] = yaml.safe_load(contracts.unsupported_block(instrument, missing))["unsupported_measures"]
-    with pytest.raises(ConfigError, match="unsupported_measures cannot satisfy them"):
+    declared["unsupported_measures"] = {m: "TODO: no library call" for m, _f in missing}
+    with pytest.raises(ConfigError, match="Bond/IRSwap/IRSwaption configs must map every contract measure; unsupported_measures cannot satisfy them"):
         load_asset(declared)
 
 
@@ -756,3 +758,33 @@ def test_swaption_template_bachelier_inversion_recovers_the_normal_vol():
     exec(raw["imports"] + raw["code"], ns)
     for F, K, sigma, T, payer in [(0.04, 0.04, 0.008, 1.0, True), (0.04, 0.045, 0.006, 0.5, True), (0.035, 0.03, 0.01, 2.0, False)]:
         assert ns["bachelier_implied_vol"](ts._unit_price(F, K, sigma, T, payer), F, K, T, payer) == pytest.approx(sigma, rel=1e-9)
+
+
+@pytest.mark.parametrize("variant", [0, 1])
+def test_bond_template_seasoned_position_matches_the_toy_including_financing(variant):
+    """A position traded 2024-04-25 (Thursday: it settles on Friday, so the first repo step spans the
+    weekend) priced on Friday 2024-05-10 (Theta's step to Monday is 3 calendar days): FinancingToDate,
+    Carry, RollDown, ForwardPrice and Theta of a seasoned position (overnight GC-special and a term repo)
+    match the toy config, and the financing is not trivially 0."""
+    _t, ref_cfg, _p, _d, instruments = CASES["Bond"]
+    traded, d = date(2024, 4, 25), date(2024, 5, 10)
+    got = _values(_filled("Bond"), instruments[variant](), d, resolve_on=traded)
+    ref = _values(TOY_ASSETS / ref_cfg, instruments[variant](), d, resolve_on=traded)
+    _compare("Bond", got, ref)
+    assert abs(got[("FinancingToDate", "scalar")]) > 100.0 and (got[("FinancingToDate", "scalar")] > 0) == (variant == 1)  # the short receives
+
+
+def test_bond_template_term_repo_comes_from_its_own_primitive():
+    """repo_term: term locks lib_term_repo_rate's quote on the trade date, not the overnight fixing:
+    with a term rate 25bp over the overnight one, RepoRate of a term position is that quote on every
+    date, and an overnight position still reads the day's fixing."""
+    raw = _filled("Bond")
+    raw["code"] += "\ndef lib_term_repo_rate(d, identifier): return tb.gc(d) - tb.SPECIALS.get(identifier, 0.0) + 0.0025\n"
+    traded, d = date(2024, 4, 25), date(2024, 5, 10)
+    term = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD", repo_term="term")
+    over = Bond(buy_sell="Buy", identifier="TOY 4.25 2034-11-15", size=1e6, settlement_currency="USD", repo_term="overnight")
+    import toylib.bond as tb
+
+    want_term = (tb.gc(traded) - tb.SPECIALS["TOY 4.25 2034-11-15"] + 0.0025) * 1e4
+    assert _values(raw, term, d, resolve_on=traded)[("RepoRate", "scalar")] == pytest.approx(want_term, rel=1e-12)
+    assert _values(raw, over, d, resolve_on=traded)[("RepoRate", "scalar")] == pytest.approx((tb.gc(d) - tb.SPECIALS["TOY 4.25 2034-11-15"]) * 1e4, rel=1e-12)
