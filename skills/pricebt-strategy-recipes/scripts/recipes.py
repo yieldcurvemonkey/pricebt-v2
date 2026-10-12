@@ -316,7 +316,8 @@ def stop_loss_overlay(stop_loss_mtm: float, *, price_measure: RiskMeasure = Pric
 def use_session(spec: dict) -> PricebtSession:
     fx = spec.get("fx")
     return PricebtSession.use(assets=[str(specmod.resolve_path(a)) for a in spec["assets"]],
-                              fx=str(specmod.resolve_path(fx)) if fx else None)
+                              fx=str(specmod.resolve_path(fx)) if fx else None,
+                              markets=[str(specmod.resolve_path(m)) for m in spec.get("markets") or []])
 
 
 def _prepare(spec: Union[dict, str, Path]) -> dict:

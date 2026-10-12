@@ -89,6 +89,13 @@ deviations. The per-notebook table is in [`references/notebook-map.md`](referenc
    `PricingContext.current = ...` setter port. `PricingContext(market=...)` accepts only a
    `CloseMarket(date=...)`, which prices on that date's market while the pricing date stays put
    (DEV-M1). Any other market raises `NotSupportedError`; it used to be ignored silently.
+   `market_data_location='NYC'` reaches the configs as `pricebt_location` (`'LDN'` by default,
+   DEV-M3), `show_progress=True` draws one bar for the outermost context, and the server-side
+   parameters (`is_batch`, `is_async`, `use_cache`, `timeout`, ...) are kept and change nothing.
+   The manual backtests (`resolve(in_place=False)` under a `HistoricalPricingContext` giving
+   `{date: resolved instrument}`, then pricing each trade historically) port as written;
+   `tests/test_market_context.py` runs the `4-Delta Hedging` cells. `DataContext(start, end)` is
+   `pricebt.data.DataContext`: `measure_series` reads its window.
 10. **Portfolios and results.** `Portfolio` construction, nesting, `resolve`, `calc`, `price`,
     `dollar_price`, `paths`, `subset`, `from_frame`, `from_csv`, `to_csv` and `Grid` port, and so do
     `PortfolioRiskResult` indexing (by measure, name, instrument, path, date), `aggregate()`, `+`,

@@ -46,6 +46,7 @@ An asset config is trusted code that turns your pricing library into pricebt num
    | `--pack auto` (default), `none`, `IRSwap`, `IRSwaption`, `Bond` | contract and pack: auto uses the config's `instrument:`; name one for a `ConfigInstrument` |
    | `--kwargs '{"termination_date": "5y"}'` | probe a different trade than the config's `defaults` |
    | `--fx <fx config yaml>` | also check the FX round trip for a non-USD asset |
+   | `--markets <provider yaml or directory>` | the market provider config(s) of an asset whose `market:` names a provider (repeatable) |
    | `--start 2024-01-02 --end 2024-06-28` | smoke-backtest window (must have market data) |
    | `--no-backtest` | skip the smoke backtest (fast iteration on one function) |
    | `--json OUT` | machine-readable rows |

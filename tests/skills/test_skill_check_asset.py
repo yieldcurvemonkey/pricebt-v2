@@ -208,3 +208,37 @@ def test_meridian_cashflow_drop_tells_the_par_roll_from_a_wrong_drop(cashflows_e
     assert rows["ir_cashflow_drop"].status == status, rows["ir_cashflow_drop"]
     if status == "PASS":
         assert "of it with the market" in rows["ir_cashflow_drop"].detail and "rolling off the remaining schedule" in rows["ir_cashflow_drop"].detail
+
+
+# --------------------------------------------------------------------------------- market providers
+
+
+def _on_provider(tmp_path):
+    """tests/assets/toy_usd_irs.yaml with its inline market replaced by a provider reference, as a file."""
+    import yaml
+
+    raw = dict(yamlio.load_file(ASSETS / "toy_usd_irs.yaml"))
+    raw["market"] = {"provider": "toy_usd_ois"}
+    path = tmp_path / "toy_usd_irs_on_provider.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf8")
+    return path
+
+
+def test_a_provider_backed_config_passes_like_the_inline_one(tmp_path):
+    markets = REPO / "tests" / "markets"
+    provider = check_asset.run_checks(_on_provider(tmp_path), markets=[markets], dates=DATES)
+    inline = check_asset.run_checks(ASSETS / "toy_usd_irs.yaml", dates=DATES)
+    assert [(r.name, r.status) for r in provider] == [(r.name, r.status) for r in inline]
+    assert not [r for r in provider if r.status == check_asset.FAIL]
+
+
+def test_a_provider_backed_config_without_its_providers_is_a_fail_row_not_a_crash(tmp_path):
+    results = check_asset.run_checks(_on_provider(tmp_path), dates=DATES)
+    assert [(r.name, r.status) for r in results] == [("config_loads", check_asset.PASS), ("config_loads", check_asset.FAIL)]
+    assert "'toy_usd_ois' is not a registered market provider" in results[-1].detail
+
+
+def test_cli_markets_option(tmp_path):
+    proc, statuses = _cli(str(_on_provider(tmp_path)), "--markets", "tests/markets", "--no-backtest", tmp_path=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "FAIL" not in statuses.values() and statuses["swap_dv01_sign"] == "PASS"

@@ -22,6 +22,10 @@ checks the text still matches.
 | `duplicate mapping key` | a repeated YAML key (the loader is strict) | delete the duplicate |
 | `duplicate asset name` | two configs with the same `asset:` id | make the ids unique |
 | `market key K: ... differs between assets` | two assets share `market.key` but their imports, code or market expression differ | give each asset its own key (a swaption never shares a swap's key) |
+| `is not a registered market provider` | an asset's `market.provider` (or a provider's `requires:`) names a provider that is not registered, or is registered later | register the provider first (`PricebtSession(markets=[...])`, then the assets); use the suggested name |
+| `cannot be combined with an inline market.expr / market.key` | `market:` gives `provider` together with `expr` or `key` | keep one form: a provider, or an inline expression |
+| `give market.expr (an inline market expression) or market.provider` | `market:` has neither | add one |
+| `a circular requires: can never load` | market providers require each other, or a required provider is missing | break the cycle; register the missing provider |
 | `is not a class exported by pricebt.instrument` | `instrument:` is misspelt, or names a class pricebt does not generate | use the suggested class (`IRSwap`, `IRSwaption`, `Bond`, ...) or `ConfigInstrument` |
 
 ### The measure contract (IRSwap, IRSwaption, Bond; DEV-I11, amended by `docs/v2/IR_STRICT_CONTRACT.md` and `docs/v2/BOND_DESIGN.md`)

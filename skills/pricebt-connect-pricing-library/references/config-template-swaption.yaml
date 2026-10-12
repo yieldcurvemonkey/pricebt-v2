@@ -378,6 +378,8 @@ code: |
 market:
   expr: 'lib_market(pricebt_date)'
   key: TODO_market_key                 # its OWN key: never share a swap asset's key (their imports/code differ)
+  # or, instead of expr/key, a market shared by several assets: market: {provider: <name>} and a market
+  # provider config (configs/markets/README.md; cookbook pattern 34)
 resolve:
   expr: 'resolve_swaption(market, kwargs, pricebt_date)'
 trade:

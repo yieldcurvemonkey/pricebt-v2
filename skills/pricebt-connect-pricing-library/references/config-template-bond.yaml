@@ -383,6 +383,8 @@ code: |
 market:
   expr: 'lib_market(pricebt_date)'
   key: TODO_market_key
+  # or, instead of expr/key, a market shared by several assets: market: {provider: <name>} and a market
+  # provider config (configs/markets/README.md; cookbook pattern 34)
 resolve:
   expr: 'resolve_bond(market, kwargs, pricebt_date)'   # pricebt_date is the trade date here
 trade:

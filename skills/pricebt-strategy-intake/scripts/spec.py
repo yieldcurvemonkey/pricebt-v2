@@ -166,6 +166,9 @@ def validate_spec(spec: dict) -> "list[str]":
                 err(f"assets: {a} does not exist (paths are relative to the repository root)")
     if spec.get("fx") and not resolve_path(spec["fx"]).exists():
         err(f"fx: {spec['fx']} does not exist")
+    for m in spec.get("markets") or []:
+        if not resolve_path(m).exists():
+            err(f"markets: {m} does not exist (a market provider config or a directory of them)")
     if spec.get("result_ccy") and not spec.get("fx"):
         err("result_ccy is set but fx is null: converting to result_ccy needs an FX config")
 

@@ -66,7 +66,7 @@ functions:
   npv: {expr: 'lib.swaption_pv(market.curve, market.vol, trade)', unit: ccy}
 ```
 
-Give such an asset its **own** `market.key`, even when the curve also serves a swap asset. Assets that share a key must have byte-identical `imports`, `code` and `market.expr`. The swaption template builds every measure on such a market (patterns 16-21).
+Give such an asset its **own** `market.key`, even when the curve also serves a swap asset. Assets that share a key must have byte-identical `imports`, `code` and `market.expr`. To load the curve once for both assets, make it a market provider (pattern 34). The swaption template builds every measure on such a market (patterns 16-21).
 
 ## 4. Pinning at the trade date (the resolve step)
 
@@ -920,3 +920,43 @@ risk_measures:
   on the pricing date.
 - **Verify:** `PremiumCents` (pct) = `DirtyPrice` for a long, `−DirtyPrice` for a short (checker row `bond_premium_cents`), `FairPremium`
   = `Price` (`bond_fair_premium`), `LightningDV01` = the `IRDelta` scalar (`bond_lightning_dv01`).
+
+## 34. One market for several assets, or a market built on another: market providers
+
+An inline `market.expr` belongs to one asset. As soon as two assets price on the same market, or
+one market is built on another, move it into a **market provider** config of its own
+(`docs/v2/ASSET_CONFIG_GUIDE.md` "Market providers"; `configs/markets/README.md`):
+
+```yaml
+# configs/markets/usd_ois.yaml                # configs/markets/usd_swaption_vol.yaml
+schema_version: 1                             schema_version: 1
+market: usd_ois                               market: usd_swaption_vol
+imports: |                                    requires: [usd_ois]
+  import lib                                  imports: |
+code: |                                         import lib
+  def load_curve(d, location, csa): ...       expr: 'lib.vol_market(pricebt_date, curve=markets["usd_ois"])'
+expr: 'load_curve(pricebt_date, pricebt_location, pricebt_csa)'
+```
+
+```yaml
+market: {provider: usd_ois}                   # the swap asset
+market: {provider: usd_swaption_vol}          # the swaption asset: market.curve is the SAME object the swap prices on
+```
+
+```python
+PricebtSession.use(markets=["configs/markets"], assets=["configs/assets"])
+```
+
+- The provider is evaluated once per (provider, date, csa, location) in its own namespace. The
+  assets on it keep their own `imports` and `code`; nothing has to be byte-identical.
+- `expr` sees `pricebt_date`, `pricebt_timestamp`, `pricebt_datetime`, `pricebt_csa`,
+  `pricebt_location` and `markets` (the objects of the providers under `requires:`), never an
+  asset name. Return `None` for a date with no market; if a required market has none, the derived
+  provider has none either and is not evaluated.
+- `provider` replaces `expr` and `key` (giving both is a load error). Register providers before
+  assets; a required provider before the one that requires it.
+- `pricebt_location` is the `market_data_location` of the pricing context (`'LDN'` unless set):
+  a library with several closes loads the one asked for, and pricebt keeps the values of two
+  locations apart.
+- **Verify:** the asset prices the same number as with the market inline, and a recorder in the
+  library shows one load per date however many assets ask (`tests/test_market_provider.py`).

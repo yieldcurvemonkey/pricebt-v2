@@ -17,6 +17,7 @@ assumptions: []                          # filled by the agent: every default re
 assets:                                  # asset configs (paths from the repo root) to register in PricebtSession
   - tests/assets/toy_usd_irs.yaml
 fx: null                                 # FX config path, required only if >1 currency or result_ccy is set
+markets: []                              # market provider configs (files or directories), if an asset's market: names a provider
 result_ccy: null                         # e.g. USD; null = local currency (gs semantics)
 instruments:                             # named instrument templates; kwargs are gs constructor kwargs, passed verbatim
                                          # (checked against the class signature: IRSwap, IRSwaption, Bond, ...)
