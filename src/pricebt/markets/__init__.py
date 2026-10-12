@@ -92,7 +92,10 @@ class CloseMarket:
     def date(self) -> date:
         if self._date is not None and not self.check:
             return self._date
-        return close_market_date(self._location, self._date, self.roll_hr_and_min)
+        # gs rolls in the market's own location (the context's when none was given); a location
+        # pricebt knows no timezone for (a config-defined one, DEV-M3) rolls in London's
+        location = self.location
+        return close_market_date(location if location in _LOCATION_TZ else None, self._date, self.roll_hr_and_min)
 
     @property
     def location(self) -> str:

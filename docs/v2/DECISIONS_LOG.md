@@ -1510,7 +1510,8 @@ decisions; the ones that were close calls are below).
   `CloseMarket`.
 - **`show_progress` draws one bar per outermost context** (gs's `active_context`), advanced inside the block. The
   first version drew one bar per inner `HistoricalPricingContext`, which printed two bars per instrument in the
-  Delta Hedging loop.
+  Delta Hedging loop. Only one bar draws at a time (`ProgressBar._depth`): whichever opens second stays silent, so
+  a context bar opened before `run_backtest(show_progress=True)` in the same block mutes the engine's bar.
 - **Not done: a real `Dataset`, live/timestamped/overlay markets, splitting the ARBS config.** The first two have
   no present use (MARKET_CONTEXT_DESIGN §8). The ARBS config is verified only by the opt-in live tier, which was not
   run here (it needs the maintainer's go-ahead), so it keeps its inline market rather than ship an unverified split.

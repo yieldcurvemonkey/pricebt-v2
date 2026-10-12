@@ -65,9 +65,9 @@ class DataContext(metaclass=_DataContextMeta):
         self.__end = end
         if interval is not None:
             if not isinstance(interval, str):
-                raise TypeError("interval must be a str")  # gs: MqTypeError (a TypeError)
+                raise TypeError("interval must be a str")  # gs: MqTypeError (an MqError, not a TypeError; pricebt DEV-M4)
             if not re.fullmatch("[1-9]\\d{0,2}[a-z]", interval):
-                raise ValueError("interval must be a valid str e.g. 1m, 2h, 3d")  # gs: MqValueError (a ValueError)
+                raise ValueError("interval must be a valid str e.g. 1m, 2h, 3d")  # gs: MqValueError, which is a ValueError
         self.__interval = interval
         self._is_entered = False
 

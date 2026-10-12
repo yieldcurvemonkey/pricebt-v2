@@ -75,6 +75,10 @@ def test_any_location_string_a_config_understands_is_accepted():
     _location_session()
     with PricingContext(D, market_data_location="MY_SNAP"):
         assert float(_inst().price().result()) == 4.04
+        # a CloseMarket takes the context's location; with no timezone for it, the close rolls in London's
+        assert CloseMarket(date=D).location == "MY_SNAP" and CloseMarket(date=D).date == D
+        with pytest.raises(ValueError, match="not a valid PricingLocation"):
+            CloseMarket(date=D, location="MY_SNAP")  # an explicit location must be one with a timezone (gs)
 
 
 def test_an_inline_market_and_a_function_see_the_location_too():

@@ -651,7 +651,8 @@ class CloseMarket:                   # pricebt.markets — gs CloseMarket(date=N
     date -> date                     # own date if given and not check, else close_market_date(location, own date)
     location -> str; check; to_dict(); __eq__/__hash__ on (date, location)   # location: the code string (DEV-M1); default: the
                                      #   current context's market_data_location (gs market_location()), 'LDN' unless set. It picks
-                                     #   the close-roll timezone (an unknown one raises ValueError, gs) and is the
+                                     #   the close-roll timezone (an unknown explicit one raises ValueError, gs; a config-defined context
+                                     #   location rolls in London's) and is the
                                      #   market_data_location of a PricingContext given this market
 
 def market_location(location=None) -> str: ...   # gs: location, else PricingContext.current.market_data_location

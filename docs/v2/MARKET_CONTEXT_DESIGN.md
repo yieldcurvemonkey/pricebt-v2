@@ -177,8 +177,9 @@ location's.
 
 Deviations (DEV-M3): the location is a code string, not a `PricingLocation` enum, and any string
 is accepted (a config may define its own snapshots; gs logs a warning for a value outside the
-enum). `CloseMarket` still needs a location it knows the timezone of (`NYC`, `LDN`, `HKG`, `TKO`)
-to roll the close.
+enum). A `CloseMarket` given an explicit location still needs one pricebt knows the timezone of
+(`NYC`, `LDN`, `HKG`, `TKO`), as in gs; one that takes the context's location rolls its close in
+that location's timezone, or in London's when the location is a config-defined one.
 
 ### 5.2 `show_progress`
 
