@@ -1,0 +1,11 @@
+schema_version: 1
+market: toy_usd_swaption_vol
+description: >
+  Toy USD swaption market as a derived market provider: the flat normal vol of
+  tests/toylib/swaption.py on the curve of the toy_usd_ois provider, which it requires. Test-only
+  fixture, never shipped. A swap asset on toy_usd_ois and a swaption asset on this provider price
+  on one curve object per date (docs/v2/MARKET_CONTEXT_DESIGN.md section 3.3).
+requires: [toy_usd_ois]
+imports: |
+  import toylib.swaption as ts
+expr: 'ts.market_on(markets["toy_usd_ois"])'

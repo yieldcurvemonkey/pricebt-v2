@@ -264,44 +264,12 @@
     run_backtest builds its context directly (DESIGN.md section 6.5).
 
 # ------------------------------------------------------------------------------------------- markets
-- symbol: gs_quant.markets.PricingContext
-  aspect: properties
-  missing: [active_context, is_batch, is_current, market_behaviour, market_data_location,
-            provider, request_priority, set_parameters_only, show_progress, timeout, use_cache,
-            use_historical_diddles_only, use_server_cache, visible_to_gs]
-  dev_id: DEV-M1
-  reason: >
-    markets/__init__.py's own module docstring: only pricing_date, csa_term and market actually do
-    anything; a market other than None or a CloseMarket raises NotSupportedError (DEV-M1,
-    IR_RISK_DESIGN R2-30, section 8); every other constructor parameter is accepted for signature
-    parity and ignored (DESIGN.md section 6.5). The `PricingContext.current` getter and setter (gs) are on the
-    metaclass, like gs's ContextMeta.
-
-- symbol: gs_quant.markets.PricingContext
-  aspect: methods
-  missing: [calc, clone, default_value]
-  reason: >
-    GS-server pricing dispatch/cloning helpers. pricebt's Instrument/Portfolio.calc and .resolve are
-    the real pricing seam (DESIGN.md section 6.5); PricingContext itself does not need its own calc/
-    clone/default_value.
-
-- symbol: gs_quant.markets.HistoricalPricingContext
-  aspect: properties
-  missing: [active_context, is_batch, is_current, market_behaviour,
-            market_data_location, provider, request_priority, set_parameters_only, show_progress,
-            timeout, use_cache, use_historical_diddles_only, use_server_cache, visible_to_gs]
-  reason: >
-    Same PricingContext-accepted-and-ignored params as above. `date_range` is not listed here: it is
-    implemented under gs's own name (markets/__init__.py), so there is no mismatch to except -- an
-    earlier draft instead kept pricebt's property named `dates` and excepted the rename, but that
-    rename had no DESIGN section 11 DEV row (decision 0.3 confirmed section 11 as-is), so the
-    property was renamed to match gs exactly instead of inventing an unapproved exception.
-
-- symbol: gs_quant.markets.HistoricalPricingContext
-  aspect: methods
-  missing: [calc, clone, default_value]
-  reason: >
-    Same as gs_quant.markets.PricingContext's methods entry above.
+# gs_quant.markets.PricingContext / HistoricalPricingContext need no entry: every gs property and
+# method is implemented under gs's own name (docs/v2/MARKET_CONTEXT_DESIGN.md section 5). Only
+# pricing_date, csa_term, market, market_data_location and show_progress change what is computed;
+# the server-side ones (is_batch, use_cache, timeout, ...) are kept and read back, inherited as in
+# gs. `market` with no override is None, not a default CloseMarket (DEV-M1): a value difference,
+# not a signature one.
 
 - symbol: gs_quant.markets.CloseMarket
   aspect: fields

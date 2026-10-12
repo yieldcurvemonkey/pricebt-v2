@@ -106,13 +106,19 @@ class ProgressBar:
         self._bar: Optional[_OurBar] = None
         self._n = 0
 
+    _depth = 0  # bars entered and not yet exited: a bar inside another one (a context's bar inside a run's) stays silent
+
     def __enter__(self) -> "ProgressBar":
+        if ProgressBar._depth:
+            self.show = False
+        ProgressBar._depth += 1
         display = _notebook_display() if self.show else None
         where: dict = {"dynamic_ncols": True} if display is None else {"file": _NotebookSink(display), "ncols": 80}  # a ten-character bar is tqdm's default without a terminal
         self._bar = _OurBar(total=self.total, desc=self.desc, unit=self.unit, disable=not self.show, leave=True, mininterval=self.mininterval, **where)
         return self
 
     def __exit__(self, *exc: object) -> None:
+        ProgressBar._depth -= 1
         if self._bar is not None:
             self._bar.close()
 

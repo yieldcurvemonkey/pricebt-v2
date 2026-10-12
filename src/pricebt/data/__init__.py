@@ -1,7 +1,10 @@
-"""DataFrequency, Dataset (stub), measure_series (a pricebt extension) (DESIGN.md section 10)."""
+"""DataFrequency, DataContext (the gs date-window context), Dataset (stub), measure_series (a
+pricebt extension) (DESIGN.md section 10; docs/v2/MARKET_CONTEXT_DESIGN.md section 6)."""
 from __future__ import annotations
 
+import datetime as _dt
 import logging
+import re
 from datetime import date as _date
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -14,7 +17,7 @@ from ..errors import ConfigError, NotSupportedError, PricebtError
 from ..risk import RiskMeasure
 from ..risk.results import LazyFuture
 
-__all__ = ["DataFrequency", "Dataset", "measure_series"]
+__all__ = ["DataContext", "DataFrequency", "Dataset", "measure_series"]
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,109 @@ class DataFrequency(EnumBase, str, Enum):
     DAILY = "daily"
     REAL_TIME = "realTime"
     ANY = "any"
+
+
+_DATA_STACK: List["DataContext"] = []
+_DATA_DEFAULT: Optional["DataContext"] = None  # `DataContext.current = ...`, used while _DATA_STACK is empty
+
+
+class _DataContextMeta(type):
+    """gs `ContextMeta` for `DataContext` (a `ContextBaseWithDefault`): `current` is the innermost
+    entered context, else the default set by assigning `DataContext.current = ...`, else a fresh
+    `DataContext()`. The same shape as `pricebt.markets.PricingContext.current`."""
+
+    @property
+    def current(cls) -> "DataContext":
+        return _DATA_STACK[-1] if _DATA_STACK else _DATA_DEFAULT or DataContext()
+
+    @current.setter
+    def current(cls, current: "DataContext") -> None:
+        global _DATA_DEFAULT
+        if _DATA_STACK:
+            raise ValueError(f"Cannot set current while in a nested context {cls.__name__}")
+        _DATA_DEFAULT = current
+
+
+class DataContext(metaclass=_DataContextMeta):
+    """gs `gs_quant.data.DataContext`, ported: the date (or time) window data requests default to.
+
+    >>> with DataContext(date(2024, 1, 2), date(2024, 3, 29)):
+    ...     dv01 = measure_series(IRSwap("Pay", "10y", "USD"), IRDelta(aggregation_level="Type"))
+
+    `start`/`end` are a `date`, a `datetime` or an ISO string (`'2024-01-02'`, or
+    `'2024-01-02T00:00:00Z'` for the time properties); unset, the window is the last 30 days
+    (`start_date`/`end_date`) or the last day (`start_time`/`end_time`, UTC). Nothing is inherited
+    from an enclosing `DataContext`, as in gs. In pricebt it is read by `measure_series`."""
+
+    def __init__(self, start=None, end=None, interval=None):
+        self.__start = start
+        self.__end = end
+        if interval is not None:
+            if not isinstance(interval, str):
+                raise TypeError("interval must be a str")  # gs: MqTypeError (a TypeError)
+            if not re.fullmatch("[1-9]\\d{0,2}[a-z]", interval):
+                raise ValueError("interval must be a valid str e.g. 1m, 2h, 3d")  # gs: MqValueError (a ValueError)
+        self.__interval = interval
+        self._is_entered = False
+
+    @staticmethod
+    def _get_date(o, default):
+        if o is None:
+            return default
+        if isinstance(o, _dt.datetime):  # a datetime is also a date
+            return o.date()
+        if isinstance(o, _dt.date):
+            return o
+        if isinstance(o, str):
+            loc = o.find("T")
+            return _dt.datetime.strptime(o[:loc] if loc != -1 else o, "%Y-%m-%d").date()
+        raise ValueError(f"{o} is not a valid date")
+
+    @staticmethod
+    def _get_datetime(o, default):
+        if o is None:
+            return default
+        if isinstance(o, _dt.datetime):
+            return o
+        if isinstance(o, _dt.date):
+            return _dt.datetime.combine(o, _dt.time(tzinfo=_dt.timezone.utc))
+        if isinstance(o, str):
+            return _dt.datetime.strptime(o, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc)
+        raise ValueError(f"{o} is not a valid date")
+
+    @property
+    def start_date(self) -> _date:
+        return self._get_date(self.__start, _date.today() - _dt.timedelta(days=30))
+
+    @property
+    def end_date(self) -> _date:
+        return self._get_date(self.__end, _date.today())
+
+    @property
+    def start_time(self) -> _dt.datetime:
+        return self._get_datetime(self.__start, _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1))
+
+    @property
+    def end_time(self) -> _dt.datetime:
+        return self._get_datetime(self.__end, _dt.datetime.now(_dt.timezone.utc))
+
+    @property
+    def interval(self) -> Optional[str]:
+        return self.__interval
+
+    @property
+    def is_entered(self) -> bool:
+        return self._is_entered
+
+    def __enter__(self) -> "DataContext":
+        _DATA_STACK.append(self)
+        self._is_entered = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        _DATA_STACK.pop()
+        self._is_entered = False
+        return False
 
 
 class Dataset:
@@ -39,8 +145,8 @@ class Dataset:
 def measure_series(
     instrument: Any,
     measure: Union[str, RiskMeasure],
-    start: _date,
-    end: _date,
+    start: Optional[_date] = None,
+    end: Optional[_date] = None,
     frequency: str = "1b",
     holiday_calendar: Optional[Any] = None,
     csa: Optional[str] = None,
@@ -49,7 +155,9 @@ def measure_series(
     """DESIGN.md section 10: replaces gs's `Dataset` for a per-instrument measure history (used by
     the 040304 notebook's par-rate series). `instrument` must be UNRESOLVED: a fresh, quantity-1
     clone of it is resolved independently on each schedule date, so a date's market never leaks
-    into another date's value.
+    into another date's value. `start`/`end` default to the current `DataContext`'s
+    `start_date`/`end_date` (gs `DataCoordinate.get_range`), so a block of series shares one window:
+    `with DataContext(start, end): ...`.
 
     `measure` is either the name of a `functions:`/`portfolio_functions:` entry in the matched
     asset config, or a `RiskMeasure` resolved through the section 8.1 measure -> function mapping
@@ -65,6 +173,10 @@ def measure_series(
     """
     if fill != "ffill" and fill is not None:
         raise ValueError(f"measure_series: fill must be 'ffill' or None, got {fill!r}")
+    if start is None:
+        start = DataContext.current.start_date
+    if end is None:
+        end = DataContext.current.end_date
     if instrument.resolved_terms is not None:
         raise ValueError("measure_series: instrument must be UNRESOLVED (pass a freshly constructed instrument, not an already-resolved one), so each schedule date resolves it independently")
 

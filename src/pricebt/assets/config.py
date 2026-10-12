@@ -37,7 +37,7 @@ _TOP_KEYS = {
     "imports", "code", "market", "resolve", "trade", "functions", "portfolio_functions",
     "attributes", "size_attribute", "risk_measures", "unsupported_measures",
 }
-_MARKET_KEYS = {"expr", "key"}
+_MARKET_KEYS = {"expr", "key", "provider"}
 _RESOLVE_KEYS = {"expr"}
 _TRADE_KEYS = {"expr", "build_on"}
 _COMMON_FUNCTION_KEYS = {"expr", "unit", "currency", "scale_with_quantity"}
@@ -89,7 +89,10 @@ class AssetConfig:
     match: Dict[str, Any]
     currency: str
     defaults: Dict[str, Any]
-    market_expr: str
+    # an inline market (`market.expr`, shared by `market.key`) or a registered market provider
+    # (`market.provider`, docs/v2/MARKET_CONTEXT_DESIGN.md section 3): exactly one of market_expr
+    # and market_provider is set; market_key is then the sharing key or the provider's name
+    market_expr: Optional[str]
     market_key: str
     resolve_expr: Optional[str]
     trade_expr: Optional[str]
@@ -110,6 +113,7 @@ class AssetConfig:
     imports_code: Any = field(repr=False)
     code_code: Any = field(repr=False)
     _compiled: Dict[str, Tuple[Any, str]] = field(repr=False)
+    market_provider: Optional[str] = None
 
     def code(self, key: str) -> Any:
         """The compiled (`"eval"` mode) code object for `key` -- a function/portfolio-function/
@@ -368,10 +372,22 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
 
     market = _require_mapping(raw.get("market"), name, "market")
     _check_unknown_keys(market, _MARKET_KEYS, name, "market")
-    market_expr = _require_str(market.get("expr"), name, "market.expr")
-    market_key = market.get("key", name)
-    if not isinstance(market_key, str) or not market_key:
-        _fail(name, "market.key", f"must be a non-empty string, got {market_key!r}")
+    market_provider = market.get("provider")
+    if market_provider is not None:
+        # a registered market provider replaces the inline expression and its sharing key
+        _require_str(market_provider, name, "market.provider")
+        inline = sorted(k for k in ("expr", "key") if k in market)
+        if inline:
+            _fail(name, f"market.{inline[0]}", "market.provider names a registered market provider; it cannot be combined with an inline market.expr / market.key")
+        market_expr: Optional[str] = None
+        market_key = market_provider
+    else:
+        if "expr" not in market:
+            _fail(name, "market.expr", "give market.expr (an inline market expression) or market.provider (the name of a registered market provider)")
+        market_expr = _require_str(market.get("expr"), name, "market.expr")
+        market_key = market.get("key", name)
+        if not isinstance(market_key, str) or not market_key:
+            _fail(name, "market.key", f"must be a non-empty string, got {market_key!r}")
 
     resolve_raw = raw.get("resolve")
     resolve_expr: Optional[str] = None
@@ -431,9 +447,9 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
     # each contract measure to be mapped or declared, here at load time
     provided_forms = _check_contract(name, instrument, risk_measures, functions, portfolio_functions, unsupported_measures)
 
-    compiled: Dict[str, Tuple[Any, str]] = {
-        "market": (_compile_expr(market_expr, name, "market", "eval"), market_expr),
-    }
+    compiled: Dict[str, Tuple[Any, str]] = {}
+    if market_expr is not None:
+        compiled["market"] = (_compile_expr(market_expr, name, "market", "eval"), market_expr)
     if resolve_expr is not None:
         compiled["resolve"] = (_compile_expr(resolve_expr, name, "resolve", "eval"), resolve_expr)
     if trade_expr is not None:
@@ -455,6 +471,7 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
         defaults=dict(defaults),
         market_expr=market_expr,
         market_key=market_key,
+        market_provider=market_provider,
         resolve_expr=resolve_expr,
         trade_expr=trade_expr,
         build_on=build_on,

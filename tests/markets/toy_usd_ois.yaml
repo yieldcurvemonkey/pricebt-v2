@@ -1,0 +1,10 @@
+schema_version: 1
+market: toy_usd_ois
+description: >
+  Toy USD curve as a standalone market provider: the deterministic closed-form rates world in
+  tests/toylib/rates.py. Test-only fixture, never shipped. The same market tests/assets/toy_usd_irs.yaml
+  builds inline; an asset names it with `market: {provider: toy_usd_ois}`
+  (docs/v2/MARKET_CONTEXT_DESIGN.md section 3).
+imports: |
+  import toylib.rates as tr
+expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
