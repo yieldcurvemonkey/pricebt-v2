@@ -229,6 +229,7 @@ pricebt-v2/
     gs_api_snapshot.py            run with the BASE anaconda python (gs_quant 1.5.4)
     gen_gs_fields.py              run with the stir python; writes src/pricebt/instrument/_gs_fields.py
     nb_build.py, mutcheck.py      salvaged v1 tools
+    parity_check.py               every function of an asset config, old set-up vs new, on several dates (a refactor check)
 ```
 
 **Import DAG (MUST).** Top-level imports only go downward in this order:

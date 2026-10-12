@@ -65,6 +65,23 @@ A swap asset on `usd_sofr_ois` and a swaption asset on `usd_swaption_vol` then p
 curve object per date. If the curve has no market on a date, neither has the vol surface, and its
 expression is not evaluated.
 
+## Several curves for one asset
+
+An asset config names one provider. To let each instrument choose its curve
+(`IRSwap(..., curve="sofr:cme")`), write one provider per curve and one per currency that returns
+them by token; the asset's `resolve` picks `market[kwargs["curve"]]`:
+
+```yaml
+schema_version: 1
+market: usd_rates
+requires: [usd_sofr_cme, usd_sofr_lch]
+expr: '{"sofr:cme": markets["usd_sofr_cme"], "sofr:lch": markets["usd_sofr_lch"]}'
+```
+
+The whole pattern, with sizing by `dv01=`, is in
+[`../../docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md`](../../docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md)
+and, on the toy library, in `tests/test_market_provider.py`.
+
 ## What is evaluated when
 
 One evaluation per (provider, date, csa, location), whichever assets ask, in the provider's own

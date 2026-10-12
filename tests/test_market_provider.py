@@ -372,3 +372,104 @@ def test_a_backtest_drops_the_dates_a_provider_has_no_market_for():
     with pytest.warns(UserWarning):
         summary = _backtest().result_summary
     assert hole not in summary.index and date(2024, 2, 20) in summary.index
+
+
+# ------------------------------------------------------------------------------------ one asset, several curves
+
+
+_CURVE_AGNOSTIC_CODE = '''
+def curve_of(market, terms):
+    key = terms["curve"]
+    if key not in market:
+        raise ValueError(f"no curve {key!r} in this market; available: {sorted(market)}")
+    return market[key]
+
+def resolve(market, kw):
+    kw = dict(kw)
+    key = str(kw["curve"]).strip().lower()
+    m = curve_of(market, {"curve": key})
+    target = kw.pop("dv01", None)
+    if target is not None:
+        kw["notional_amount"] = 1.0
+    terms = tr.resolve_swap(m, kw)
+    terms["curve"] = key
+    if target is not None:
+        unit = tr.pv01(m, tr.build_swap(m, terms))  # the IRDelta scalar of a notional of 1
+        terms["notional"] *= abs(float(target) / unit)
+    return terms
+'''
+
+
+def _curve_agnostic_session():
+    """docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md at toy scale: one provider per curve, one per
+    currency returning {token: curve}, and an asset config with no curve in it: the instrument's
+    `curve` keyword picks the curve and `dv01` sizes the trade, both in `resolve`."""
+    curves = [
+        _provider("usd_sofr_cme", 'tr.market(pricebt_date, "USD", pricebt_csa)', imports="import toylib.rates as tr"),
+        _provider("usd_sofr_lch", 'tr.market_sloped(pricebt_date, "USD", pricebt_csa, 0.0005)', imports="import toylib.rates as tr"),
+        _provider("usd_rates", '{"sofr:cme": markets["usd_sofr_cme"], "sofr:lch": markets["usd_sofr_lch"]}', requires=["usd_sofr_cme", "usd_sofr_lch"]),
+    ]
+    here = 'curve_of(market, resolved)'
+    asset = {
+        "schema_version": 1,
+        "asset": "usd_swap",
+        "instrument": "ConfigInstrument",
+        "currency": "USD",
+        "defaults": {"pay_or_receive": "Pay", "termination_date": "10y", "fixed_rate": "ATM", "notional_amount": 1.0e6, "curve": "sofr:cme"},
+        "imports": "import toylib.rates as tr",
+        "code": _CURVE_AGNOSTIC_CODE,
+        "market": {"provider": "usd_rates"},
+        "resolve": {"expr": "resolve(market, kwargs)"},
+        "trade": {"expr": f"tr.build_swap({here}, resolved)"},
+        "functions": {
+            "npv": {"expr": f"tr.npv({here}, trade)", "unit": "ccy"},
+            "dv01": {"expr": f"tr.pv01({here}, trade)", "unit": "ccy_per_bp"},
+            "par_rate": {"expr": f"tr.par_rate({here}, trade)", "unit": "bp"},
+        },
+        "risk_measures": {"Price": "npv", "IRDelta": {"scalar": "dv01"}, "IRFwdRate": "par_rate"},
+    }
+    return PricebtSession.use(markets=curves, assets=[asset])
+
+
+def _generic(**kwargs):
+    from pricebt.instrument import ConfigInstrument
+
+    return ConfigInstrument(pricebt_asset="usd_swap", **kwargs)
+
+
+def test_extra_keywords_reach_resolve_unchanged():
+    swap = IRSwap("Pay", "10y", "USD", curve="sofr:cme", dv01=25_000)
+    assert swap.kwargs["curve"] == "sofr:cme" and swap.kwargs["dv01"] == 25_000
+    with pytest.raises(ValueError, match="not a valid SwapClearingHouse"):
+        IRSwap("Pay", "10y", "USD", clearing_house="ICE")  # the gs field is an enum: use a pass-through keyword
+
+
+def test_the_curve_is_chosen_per_instrument_from_one_asset_config():
+    session = _curve_agnostic_session()
+    rate = IRFwdRate
+    with PricingContext(D):
+        default, cme, lch = (_generic(**kw).calc(rate) for kw in ({}, {"curve": "SOFR:CME"}, {"curve": "sofr:lch"}))
+        terms = _generic(curve="SOFR:LCH").resolve(in_place=False)
+    assert float(default.result()) == float(cme.result()) != float(lch.result())
+    assert terms.result().resolved_terms["curve"] == "sofr:lch"  # pinned, normalised
+    assert tr.EVAL_COUNTS["market"] == 2  # the two curve providers, each loaded once for the four instruments
+    with PricingContext(D), pytest.raises(AssetEvaluationError) as exc_info:
+        _generic(curve="sofr:eurex").price()
+    assert "no curve 'sofr:eurex' in this market; available: ['sofr:cme', 'sofr:lch']" in str(exc_info.value.__cause__)
+    assert session.registry["usd_swap"].market_provider == "usd_rates"
+
+
+@pytest.mark.parametrize("curve", ["sofr:cme", "sofr:lch"])
+def test_a_trade_sized_by_dv01_has_that_delta_on_its_trade_date_and_keeps_its_notional(curve):
+    _curve_agnostic_session()
+    delta = IRDelta(aggregation_level="Type")
+    payer, receiver = _generic(curve=curve, dv01=25_000), _generic(curve=curve, dv01=25_000, pay_or_receive="Receive")
+    with PricingContext(D):
+        sized = [float(i.calc(delta).result()) for i in (payer, receiver)]
+        resolved = payer.resolve(in_place=False).result()
+    assert sized == pytest.approx([25_000.0, -25_000.0], rel=1e-12)
+    notional = resolved.resolved_terms["notional"]
+    with PricingContext(date(2024, 6, 3)):
+        later = float(resolved.calc(delta).result())
+        assert resolved.resolve(in_place=False).result().resolved_terms["notional"] == notional  # pinned, not re-solved
+    assert later != pytest.approx(25_000.0, rel=1e-6)  # the delta drifts; the size does not

@@ -271,3 +271,39 @@ backtest on the inline config (`tests/test_market_provider.py`).
 | D7 | Location default `'LDN'`, as gs | parity; a config with one close ignores it, and `PricingContext.current = PricingContext(market_data_location=...)` sets it once |
 | D8 | `DataContext` lives in `pricebt.data` with its own small stack | gs's import path; `markets` must not import upwards (import DAG), and the PricingContext stack is not shared |
 | D9 | The server-side context parameters are stored, not validated | they are read back by ported code; giving them meaning would be inventing behaviour |
+
+## 10. Using it: patterns and limits
+
+Questions that came up once the registry existed. Each answer is how the code behaves today.
+
+- **One asset config, several curves.** An asset config has one fixed `currency:` and one fixed
+  `market.provider`, so a config cannot span currencies: there is one asset file per currency
+  (same body, a short header). Inside a currency the curve is chosen per instrument: one provider
+  per curve, one per currency that `requires:` them and returns `{token: curve}`, and the asset's
+  `resolve` picks `market[kwargs["curve"]]` and pins the token in the resolved terms. Keywords
+  pricebt does not know (`curve='sofr:cme'`) pass through to `resolve`; the gs `clearing_house`
+  field is an enum and rejects other values. Tests:
+  `tests/test_market_provider.py::test_the_curve_is_chosen_per_instrument_from_one_asset_config`.
+  Because `requires:` is all-or-nothing, a date is dropped for the currency when any of its
+  curves has no market. A config that is generic across currencies needs the currency and the
+  provider chosen per instrument, which is a change to the pricing layer, not to a config.
+- **Sizing by DV01.** `dv01=25_000` is a pass-through keyword: `resolve` builds the unit trade,
+  reads the function mapped to the `IRDelta` scalar and scales the notional once, on the trade
+  date (`::test_a_trade_sized_by_dv01_has_that_delta_on_its_trade_date_and_keeps_its_notional`).
+  At strategy level, `AddScaledTradeAction(scaling_type=ScalingActionType.risk_measure, ...)` and
+  `HedgeAction` size by a risk measure with no config change.
+- **Two libraries.** A provider and an asset have separate `imports`/`code`, and pricebt never
+  looks inside the market object, so one library can supply the market and another price on it.
+  What has to be compatible is the asset's code and the object the provider returns. The usual
+  shape is a derived provider: one provider loads quotes with the data library, a second
+  `requires:` it and builds the pricing library's curve, once per date for every asset. Hand over
+  quotes rather than a finished curve where possible (a curve rebuilt from another library's
+  discount factors loses its interpolation), and bump a copy, never the shared object.
+- **`Dataset` and `DataCoordinate`** name tables and series of the GS data platform, so their
+  content is library-specific; only the query shape is generic. pricebt keeps `Dataset` a stub.
+  A series derived from pricing comes from `measure_series` or a `HistoricalPricingContext`; a
+  raw series from your own library is a `pandas.Series` (what `GenericDataSource` takes).
+- **Refactoring an existing config** into providers:
+  [`MARKET_PROVIDER_REFACTOR_PROMPT.md`](MARKET_PROVIDER_REFACTOR_PROMPT.md) is a hand-off prompt
+  for an agent working where the library is installed, and `tools/parity_check.py` proves the
+  refactored config prices exactly like the old one.
