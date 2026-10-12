@@ -6,7 +6,9 @@ but it contains **no pricing and no market data of its own**. Every number (a ma
 resolved trade, a PV, a risk, an FX rate) comes from one self-contained YAML **asset config** per
 tradable asset, whose Python expression strings name the library the user chooses; an external
 library such as ARBS is named only inside those config files, never in pricebt's own source
-(`src/pricebt`).
+(`src/pricebt`). A market that several assets share lives in a standalone **market provider**
+config the assets name, and gs's `PricingContext`, `HistoricalPricingContext` and `DataContext`
+decide the date, the market data location and the window everything is priced on.
 
 ## Skills for AI agents
 
@@ -58,6 +60,35 @@ A gs backtest notebook ports to pricebt with three edits:
 units, evaluation rules, `build_on`, FX configs, a toy walkthrough, and the ARBS safety rules that
 [`configs/assets/usd_sofr_ois_interest_rate_swap.yaml`](configs/assets/usd_sofr_ois_interest_rate_swap.yaml)
 follows. FX configs specifically are covered in [`configs/fx/README.md`](configs/fx/README.md).
+
+## Market providers, pricing contexts and time series
+
+A **market provider** is a YAML file of its own that returns the dated market object of one market
+(`configs/markets/`, [`configs/markets/README.md`](configs/markets/README.md)). An asset config
+names it with `market: {provider: usd_sofr_ois}` instead of carrying a market expression, several
+assets share one object per date, and a provider can build on another (`requires:`: a vol surface
+on a curve). Design: [`docs/v2/MARKET_CONTEXT_DESIGN.md`](docs/v2/MARKET_CONTEXT_DESIGN.md).
+
+```python
+from pricebt.data import DataContext, measure_series
+from pricebt.markets import HistoricalPricingContext, PricingContext
+from pricebt.risk import IRDelta, IRDeltaParallel, IRVega
+from pricebt.session import PricebtSession
+
+PricebtSession.use(markets=["configs/markets"], assets=["configs/assets"])
+
+with PricingContext(pricing_date=d, market_data_location="NYC"):      # gs: which market data
+    price = swap.price()
+with HistoricalPricingContext(start, end, show_progress=True):        # gs: every business day of a range
+    greeks = swaption.calc((IRDeltaParallel, IRVega(aggregation_level="Type")))
+with DataContext(start, end):                                         # gs: the window of a block of series
+    dv01 = measure_series(swap, IRDelta(aggregation_level="Type"))
+```
+
+The contexts have gs's signatures, properties and inheritance. `market_data_location` reaches
+every config as `pricebt_location`, with the values of two locations kept apart. The hand-built
+backtest of gs's "Delta Hedging" notebook (resolve under a `HistoricalPricingContext`, price each
+trade historically) runs with only its imports changed.
 
 ## Interest-rate pricing and risk
 

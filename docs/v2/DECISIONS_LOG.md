@@ -1481,3 +1481,39 @@ Decisions the phase agents took and the orchestrator verified; each has a test a
 - **The holding-cash jump rule nets out the step's market move** (IRDelta and IRGammaParallel times the yield move,
   plus Theta), so a large yield move next to a coupon drop does not FAIL a correct config.
 
+## 2026-10-12 — v2-market-context: market providers, market data location, DataContext
+
+The task: a standalone market-provider registry an asset config can reference, a `DataContext` like gs's, and the
+gs context API ported far enough to follow the manual `HistoricalPricingContext` backtests and to build greek and
+dv01 time series; full design authority, no stop for feedback. Design: `MARKET_CONTEXT_DESIGN.md` (its §9 lists the
+decisions; the ones that were close calls are below).
+
+- **"DataContext" was read as gs's class** (`gs_quant.data.DataContext`: a date window), ported 1:1 into
+  `pricebt.data`, and the market-provider registry as a separate thing on the session (`session.markets`). A context
+  object that *holds* the providers was rejected: in gs the session is where data comes from and the contexts only
+  say which date, location and window, and pricebt already follows that split (`PricebtSession` / `PricingContext`).
+- **The inline `market.expr` stays valid.** Removing it would have rewritten every config, template and fixture of
+  the skills library for no change in numbers. An asset gives `provider` or `expr`, never both.
+- **`requires:` was added although nothing shipped needed it.** It is what makes a registry more than a rename: the
+  guide used to tell a swaption config to load the swap's curve a second time under its own key. The toy providers
+  in `tests/markets/` show one curve object per date for the swap and the swaption.
+- **`market_data_location` is honoured (DEV-M3), by one `PricingService` per location.** The alternative, a location
+  in every cache key, resolution key and on every resolved instrument, touched every signature of the pricing layer
+  and the engine's direct `has_market` calls. `PricebtSession.pricing` became a property; every existing reader of
+  it (the engine, `measure_series`, the skills scripts) prices on the location of the context around it with no
+  change. A `build_on: resolve_date` trade is therefore built on the current location's market of its resolution
+  date, not on the location it was resolved under: a resolved instrument carries terms, not a location (gs).
+- **The default location is `'LDN'`, as gs**, even though the session's default timezone is New York: the two are
+  independent knobs, a config with one close ignores the location, and parity wins over a second default.
+- **All gs `PricingContext` properties and methods were added**, including the ones with no effect, so the parity
+  file needs no exception for the class. `market` without an override is still None (DEV-M1), not a default
+  `CloseMarket`.
+- **`show_progress` draws one bar per outermost context** (gs's `active_context`), advanced inside the block. The
+  first version drew one bar per inner `HistoricalPricingContext`, which printed two bars per instrument in the
+  Delta Hedging loop.
+- **Not done: a real `Dataset`, live/timestamped/overlay markets, splitting the ARBS config.** The first two have
+  no present use (MARKET_CONTEXT_DESIGN §8). The ARBS config is verified only by the opt-in live tier, which was not
+  run here (it needs the maintainer's go-ahead), so it keeps its inline market rather than ship an unverified split.
+- **The gs developer page (`developer.gs.com/.../pricing-context/`) returned 403.** The port was made from the
+  gs-quant 2.1.17 source (`markets/core.py`, `markets/historical.py`, `markets/markets.py`, `data/core.py`,
+  `context_base.py`), its own `skills/gs-quant-overview/pricing.md`, and the Delta Hedging notebook.
