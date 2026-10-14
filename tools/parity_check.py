@@ -1,9 +1,11 @@
 """Parity check between two pricebt set-ups of the same instrument (e.g. an asset config before and
 after its market moved into a market provider): every function of the asset config, on several
-dates, must give the same value. Used by docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md.
+dates, must give the same value. Used by docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md and SWAPTION_PROVIDER_REFACTOR_PROMPT.md.
 
 Copy this file next to your own configs, edit the three blocks marked EDIT, and run it from the
 repository root (PYTHONPATH=src;tests). Unedited it compares the toy swap config with itself.
+A bucketed function is compared as the labelled rows a user sees, so a ladder returned as
+{point: value} under static `labels:` equals the same ladder returned as rows carrying the label.
 Exit code 0 = identical. An error counts as a value: both set-ups must fail the same way, and the
 script names what the OLD one fails on. tests/test_parity_check_tool.py runs it on known answers.
 """
@@ -17,6 +19,8 @@ import pandas as pd
 
 from pricebt import risk as risk_module
 from pricebt.instrument import IRSwap
+from pricebt.markets import PricingContext
+from pricebt.risk.results import make_bucketed_frame
 from pricebt.session import PricebtSession
 
 # EDIT 1: the two set-ups (keyword arguments of PricebtSession)
@@ -34,6 +38,7 @@ CASES = [
 
 REL_TOL = 1e-12
 IGNORED_RESOLVED_KEYS: set = set()  # resolved terms the NEW set-up adds on purpose (e.g. {"curve"})
+LOCATION = None  # the market_data_location to price under (e.g. "NYC"); None = the default, LDN
 
 
 def _plain(v):
@@ -54,6 +59,11 @@ def _call(fn):
         return _plain(fn())
     except Exception as exc:  # an error is a value too: both set-ups must fail the same way
         return f"ERROR {type(exc).__name__}"
+
+
+def _labelled(spec, raw):
+    """A bucketed function's value as its labelled rows (what a measure returns)."""
+    return make_bucketed_frame(raw, labels=spec.labels) if spec.returns == "buckets" else raw
 
 
 def _names_target(asset, name) -> bool:
@@ -78,11 +88,11 @@ def snapshot(session_kwargs, make, d, d_to):
             for name, spec in asset.functions.items():
                 if spec.returns != "frame":
                     out[f"functions.{name}{tag}"] = _call(lambda: service.unit_value(resolved, on, name, None))
-            for name in asset.portfolio_functions:
+            for name, spec in asset.portfolio_functions.items():
                 params = (("to_date", d_to),) if _names_target(asset, name) else ()
                 if params and on == d_to:
                     continue  # a relative function explains from d to d_to only
-                out[f"portfolio_functions.{name}{tag}"] = _call(lambda: service.portfolio_value(asset, on, name, [resolved], None, params=params))
+                out[f"portfolio_functions.{name}{tag}"] = _call(lambda: _labelled(spec, service.portfolio_value(asset, on, name, [resolved], None, params=params)))
             for measure, mapping in asset.risk_measures.items():
                 spec = asset.functions.get(mapping.scalar) if mapping.scalar else None
                 if spec is not None and spec.returns == "frame":
@@ -111,7 +121,8 @@ def main() -> int:
     diffs, compared = [], 0
     for label, make_old, make_new in CASES:
         for d, d_to in zip(DATES, DATES[1:]):
-            old, new = snapshot(OLD, make_old, d, d_to), snapshot(NEW, make_new, d, d_to)
+            with PricingContext(market_data_location=LOCATION):
+                old, new = snapshot(OLD, make_old, d, d_to), snapshot(NEW, make_new, d, d_to)
             compared += len(old)
             diffs += [f"[{label} {d}] {x}" for x in differences(old, new)]
             errors = sorted(k for k, v in old.items() if isinstance(v, str) and v.startswith("ERROR"))

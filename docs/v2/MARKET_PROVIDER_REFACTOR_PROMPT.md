@@ -37,6 +37,7 @@ Fill in section 0, then give the agent everything below the line.
 - How to run Python here (interpreter, PYTHONPATH, anything the pricing library needs): `<command>`
 - Config to refactor: `configs/assets/<file>.yaml`
 - Its currency, and the curve it prices on today as `index:clearing_house`: `<CCY>`, `<index>:<clearing house>`
+- Market data location of its snapshot (`LDN`, `NYC`, `HKG`, `TKO`): `<location>`
 - Three or more consecutive business dates known to have market data: `<dates>`
 
 The examples below use EUR and `estr:<ch>`. Substitute the values above everywhere.
@@ -148,7 +149,8 @@ The currency provider returns a plain dict `{"estr:<ch>": <record>, ...}`.
 2. Run `python tools/parity_check.py` unedited, from the repository root. Expected:
    `216 values compared, 0 difference(s)`, exit code 0. This proves the script and the environment.
 3. Copy it to `scratch/parity_check.py` and edit the copy's three `EDIT` blocks: `OLD` and `NEW`
-   both load the legacy copy; `DATES` are the user's dates; `CASES` are at least a payer and a
+   both load the legacy copy; `DATES` are the user's dates; `LOCATION` is the location of section 0
+   (the provider of step 2 answers to that location only, and the default is `LDN`); `CASES` are at least a payer and a
    receiver, an at-the-money and an off-market fixed rate, and a forward-starting swap.
 4. **Gate:** it reports 0 differences. Then prove it can fail: in a temporary copy of the config
    used as `NEW`, multiply one function's expression by `1.0001`; the script must report
@@ -231,7 +233,8 @@ Search for each literal you moved; every search must find nothing.
 
 **Gate C (checker):**
 `python skills/pricebt-verify-asset-config/scripts/check_asset.py configs/assets/eur_interest_rate_swap.yaml --markets configs/markets --date <d1> --date <d2>`
-has the same PASS/FAIL rows as the same command on the legacy copy (without `--markets`).
+has the same PASS/FAIL rows as the same command on the legacy copy (without `--markets`). Add
+`--location <location>` to both when the location of section 0 is not `LDN`.
 
 ### Step 5. Curve selection
 
@@ -268,7 +271,10 @@ pinned at the trade date, not re-solved). Rerun Gate B: still 0 differences (no 
 ### Step 7. Finish
 
 1. Search notebooks and scripts for the old file name and the old asset name; update them and add
-   `markets=["configs/markets"]` to their `PricebtSession.use(...)` calls. List what you changed.
+   `markets=["configs/markets"]` to their `PricebtSession.use(...)` calls. When the location of
+   section 0 is not `LDN`, also add
+   `PricingContext.current = PricingContext(market_data_location="<location>")` once after their
+   imports. List what you changed.
 2. Do **not** add another curve or currency yourself. Report to the user the exact list of record
    attributes a new curve needs (the attribute names from section 4, with the value each has for
    the existing curve), and ask for those values for the next curve. Adding it is then: one new
@@ -318,6 +324,8 @@ Rules:
    unless the user sets another. A snapshot rule belongs to one location: accept that one and
    raise for anything else. Never return one location's market for another silently. If today's
    rule matches none of `LDN`, `NYC`, `HKG`, `TKO`, ask the user which name it should answer to.
+   Everything that prices on the provider must then run under that location: `LOCATION` in the
+   parity script, `--location` of `check_asset.py`, `PricingContext.current` in a notebook.
 4. **Memoisation.** Keep any existing process-level cache of loaded markets. Its key must contain
    everything the result depends on.
 5. **No instrument logic.** The provider knows nothing about swaps, notionals or measures.
@@ -325,6 +333,7 @@ Rules:
 
    ```python
    from pricebt.session import PricebtSession
+   PricingContext.current = PricingContext(market_data_location="<location>")   # from pricebt.markets
    s = PricebtSession.use(markets=["configs/markets"])
    m = s.pricing._provider_market("eur_estr_<ch>", <business date>, None)   # a record
    assert s.pricing._provider_market("eur_estr_<ch>", <a Saturday>, None) is not m  # the "no market" sentinel

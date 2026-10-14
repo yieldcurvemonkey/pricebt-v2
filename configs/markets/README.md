@@ -80,7 +80,16 @@ expr: '{"sofr:cme": markets["usd_sofr_cme"], "sofr:lch": markets["usd_sofr_lch"]
 
 The whole pattern, with sizing by `dv01=`, is in
 [`../../docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md`](../../docs/v2/MARKET_PROVIDER_REFACTOR_PROMPT.md)
-and, on the toy library, in `tests/test_market_provider.py`.
+and, on the toy library, in `tests/test_market_provider.py`. For a swaption (a market object
+that carries its curve's identifiers, strike aliases such as `'25d payer'`, sizing by `vega=` or
+`gamma=`, ladders labelled per curve) it is in
+[`../../docs/v2/SWAPTION_PROVIDER_REFACTOR_PROMPT.md`](../../docs/v2/SWAPTION_PROVIDER_REFACTOR_PROMPT.md)
+and `tests/test_curve_agnostic_swaption.py`.
+
+A provider that answers to one `pricebt_location` only (a New York close raises for `LDN`, the
+default) needs that location wherever it is priced:
+`PricingContext.current = PricingContext(market_data_location="NYC")` in a notebook, `LOCATION` in
+`tools/parity_check.py`, `--location` of `check_asset.py`.
 
 ## What is evaluated when
 

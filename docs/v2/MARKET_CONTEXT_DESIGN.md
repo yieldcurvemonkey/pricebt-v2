@@ -307,3 +307,18 @@ Questions that came up once the registry existed. Each answer is how the code be
   [`MARKET_PROVIDER_REFACTOR_PROMPT.md`](MARKET_PROVIDER_REFACTOR_PROMPT.md) is a hand-off prompt
   for an agent working where the library is installed, and `tools/parity_check.py` proves the
   refactored config prices exactly like the old one.
+- **Swaptions: strike aliases and sizing by risk.** A `strike` string and the keywords `vega=`,
+  `gamma=`, `dv01=` pass through to `resolve` like `curve=`. The new `resolve` wraps the old one
+  and does not edit it: a delta strike (`'25d'`, a gs spelling; `'25d payer'` names the leg) is
+  resolved at the money first, then solved by bisection on the config's own `IRDelta` and
+  `Annuity` functions (delta as a fraction of the annuity), and the size is solved last on the
+  final strike. A market object that is a class of the config's own carries its curve's
+  identifiers (`pricebt_ids`) and a `derive(env)` method, because a class defined in a provider
+  does not exist in the asset's namespace. A ladder returns rows carrying the curve's own
+  `mkt_asset`, so trades on two curves are never summed; `tools/parity_check.py` compares a
+  ladder as labelled rows, so this is still a parity-checked change. Hand-off prompt:
+  [`SWAPTION_PROVIDER_REFACTOR_PROMPT.md`](SWAPTION_PROVIDER_REFACTOR_PROMPT.md); tests:
+  `tests/test_curve_agnostic_swaption.py`.
+- **A provider strict about its location** raises under the default `LDN`. The location is then
+  given once: `PricingContext.current = PricingContext(market_data_location="NYC")`, the
+  `LOCATION` knob of `tools/parity_check.py`, `--location` of `check_asset.py`.
