@@ -684,6 +684,8 @@ def swap_pack(ctx: _Ctx) -> List[CheckResult]:
             gamma_est = (2.0 if annuity_dv01 else 1.0) * (dv01(payer, dj) - dv01(payer, di)) / dpar_probe
             ratio = g_payer / gamma_est if gamma_est else float("nan")
             where = f"{di}->{dj} (gap {gap}bd) dpar={dpar_probe:.2f}bp, Gamma/Gamma_est={ratio:.3f}"
+            if not annuity_dv01:
+                where += " (IRDelta is a total own-rate derivative: Gamma_est = ddv01/dpar)"
             if 0.7 <= ratio <= 1.4:
                 probe_status, probe_detail = PASS, where
             elif 0.4 <= ratio <= 0.6:

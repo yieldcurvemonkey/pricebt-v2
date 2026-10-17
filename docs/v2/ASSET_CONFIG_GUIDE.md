@@ -616,7 +616,8 @@ The conventions behind them, each because the obvious alternative is wrong:
 - **None of the four may return `NaN` for a held trade.** `pnl_explain()` accumulates with no NaN
   guard, so one `NaN` poisons every later cumulative value. A trade that has matured between two marks
   must report `dv01 = gamma = theta = 0.0`; a level such as `par_rate` stays finite and continuous
-  with its last live value (R2-7; see Dead instruments): fix a `NaN` at the source.
+  with its last live value (R2-7; see Dead instruments): fix a `NaN` at the source. A NaN level fails
+  `check_asset_ir`'s `ir_dead_levels` row.
 
 ## Security note
 
