@@ -496,6 +496,9 @@ def scenario_specs(path: Optional[tuple] = None) -> List[Tuple[Optional[Scenario
     members = items[i].scenarios or ()
     if not members:
         raise ValueError("MultiScenario has no scenarios")
+    if len(set(members)) != len(members):
+        # pricebt DEV-S3: the results are keyed by member, so a repeat would be priced twice and kept once (gs)
+        raise ValueError("MultiScenario has duplicate members; name or vary them")
     out = []
     for member in members:
         inner: list = []

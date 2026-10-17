@@ -172,6 +172,8 @@ def test_scenario_specs_flatten_outermost_first_and_expand_the_multiscenario_in_
         scenario_specs((MultiScenario([MultiScenario([up])]),))
     with pytest.raises(ValueError, match="no scenarios"):
         scenario_specs((MultiScenario([]),))
+    with pytest.raises(ValueError, match="duplicate members"):
+        scenario_specs((MultiScenario([shock(10), shock(10)]),))  # pricebt DEV-S3 (gs keeps one, silently)
 
 
 def test_the_transform_sees_plain_data():

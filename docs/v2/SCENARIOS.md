@@ -148,6 +148,8 @@ priced under different scenarios (`ValueError: Cannot aggregate results with dif
   date's market on the pricing date, as the toy configs' `npv` does.
 - Futures taken inside the context keep their scenario: a lazy bucketed result evaluated after the
   `with` block has exited is still the scenario's value.
+- The scenario stack is per process, as `PricingContext`'s is: do not enter scenarios from several
+  threads at once.
 
 **`subtract_base` (DEV-S5).** Under a scenario with `subtract_base=True` (gs `CurveOverlay`), a
 scalar or bucketed result is the scenario value minus the value with no scenario. A table measure
@@ -181,7 +183,8 @@ then scenario:
 | `inst.resolve(in_place=False)` | `MultipleScenarioResult {member: resolved instrument}`; `in_place=True` raises gs's `RuntimeError` |
 
 Members may be any scenario, including composites and a mix of types (DEV-S3; gs takes one type
-per MultiScenario). One MultiScenario may be active at a time. For a two-dimensional grid, build
+per MultiScenario). One MultiScenario may be active at a time, and its members must differ: a
+repeated member raises `ValueError` (gs prices it twice and keeps one result). For a two-dimensional grid, build
 one MultiScenario of composites:
 
 ```python
