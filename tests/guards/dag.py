@@ -30,6 +30,7 @@ SKELETON_PATHS: List[str] = [
     "risk/transform.py",
     "risk/contracts.py",
     "risk/core.py",
+    "risk/scenarios.py",
     "markets/__init__.py",
     "markets/portfolio.py",
     "instrument/__init__.py",
@@ -95,7 +96,7 @@ DAG_TIERS: List[List[str]] = [
     ["datetime", "datetime.relative_date"],
     # contracts: IR_RISK_DESIGN R2-22 (risk/__init__ must not import it); core: R2-22 (risk/__init__
     # re-exports it as gs does; it imports risk.results, which imports it only inside functions)
-    ["risk", "risk.results", "risk.contracts", "risk.core"],
+    ["risk", "risk.results", "risk.contracts", "risk.core", "risk.scenarios"],
     ["risk.transform"],
     ["markets"],
     ["instrument", "instrument._gs_fields"],

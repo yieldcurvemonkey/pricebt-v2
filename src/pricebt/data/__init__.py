@@ -13,6 +13,7 @@ from ..datetime.relative_date import RelativeDateSchedule
 from ..errors import ConfigError, NotSupportedError, PricebtError
 from ..risk import RiskMeasure
 from ..risk.results import LazyFuture
+from ..risk.scenarios import require_no_scenario
 
 __all__ = ["DataFrequency", "Dataset", "measure_series"]
 
@@ -65,6 +66,7 @@ def measure_series(
     """
     if fill != "ffill" and fill is not None:
         raise ValueError(f"measure_series: fill must be 'ffill' or None, got {fill!r}")
+    require_no_scenario("measure_series")  # pricebt DEV-S7
     if instrument.resolved_terms is not None:
         raise ValueError("measure_series: instrument must be UNRESOLVED (pass a freshly constructed instrument, not an already-resolved one), so each schedule date resolves it independently")
 

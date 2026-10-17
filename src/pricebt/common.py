@@ -290,9 +290,45 @@ class Currency(EnumBase, str, Enum):
     ILS = "ILS"
 
 
+class MarketDataShockType(EnumBase, str, Enum):
+    """Market data shock type (how a `MarketDataShock.value` moves the data it matches). pricebt
+    passes the value through to the asset config's scenario transform, which decides."""
+
+    Absolute = "Absolute"
+    Proportional = "Proportional"
+    Invalid = "Invalid"
+    Override = "Override"
+    StdDev = "StdDev"
+    AutoDefault = "AutoDefault"
+    CSWFFR = "CSWFFR"
+    StdVolFactor = "StdVolFactor"
+    StdVolFactorProportional = "StdVolFactorProportional"
+
+
+class FallbackType(EnumBase, str, Enum):
+    """Type of fallback (`LiborFallbackScenario.fallback_type`)."""
+
+    RFR = "RFR"
+    LastFixing = "LastFixing"
+
+
+class ScenarioType(EnumBase, str, Enum):
+    """Type of Scenario."""
+
+    Spot_Vol = "Spot Vol"
+    Greeks = "Greeks"
+
+
 FieldValueMap = dict  # gs's FieldValueMap is a dict subclass; pricebt just uses dict (DESIGN.md 9.2).
 
 _LAZY = ("RiskMeasure", "ParameterisedRiskMeasure")
+# gs_quant.common re-exports the scenario dataclasses of gs_quant.target.common; pricebt defines
+# them in pricebt.risk.scenarios (they hold risk measures), reached lazily (import DAG)
+_LAZY_SCENARIOS = (
+    "MarketDataPattern", "MarketDataShock", "MarketDataPatternAndShock", "MarketDataVolSlice", "MarketDataScenario",
+    "RollFwd", "CarryScenario", "CurveScenario", "IndexCurveShift", "CurveOverlay", "LiborFallbackScenario",
+    "MarketDataShockBasedScenario", "MarketDataVolShockScenario", "MeasureScenario", "CompositeScenario", "MultiScenario",
+)
 
 
 def __getattr__(name: str):
@@ -300,4 +336,8 @@ def __getattr__(name: str):
         from pricebt import risk
 
         return getattr(risk, name)
+    if name in _LAZY_SCENARIOS:
+        from pricebt.risk import scenarios
+
+        return getattr(scenarios, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

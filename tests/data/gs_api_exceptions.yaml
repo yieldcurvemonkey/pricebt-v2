@@ -434,3 +434,72 @@
     the test suite actually runs, so the two reprs are guaranteed to diverge on any day after the
     snapshot date. Parameter name/kind and every other parameter's default still must match exactly
     -- only the concrete date value baked into this one default is excepted.
+
+# ------------------------------------------------------------------------------------- scenarios
+# docs/v2/SCENARIOS.md: the scenario dataclasses (gs_quant.risk, gs_quant.risk.scenarios,
+# gs_quant.common.MeasureScenario). Fields, defaults and constructor signatures are compared in
+# full; only gs's Base serialization surface is absent.
+- symbol: "gs_quant.risk.*Scenario"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.MarketDataPattern"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.MarketDataShock"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.RollFwd"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.CurveOverlay"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.IndexCurveShift"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.risk.scenarios.*"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+
+- symbol: "gs_quant.common.MeasureScenario"
+  aspect: methods
+  missing: [default_instance, from_dict, from_instance, from_json, properties, properties_init, schema, to_json]
+  reason: >
+    JSON/schema serialization surface of gs Base (GS-server wire format): out of scope, as for the
+    instruments (section 2.3 non-goals). The object contract is ported: as_dict, to_dict, clone
+    (pricebt.base.DataContract), and each scenario's is_entered context property.
+

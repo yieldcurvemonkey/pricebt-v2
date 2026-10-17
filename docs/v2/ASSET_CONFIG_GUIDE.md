@@ -47,6 +47,9 @@ risk_measures:                        # required: gs risk-measure NAME -> functi
   Price: npv                          #   Price is REQUIRED (the engine books cash with it)
   IRDelta: {scalar: dv01, bucketed: delta_ladder}
   Cashflows: cashflows
+scenarios:                            # optional: gs scenario type -> market transform (see "Scenarios" below)
+  MarketDataShockBasedScenario: 'my_lib.shock(market, scenario)'
+  RollFwd: 'my_lib.roll(market, scenario, pricebt_from_date, pricebt_date)'
 ```
 
 An unknown key at any level is a `ConfigError` naming the key and, via `difflib`, a did-you-mean
@@ -75,6 +78,7 @@ The only names pricebt puts into an evaluation (DESIGN §4.3):
 | `pricebt_bump_size`, `pricebt_finite_difference_method`, `pricebt_local_curve`, `pricebt_scale_factor` | the value or `None` | functions, portfolio_functions | the requested measure's parameter (e.g. `IRDelta(bump_size=5)`). A function supports a parameter only if its expression names the variable; otherwise requesting it raises `NotSupportedError` (DEV-I10) |
 | `market_to`, `pricebt_to_date` | the market of the target date and that date, or `None` | functions, portfolio_functions | a relative measure's target (`PnlExplain(CloseMarket(date=...))`, DEV-M2); the mapped function must name one of them. Under `PricingContext(market=CloseMarket(date=t))`, `market` is the market of `t` while `pricebt_date` stays the pricing date (DEV-M1) |
 | `base`, `quote` | `str` | FX config `rate` only | ISO codes |
+| `scenario`, `pricebt_from_date` | plain `dict`, `date` | `scenarios:` transforms only | the scenario's fields as plain data, and the valuation date before it (`pricebt_date` is the date after it, a roll's target). A `scope: trade` transform also gets `resolved`. Under a scenario, `market` in resolve, trade and functions is the scenario's market and `pricebt_date` its valuation date ([`SCENARIOS.md`](SCENARIOS.md)) |
 
 Injected names **shadow** config names of the same spelling — do not define a helper named
 `market`, `market_to`, `trade`, `kwargs`, `resolved`, `trades` or `weights`. They are visible in
@@ -466,6 +470,19 @@ to stay that of the pricing date.
   rate, `[PV(+h) − PV(−h)] / [r(+h) − r(−h)]`. A fixed-annuity pv01 matches it only at the money;
   off-market it misses `N·(F − K)·ΔA` (DEV-I12). The shipped toy and ARBS swap configs map the
   annuity pv01 and are at-the-money-exact only.
+
+## Scenarios (`scenarios:`)
+
+gs scenario contexts (`with RollFwd(...)`, `with MarketDataShockBasedScenario(...)`,
+`MultiScenario`, ...) price through this optional section. Each key is a scenario type, and each
+value is a transform that returns the scenario's market (your library does the shocking).
+`scope: trade` runs the transform once per trade, with its `resolved` terms (`MeasureScenario`).
+An active scenario type a config does not map raises `NotSupportedError`; it is never priced
+unshocked. The contract (injected names, the `scenario` dict, units, order, rolls, resolution,
+`MultiScenario` results) is [`SCENARIOS.md`](SCENARIOS.md). The toy configs
+`tests/assets/toy_usd_swaption.yaml` and `tests/assets/toy_usd_irs_full.yaml` map every type
+against `tests/toylib/scenarios.py`. Check your own transforms with
+`skills/pricebt-scenarios/scripts/scenario_grid.py check`.
 
 ## `build_on` and market sharing
 

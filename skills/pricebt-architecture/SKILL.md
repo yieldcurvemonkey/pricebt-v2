@@ -64,7 +64,9 @@ Read these before interpreting any result. They are gs behaviour, kept on purpos
 6. **Portfolio and results parity.** Nested `Portfolio` paths, `PortfolioRiskResult` indexing, `aggregate`, `to_frame` and historical shapes follow gs, plus the `pricebt.risk.core` helpers. `PricingContext(market=CloseMarket(date=t))` swaps in another date's market (DEV-M1), and `PnlExplain` is a relative measure (DEV-M2).
 7. **P&L decomposition.** `PnlDefinition`/`PnlAttribute`, with a cross metric for vanna (DEV-E19) and a unit check (DEV-E21). `ir_pnl_definition`, `swaption_pnl_definition` and `bond_pnl_definition` build IR definitions. `BackTest.pnl_explain()` gives cumulative attribution; `pnl_explain_table()` gives per-step actual, cashflow, financing (`financing_pnl`, the booked change of `FinancingToDate`), attributed and residual; `economic_pnl = actual + cashflow + financing`.
 
-Details: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md) and [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md).
+8. **Scenarios.** gs's scenario contexts (`with RollFwd(...)`, shocks, curve shapes, `MultiScenario`) are plain data. Each config's `scenarios:` section maps a type to a market transform in your library; an unmapped active type raises, never prices unshocked. Rolls move the valuation date, and an unresolved trade resolves under the scenario ([`docs/v2/SCENARIOS.md`](../../docs/v2/SCENARIOS.md)).
+
+Details: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md), [`pricebt-pnl-attribution`](../pricebt-pnl-attribution/SKILL.md) and [`pricebt-scenarios`](../pricebt-scenarios/SKILL.md).
 
 ## Where things live
 
@@ -75,6 +77,7 @@ Details: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md) and [`pric
 | `src/pricebt/instrument/` | gs instrument classes (`IRSwap`, `IRSwaption`, `Bond`, …) with real gs signatures, generated from `_gs_fields.py` |
 | `src/pricebt/risk/` | the measure catalogue (`Price`, `IRDelta`, `IRDeltaParallel`, …), `PnlExplain`, result objects (`results.py`), helpers (`core.py`) |
 | `src/pricebt/risk/contracts.py` | the per-instrument measure contracts checked at load |
+| `src/pricebt/risk/scenarios.py` | the gs scenario classes; `base.Scenario` holds the `with` stack ([`docs/v2/SCENARIOS.md`](../../docs/v2/SCENARIOS.md)) |
 | `src/pricebt/markets/` | `PricingContext`, `HistoricalPricingContext`, `CloseMarket`; `portfolio.py`: `Portfolio`, `Grid` |
 | `src/pricebt/backtests/backtest_objects.py` | `BackTest` views, `PnlDefinition`, `ir_pnl_definition`, `pnl_explain_table` |
 | `configs/assets/` | real asset configs (one per asset) |

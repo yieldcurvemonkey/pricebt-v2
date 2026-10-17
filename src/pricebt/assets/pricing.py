@@ -30,22 +30,28 @@ from pricebt.instrument import _freeze  # noqa: F401 -- reuse the one freeze rul
 from pricebt.markets import HistoricalPricingContext, PricingContext
 from pricebt.markets.portfolio import Portfolio
 from pricebt.risk import MarketParameter, Price, RiskMeasureWithCurrencyParameter, RiskMeasureWithFiniteDifferenceParameter, contracts
+from pricebt.risk.core import subtract_risk
 from pricebt.risk.results import (
     DataFrameWithInfo,
     FloatWithInfo,
     LazyFuture,
     MultipleRiskMeasureResult,
+    MultipleScenarioResult,
     PortfolioRiskResult,
     PricingFuture,
     RiskKey,
     SeriesWithInfo,
     _DeferredFuture,
     _historical_key,
+    _is_table,
+    _measure_futures,
     _MultiMeasureFuture,  # noqa: F401 -- purpose-built for exactly this: a per-measure-lazy multi-measure future
+    _MultiScenarioFuture,
     _table_like,
     make_bucketed_frame,
     make_table_frame,
 )
+from pricebt.risk.scenarios import market_data_scenario, scenario_dict, scenario_specs
 
 __all__ = ["PricingService", "engine_calc", "engine_resolve"]
 
@@ -130,6 +136,7 @@ class PricingService:
         self._portfolio_value_cache: Dict[tuple, Any] = {}
         self._attribute_cache: Dict[tuple, Any] = {}
         self._fx_cache: Dict[tuple, float] = {}
+        self._scenario_cache: Dict[tuple, Tuple[Any, _date]] = {}
 
     def reset(self) -> None:
         # .clear() in place (not reassignment): any caller holding a reference to one of these
@@ -142,6 +149,7 @@ class PricingService:
             self._portfolio_value_cache,
             self._attribute_cache,
             self._fx_cache,
+            self._scenario_cache,
         ):
             cache.clear()
 
@@ -200,6 +208,60 @@ class PricingService:
     def has_market(self, asset, d: _date, csa: Optional[str]) -> bool:
         return self._get_market_raw(asset, d, csa) is not _NO_MARKET
 
+    # ------------------------------------------------------------------------------ scenarios (docs/v2/SCENARIOS.md)
+
+    @staticmethod
+    def _scenario_spec(asset, scenario):
+        spec = asset.scenarios.get(scenario.scenario_type)
+        if spec is None:
+            # never price unshocked silently: an active scenario this asset cannot apply is loud
+            raise NotSupportedError(
+                f"asset {asset.name} has no scenarios: entry for {scenario.scenario_type} ({scenario!r}); map it to a market transform in the asset config (docs/v2/SCENARIOS.md)"
+            )
+        return spec
+
+    def _per_trade(self, asset, scen: tuple) -> bool:
+        """True when a `scope: trade` transform is active: each trade then has its own market."""
+        return any(self._scenario_spec(asset, s).scope == "trade" for s in scen)
+
+    def _scenario_state(self, asset, d: _date, csa: Optional[str], mdate: Optional[_date], scen: tuple, resolved_terms: Optional[dict] = None) -> Tuple[Any, _date]:
+        """`(market, valuation date)` of `asset` priced on `d` under the leaf scenarios `scen`
+        (outermost first): the market of `mdate or d`, then each scenario's transform in turn, each
+        result feeding the next. A scenario that rolls (`_roll_target`, pricebt DEV-S2) moves the
+        valuation date; the transform sees `pricebt_from_date` (before) and `pricebt_date` (after).
+        `scope: trade` transforms get `resolved` and run only with `resolved_terms`; resolution
+        passes none, so it applies the `scope: market` ones only (pricebt DEV-S1). Cached per
+        `(asset, d, csa, mdate, scen)`, plus the trade's terms when a per-trade transform ran."""
+        if not scen:
+            return self.market(asset, mdate or d, csa), d
+        per_trade = resolved_terms is not None and self._per_trade(asset, scen)
+        key = (asset.name, d, csa, mdate, scen, tuple(sorted(resolved_terms.items())) if per_trade else None)
+        hit = self._scenario_cache.get(key)
+        if hit is not None:
+            return hit
+        mkt, vdate = self.market(asset, mdate or d, csa), d
+        for s in scen:
+            spec = self._scenario_spec(asset, s)
+            if spec.scope == "trade" and resolved_terms is None:
+                continue
+            target = s._roll_target(vdate) or vdate
+            injected = {
+                **self._base_injected(target, csa),
+                "pricebt_from_date": vdate,
+                "pricebt_asset": asset.name,
+                "pricebt_currency": asset.currency,
+                "market": mkt,
+                "scenario": scenario_dict(s),
+            }
+            if spec.scope == "trade":
+                injected["resolved"] = dict(resolved_terms)
+            new = self._ns(asset).eval(f"scenarios.{s.scenario_type}", **injected)
+            if new is None:
+                raise ConfigError(f"the {s.scenario_type} transform returned None; it must return the scenario's market", asset=asset.name, key=f"scenarios.{s.scenario_type}")
+            mkt, vdate = new, target
+        self._scenario_cache[key] = (mkt, vdate)
+        return mkt, vdate
+
     # ------------------------------------------------------------------------------ resolve (section 6.2/6.3/4.4)
 
     def _kwargs_with_defaults(self, inst: Instrument, asset) -> Dict[str, Any]:
@@ -211,20 +273,23 @@ class PricingService:
         # kwargs (DESIGN.md section 5.2) without pricing.py re-implementing that coercion table.
         return inst.clone(**missing).kwargs
 
-    def resolve(self, inst: Instrument, d: _date, csa: Optional[str]) -> Instrument:
+    def resolve(self, inst: Instrument, d: _date, csa: Optional[str], scen: tuple = ()) -> Instrument:
+        """`inst` with its terms pinned on `d`. Under scenarios `scen` an unresolved instrument
+        resolves on the scenario market and valuation date (gs: "the resolution of the trade
+        parameters will be done with reference to the active pricing context"; pricebt DEV-S1)."""
         if inst.resolved_terms is not None:
             return inst.clone()  # idempotent: same resolved_terms/resolution_key/resolution_csa/unresolved
 
         asset = self.asset_for(inst)
         kw = self._kwargs_with_defaults(inst, asset)
-        key = (asset.name, _freeze(kw), d, csa)
+        key = (asset.name, _freeze(kw), d, csa, scen)
         if key in self._resolve_cache:
             resolved = self._resolve_cache[key]
         else:
             if asset.resolve_expr is not None:
-                mkt = self.market(asset, d, csa)
+                mkt, vdate = self._scenario_state(asset, d, csa, None, scen)
                 injected = {
-                    **self._base_injected(d, csa),
+                    **self._base_injected(vdate, csa),
                     "pricebt_asset": asset.name,
                     "pricebt_currency": asset.currency,
                     "market": mkt,
@@ -236,7 +301,7 @@ class PricingService:
             validate_resolved(resolved)
             self._resolve_cache[key] = resolved
 
-        resolution_key = RiskKey(provider=None, date=d, market=None, params=None, scenario=None, risk_measure=None)
+        resolution_key = RiskKey(provider=None, date=d, market=None, params=None, scenario=market_data_scenario(scen), risk_measure=None)
         pre = inst.clone()
         new_inst = inst.clone()
         new_inst._set_resolution(resolved, resolution_key, csa, pre)
@@ -244,19 +309,24 @@ class PricingService:
 
     # ------------------------------------------------------------------------------ trade (section 6.4)
 
-    def _trade_for(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], mdate: Optional[_date] = None) -> Any:
+    def _trade_for(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], mdate: Optional[_date] = None, scen: tuple = ()) -> Any:
         frozen = tuple(sorted(resolved_terms.items()))
         if asset.build_on == "resolve_date":
+            # pricebt DEV-S1: built once on its resolution date's own market, never a scenario's
             key = (asset.name, frozen, res_date, res_csa)
             build_date, build_csa, mkt_date = res_date, res_csa, res_date
         else:
-            # pricebt DEV-M1: an each_market trade is built on the CloseMarket override's market
-            key = (asset.name, frozen, d, csa, mdate)
+            # pricebt DEV-M1: an each_market trade is built on the CloseMarket override's market;
+            # DEV-S1: and on the scenario market, at the scenario's valuation date
+            key = (asset.name, frozen, d, csa, mdate, scen)
             build_date, build_csa, mkt_date = d, csa, mdate or d
         if key in self._trade_cache:
             return self._trade_cache[key]
         if asset.trade_expr is not None:
-            mkt = self.market(asset, mkt_date, build_csa)
+            if scen and asset.build_on != "resolve_date":
+                mkt, build_date = self._scenario_state(asset, d, csa, mdate, scen, resolved_terms)
+            else:
+                mkt = self.market(asset, mkt_date, build_csa)
             injected = {
                 **self._base_injected(build_date, build_csa),
                 "pricebt_asset": asset.name,
@@ -277,35 +347,38 @@ class PricingService:
 
     # ------------------------------------------------------------------------------ unit evaluation (section 6.3)
 
-    def _function_env(self, asset, d: _date, csa: Optional[str], params: Tuple[Tuple[str, Any], ...], mdate: Optional[_date]) -> Dict[str, Any]:
+    def _function_env(self, asset, d: _date, csa: Optional[str], params: Tuple[Tuple[str, Any], ...], mdate: Optional[_date], scen: tuple = (), resolved_terms: Optional[dict] = None) -> Dict[str, Any]:
         """The names every `functions:`/`portfolio_functions:` evaluation gets: `pricebt_date` = the
         pricing date `d`, `market` = the market of `mdate or d` (pricebt DEV-M1: a CloseMarket
         override's date), the measure `params`, and `market_to` = the market of the target date
-        for a relative measure (pricebt DEV-M2), else None."""
+        for a relative measure (pricebt DEV-M2), else None. Under scenarios `scen` (DEV-S1/S2)
+        `market` is the scenario market and `pricebt_date` its valuation date; `resolved_terms` is
+        the one trade a per-trade transform needs."""
         to_date = dict(params).get("to_date")
+        mkt, vdate = self._scenario_state(asset, d, csa, mdate, scen, resolved_terms)
         return {
-            **self._base_injected(d, csa),
+            **self._base_injected(vdate, csa),
             **_param_env(params),
             "pricebt_asset": asset.name,
             "pricebt_currency": asset.currency,
-            "market": self.market(asset, mdate or d, csa),
+            "market": mkt,
             "market_to": None if to_date is None else self.market(asset, to_date, csa),
         }
 
-    def _eval_unit_cached(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], function: str, params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None) -> Any:
+    def _eval_unit_cached(self, asset, resolved_terms: dict, res_date: _date, res_csa: Optional[str], d: _date, csa: Optional[str], function: str, params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None, scen: tuple = ()) -> Any:
         """The RAW value of `function` for one unit of this asset's resolved terms (a float or a
         frame for a `functions:` entry, or whatever a `portfolio_functions:` entry returns when
         called with `trades=[trade], weights=[1.0]` -- DESIGN.md section 8.1 rule 6), with the
-        measure `params` (`_measure_params`) injected, on the market of `mdate or d`. Cached; never
-        scaled by quantity or FX here."""
+        measure `params` (`_measure_params`) injected, on the market of `mdate or d` under the
+        scenarios `scen`. Cached; never scaled by quantity or FX here."""
         frozen = tuple(sorted(resolved_terms.items()))
-        key = (asset.name, frozen, d, function, csa, params, mdate)  # pricebt DEV-I10/DEV-M1: params and market date in the key
+        key = (asset.name, frozen, d, function, csa, params, mdate, scen)  # pricebt DEV-I10/DEV-M1/DEV-S1: params, market date and scenarios in the key
         if asset.build_on == "resolve_date":
             key = key + (res_date, res_csa)
         if key in self._unit_value_cache:
             return self._unit_value_cache[key]
-        trade = self._trade_for(asset, resolved_terms, res_date, res_csa, d, csa, mdate)
-        base = self._function_env(asset, d, csa, params, mdate)
+        trade = self._trade_for(asset, resolved_terms, res_date, res_csa, d, csa, mdate, scen)
+        base = self._function_env(asset, d, csa, params, mdate, scen, resolved_terms)
         if function in asset.functions:
             # DESIGN.md section 4.3: `resolved` is available in trade, functions and attributes --
             # NOT in portfolio_functions (the `else` branch below), which gets `trades`/`weights`.
@@ -329,7 +402,7 @@ class PricingService:
 
     # ------------------------------------------------------------------------------ group evaluation (section 6.3/8.2)
 
-    def _portfolio_value_from_entries(self, asset, d: _date, function: str, csa: Optional[str], entries: Sequence[Tuple[dict, _date, Optional[str], float]], params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None) -> Any:
+    def _portfolio_value_from_entries(self, asset, d: _date, function: str, csa: Optional[str], entries: Sequence[Tuple[dict, _date, Optional[str], float]], params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None, scen: tuple = ()) -> Any:
         spec = asset.functions.get(function)
         if spec is None:
             spec = asset.portfolio_functions.get(function)
@@ -347,12 +420,18 @@ class PricingService:
             frozen = tuple(sorted(rt.items()))
             kw = w if scale_with_quantity else 1.0
             key_entries.append((frozen, res_date, res_csa, kw) if asset.build_on == "resolve_date" else (frozen, kw))
-        key = (asset.name, d, function, csa, tuple(key_entries), params, mdate)  # pricebt DEV-I10/DEV-M1: params and market date in the key
+        key = (asset.name, d, function, csa, tuple(key_entries), params, mdate, scen)  # pricebt DEV-I10/DEV-M1/DEV-S1: params, market date and scenarios in the key
         if key in self._portfolio_value_cache:
             return self._portfolio_value_cache[key]
-        trades = [self._trade_for(asset, rt, res_date, res_csa, d, csa, mdate) for rt, res_date, res_csa, _w in entries]
+        trade_terms = None
+        if scen and self._per_trade(asset, scen):
+            # each trade has its own scenario market, so _lazy_value grouped one trade per group
+            if len(entries) != 1:
+                raise NotSupportedError(f"asset {asset.name}: a scope: trade scenario prices each trade on its own market; a group of {len(entries)} trades cannot share one")
+            trade_terms = entries[0][0]
+        trades = [self._trade_for(asset, rt, res_date, res_csa, d, csa, mdate, scen) for rt, res_date, res_csa, _w in entries]
         weights = [w if scale_with_quantity else 1.0 for *_rest, w in entries]
-        injected = {**self._function_env(asset, d, csa, params, mdate), "trades": trades, "weights": weights}
+        injected = {**self._function_env(asset, d, csa, params, mdate, scen, trade_terms), "trades": trades, "weights": weights}
         raw = self._ns(asset).eval(function, **injected)
         if spec is not None and spec.returns == "buckets":
             result = [dict(r) for r in raw] if _is_rows(raw) else dict(raw)
@@ -505,12 +584,31 @@ class PricingService:
         contracts.validate_frame(measure, frame)
         return frame
 
-    def value(self, inst: Instrument, d: _date, risk, csa: Optional[str], mdate: Optional[_date] = None):
+    def _minus_base(self, inst: Instrument, d: _date, risk, csa: Optional[str], mdate: Optional[_date], scen: tuple):
+        """pricebt DEV-S5: under a scenario with `subtract_base` (gs `CurveOverlay`), the scenario
+        value minus the value with no scenario at all, keyed by the scenario."""
+        stripped = tuple(dataclasses.replace(s, subtract_base=False) if getattr(s, "subtract_base", False) else s for s in scen)
+        shocked, base = self.value(inst, d, risk, csa, mdate, stripped), self.value(inst, d, risk, csa, mdate)
+        if isinstance(shocked, Instrument):
+            return shocked
+        if isinstance(shocked, LazyFuture):
+            shocked, base = shocked.result(), base.result()
+        key = shocked.risk_key._replace(scenario=market_data_scenario(scen))
+        if _is_table(shocked):
+            raise NotSupportedError(f"{risk!r} is a table measure; subtract_base needs a number or a bucketed frame")
+        if isinstance(shocked, pd.DataFrame):
+            return DataFrameWithInfo(subtract_risk(shocked, base), risk_key=key, unit=shocked.unit)
+        return FloatWithInfo(float(shocked) - float(base), risk_key=key, unit=shocked.unit)
+
+    def value(self, inst: Instrument, d: _date, risk, csa: Optional[str], mdate: Optional[_date] = None, scen: tuple = ()):
         """`risk` of `inst` priced on `d`; `mdate` (pricebt DEV-M1) is a CloseMarket override's
-        date, the date every market but the resolution one is evaluated on (None: `d`'s own)."""
+        date, the date every market but the resolution one is evaluated on (None: `d`'s own);
+        `scen` the leaf scenarios to price under, outermost first (docs/v2/SCENARIOS.md)."""
+        if scen and any(getattr(s, "subtract_base", False) for s in scen):
+            return self._minus_base(inst, d, risk, csa, mdate, scen)
         # step 1
         if risk.name == "ResolvedInstrumentValues":
-            return self.resolve(inst, d, csa)
+            return self.resolve(inst, d, csa, scen)
         # step 2
         if risk.name == "DollarPrice":
             risk = Price(currency="USD")
@@ -584,6 +682,10 @@ class PricingService:
 
         self._check_parameters(asset, risk, fname)
         params = _measure_params(risk, d)
+        if scen and isinstance(risk.parameters, MarketParameter):
+            # pricebt DEV-S1: a relative measure compares two close markets; which of them a
+            # scenario shocks is undefined, so it is refused rather than guessed
+            raise NotSupportedError(f"{risk!r} under a scenario is not supported: it explains between two close markets; price it outside the scenario")
         if isinstance(risk.parameters, MarketParameter) and risk.parameters.date is None and mdate is None:
             # pricebt DEV-M2: the target is the pricing date's own close, which is also the from-market
             raise NotSupportedError(f"{risk!r} explains to the pricing date's own close ({d}), which is also the market it explains from: price it under PricingContext(market=CloseMarket(date=...)) of another date")
@@ -601,28 +703,31 @@ class PricingService:
         if target_ccy != func_ccy and spec.unit not in _CONVERTIBLE_UNITS:
             raise ConfigError(f"measure {risk.name} has unit {spec.unit}; it cannot be converted to {target_ccy}", asset=asset.name)
 
-        resolved_inst = self.resolve(inst, d, csa)
+        resolved_inst = self.resolve(inst, d, csa, scen)
         rk = resolved_inst.resolution_key
 
         if is_bucketed:
-            return self._lazy_value(inst, resolved_inst, asset, fname, spec, func_ccy, target_ccy, d, csa, risk, params, mdate)
+            return self._lazy_value(inst, resolved_inst, asset, fname, spec, func_ccy, target_ccy, d, csa, risk, params, mdate, scen)
 
-        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, fname, params, mdate)
+        raw = self._eval_unit_cached(asset, resolved_inst.resolved_terms, rk.date, resolved_inst.resolution_csa, d, csa, fname, params, mdate, scen)
         unit = _unit_dict(spec, target_ccy)
-        key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=None, risk_measure=risk)  # pricebt DEV-M1: the override date (gs: the Market)
+        # pricebt DEV-M1: the override date (gs: the Market); the scenario as gs's MarketDataScenario
+        key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=market_data_scenario(scen), risk_measure=risk)
         if spec.returns == "frame":
             return self._table_value(raw, asset, mname, fname, spec, resolved_inst.quantity_, key, unit)
         raw_total = _bucket_total(raw) if scalar_via_bucket_sum else raw
-        val = self._scale_scalar(raw_total, spec, resolved_inst.quantity_, func_ccy, target_ccy, mdate or d)  # pricebt DEV-M1: FX of the market date
+        val = self._scale_scalar(raw_total, spec, resolved_inst.quantity_, func_ccy, target_ccy, mdate or d)  # pricebt DEV-M1: FX of the market date; DEV-S8: never a scenario's
         return FloatWithInfo(val, risk_key=key, unit=unit)
 
-    def _lazy_value(self, orig_inst: Instrument, resolved_inst: Instrument, asset, fname: str, spec, func_ccy: str, target_ccy: str, d: _date, csa: Optional[str], risk, params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None) -> LazyFuture:
+    def _lazy_value(self, orig_inst: Instrument, resolved_inst: Instrument, asset, fname: str, spec, func_ccy: str, target_ccy: str, d: _date, csa: Optional[str], risk, params: Tuple[Tuple[str, Any], ...] = (), mdate: Optional[_date] = None, scen: tuple = ()) -> LazyFuture:
         rk = resolved_inst.resolution_key
         res_date, res_csa = rk.date, resolved_inst.resolution_csa
         frozen_resolved = tuple(sorted(resolved_inst.resolved_terms.items()))
-        # pricebt DEV-I10/DEV-M1: the market date and params last, so two market dates or bump sizes
-        # never share a group (and group_key[2] stays the date)
-        group_key = (asset.name, asset.market_key, d, csa, fname, target_ccy, mdate, params)
+        # pricebt DEV-I10/DEV-M1/DEV-S1: the market date, scenarios and params last, so two market
+        # dates, scenarios or bump sizes never share a group (group_key[2] stays the date, [-1] the
+        # params). Under a per-trade scenario each trade has its own market, so its own group.
+        skey = (scen, frozen_resolved if scen and self._per_trade(asset, scen) else None)
+        group_key = (asset.name, asset.market_key, d, csa, fname, target_ccy, mdate, skey, params)
         # pricebt: member carries res_date/res_csa and the originating risk measure too (beyond
         # DESIGN.md section 8.2's literal 3-tuple) so group_aggregate can build a resolve_date
         # asset's trades on the right market without re-deriving them from PricebtSession.current,
@@ -637,48 +742,49 @@ class PricingService:
         resolved_terms = resolved_inst.resolved_terms
 
         def thunk():
-            raw = service._eval_unit_cached(asset, resolved_terms, res_date, res_csa, d, csa, fname, params, mdate)
+            raw = service._eval_unit_cached(asset, resolved_terms, res_date, res_csa, d, csa, fname, params, mdate, scen)
             scaled = service._scale_bucket(raw, spec, quantity_, func_ccy, target_ccy, mdate or d)
-            key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=None, risk_measure=risk)
+            key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=market_data_scenario(scen), risk_measure=risk)
             return make_bucketed_frame(scaled, labels=spec.labels, risk_key=key, unit=_unit_dict(spec, target_ccy))
 
         return LazyFuture(thunk, group_key, member, service)
 
     def group_aggregate(self, group_key, members):
-        asset_name, _market_key, d, csa, fname, target_ccy, mdate, params = group_key
+        asset_name, _market_key, d, csa, fname, target_ccy, mdate, skey, params = group_key
+        scen = skey[0]
         asset = self.registry[asset_name]
         spec = asset.functions.get(fname)
         if spec is None:
             spec = asset.portfolio_functions[fname]
         func_ccy = spec.currency or asset.currency
         entries = [(dict(frozen_resolved), res_date, res_csa, quantity_) for _identity, frozen_resolved, quantity_, res_date, res_csa, _risk, _params in members]
-        raw = self._portfolio_value_from_entries(asset, d, fname, csa, entries, params, mdate)
+        raw = self._portfolio_value_from_entries(asset, d, fname, csa, entries, params, mdate, scen)
         scaled = self._scale_bucket(raw, spec, 1.0, func_ccy, target_ccy, mdate or d)  # weights already carry quantity_
         risk = members[0][5]
-        key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=None, risk_measure=risk)
+        key = RiskKey(provider=None, date=d, market=mdate, params=None, scenario=market_data_scenario(scen), risk_measure=risk)
         return make_bucketed_frame(scaled, labels=spec.labels, risk_key=key, unit=_unit_dict(spec, target_ccy))
 
 
 # ====================================================================================== engine seams
 
 
-def _instrument_calc_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str]):
+def _instrument_calc_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str], scen: tuple = ()):
     """One date's raw value(s) for a historical instrument result (`_historical_instrument_value`
     unwraps any LazyFuture in them)."""
     if len(measures) == 1:
-        return service.value(inst, d, measures[0], csa)
-    return MultipleRiskMeasureResult(inst, ((m, service.value(inst, d, m, csa)) for m in measures))
+        return service.value(inst, d, measures[0], csa, None, scen)
+    return MultipleRiskMeasureResult(inst, ((m, service.value(inst, d, m, csa, None, scen)) for m in measures))
 
 
-def _single_measure_future(service: PricingService, inst: Instrument, measure, d: _date, csa: Optional[str], mdate: Optional[_date] = None) -> PricingFuture:
-    value = service.value(inst, d, measure, csa, mdate)
+def _single_measure_future(service: PricingService, inst: Instrument, measure, d: _date, csa: Optional[str], mdate: Optional[_date] = None, scen: tuple = ()) -> PricingFuture:
+    value = service.value(inst, d, measure, csa, mdate, scen)
     return value if isinstance(value, PricingFuture) else PricingFuture(value)
 
 
-def _instrument_future(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str], mdate: Optional[_date] = None) -> PricingFuture:
+def _instrument_future(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], d: _date, csa: Optional[str], mdate: Optional[_date] = None, scen: tuple = ()) -> PricingFuture:
     if len(measures) == 1:
-        return _single_measure_future(service, inst, measures[0], d, csa, mdate)
-    return _MultiMeasureFuture({m: _single_measure_future(service, inst, m, d, csa, mdate) for m in measures}, inst)
+        return _single_measure_future(service, inst, measures[0], d, csa, mdate, scen)
+    return _MultiMeasureFuture({m: _single_measure_future(service, inst, m, d, csa, mdate, scen) for m in measures}, inst)
 
 
 def _with_fn(future: PricingFuture, fn) -> PricingFuture:
@@ -695,13 +801,13 @@ def _instrument_result(ctx: PricingContext, future: PricingFuture, fn):
     return future if ctx.is_entered or ctx.is_async else future.result()
 
 
-def _calc_portfolio_one_date(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], d: _date, csa: Optional[str], fn=None, mdate: Optional[_date] = None) -> PortfolioRiskResult:
+def _calc_portfolio_one_date(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], d: _date, csa: Optional[str], fn=None, mdate: Optional[_date] = None, scen: tuple = ()) -> PortfolioRiskResult:
     futures = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            futures.append(PricingFuture(_calc_portfolio_one_date(service, child, measures, d, csa, fn, mdate)))
+            futures.append(PricingFuture(_calc_portfolio_one_date(service, child, measures, d, csa, fn, mdate, scen)))
         else:
-            futures.append(_with_fn(_instrument_future(service, child, measures, d, csa, mdate), fn))
+            futures.append(_with_fn(_instrument_future(service, child, measures, d, csa, mdate, scen), fn))
     return PortfolioRiskResult(portfolio.clone(), measures, futures)
 
 
@@ -734,12 +840,13 @@ def _date_indexed(by_date: dict, rep):
     return SeriesWithInfo(pd.Series(by_date), unit=getattr(rep, "unit", None), risk_key=_historical_key(getattr(rep, "risk_key", None)))
 
 
-def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str]):
+def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str], scen: tuple = ()):
     # pricebt: historical per-instrument values are materialised eagerly (unlike the single-date
     # path, where a bucketed measure stays a LazyFuture for group aggregation) -- a date-indexed
     # SeriesWithInfo has no per-date grouping partner to defer to, and the engine's own daily loop
     # drives single-date PricingContexts, where laziness actually matters (DESIGN.md section 8.2).
-    per_date = {d: _instrument_calc_value(service, inst, measures, d, csa) for d in dates}
+    # Scenarios apply per date (gs HistoricalPricingContext.calc).
+    per_date = {d: _instrument_calc_value(service, inst, measures, d, csa, scen) for d in dates}
     # pre-existing bug fix (out of P3.5's own scope, but confirmed blocking -- found wiring
     # GenericEngine's HedgeActionImpl, whose `p.results[d][p.risk]` reads a historical
     # per-instrument result's `.unit` after indexing by date): a bare `pd.Series({date: FloatWithInfo,
@@ -761,13 +868,13 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     return result
 
 
-def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str], fn=None) -> PortfolioRiskResult:
+def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str], fn=None, scen: tuple = ()) -> PortfolioRiskResult:
     futures = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa, fn)))
+            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa, fn, scen)))
         else:
-            futures.append(_with_fn(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa)), fn))
+            futures.append(_with_fn(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa, scen)), fn))
     return PortfolioRiskResult(portfolio.clone(), measures, futures)
 
 
@@ -789,71 +896,114 @@ def _market_date(ctx: PricingContext, d: _date) -> Optional[_date]:
     return None if t == d else t
 
 
+def _calc_under(service: PricingService, ctx: PricingContext, priceable, measures_t: Tuple[Any, ...], fn, scen: tuple):
+    """`priceable`'s result under the leaf scenarios `scen`: a PortfolioRiskResult for a portfolio,
+    else the instrument's future (`fn` applied, not yet unwrapped)."""
+    if isinstance(ctx, HistoricalPricingContext):
+        dates, csa = ctx.date_range, ctx.csa_term
+        if isinstance(priceable, Portfolio):
+            return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn, scen)
+        return _with_fn(PricingFuture(_historical_instrument_value(service, priceable, measures_t, dates, csa, scen)), fn)
+    d, csa = ctx.pricing_date, ctx.csa_term
+    mdate = _market_date(ctx, d)
+    if isinstance(priceable, Portfolio):
+        return _calc_portfolio_one_date(service, priceable, measures_t, d, csa, fn, mdate, scen)
+    return _with_fn(_instrument_future(service, priceable, measures_t, d, csa, mdate, scen), fn)
+
+
+def _scenario_leaf(inst, measures: Tuple[Any, ...], by_member: dict) -> PricingFuture:
+    """One instrument's per-member futures in gs's nesting: a `MultipleScenarioResult` for one
+    measure, a `{measure: MultipleScenarioResult}` for several (gs `MultipleRiskMeasureFuture` of
+    `MultipleScenarioFuture`s), every member's future left lazy."""
+    if len(measures) == 1:
+        return _MultiScenarioFuture(by_member, inst)
+    per_member = {member: _measure_futures(f, measures) for member, f in by_member.items()}
+    return _MultiMeasureFuture({m: _MultiScenarioFuture({member: fs[m] for member, fs in per_member.items()}, inst) for m in measures}, inst)
+
+
+def _merge_scenario_results(portfolio: Portfolio, measures: Tuple[Any, ...], by_member: dict, fn) -> PortfolioRiskResult:
+    """One PortfolioRiskResult from one per MultiScenario member (the same tree): each leaf is
+    `_scenario_leaf` of its per-member futures, `fn` applied to it (gs: to the scenario result)."""
+    futures = []
+    for idx, child in enumerate(portfolio.priceables):
+        if isinstance(child, Portfolio):
+            subs = {member: prr.futures[idx].result() for member, prr in by_member.items()}
+            futures.append(PricingFuture(_merge_scenario_results(child, measures, subs, fn)))
+        else:
+            futures.append(_with_fn(_scenario_leaf(child, measures, {member: prr.futures[idx] for member, prr in by_member.items()}), fn))
+    return PortfolioRiskResult(portfolio.clone(), measures, futures)
+
+
 def engine_calc(priceable, measures, fn=None):
     service = _current_service()
     ctx = PricingContext.current
     measures_t = tuple(measures) if isinstance(measures, (list, tuple)) else (measures,)
-
-    if isinstance(ctx, HistoricalPricingContext):
-        dates, csa = ctx.date_range, ctx.csa_term
+    # gs PricingContext._scenario: the entered scenarios, outermost first (docs/v2/SCENARIOS.md)
+    specs = scenario_specs()
+    if specs[0][0] is None:
+        result = _calc_under(service, ctx, priceable, measures_t, fn, specs[0][1])
         if isinstance(priceable, Portfolio):
-            return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn)
-        return _instrument_result(ctx, PricingFuture(_historical_instrument_value(service, priceable, measures_t, dates, csa)), fn)
-
-    d, csa = ctx.pricing_date, ctx.csa_term
-    mdate = _market_date(ctx, d)
+            return result
+        return result if ctx.is_entered or ctx.is_async else result.result()
+    # gs Instrument.calc under a MultiScenario: one pricing per member, keyed by member
+    by_member = {member: _calc_under(service, ctx, priceable, measures_t, None, leaves) for member, leaves in specs}
     if isinstance(priceable, Portfolio):
-        return _calc_portfolio_one_date(service, priceable, measures_t, d, csa, fn, mdate)
-    return _instrument_result(ctx, _instrument_future(service, priceable, measures_t, d, csa, mdate), fn)
+        return _merge_scenario_results(priceable, measures_t, by_member, fn)
+    return _instrument_result(ctx, _scenario_leaf(priceable, measures_t, by_member), fn)
 
 
-def _resolve_instrument(service: PricingService, inst: Instrument, in_place: bool, ctx: PricingContext, is_historical: bool):
+def _resolve_instrument(service: PricingService, inst: Instrument, in_place: bool, ctx: PricingContext, is_historical: bool, scen: tuple = ()):
     if in_place:
         if is_historical:
             raise RuntimeError("Cannot resolve in place under a HistoricalPricingContext")
         if inst.resolved_terms is not None:
             return None  # already resolved: a no-op, never re-derived (DESIGN.md section 6.2 rule 1)
         pre = inst.clone()
-        resolved_clone = service.resolve(inst, ctx.pricing_date, ctx.csa_term)
+        resolved_clone = service.resolve(inst, ctx.pricing_date, ctx.csa_term, scen)
         inst._set_resolution(resolved_clone.resolved_terms, resolved_clone.resolution_key, resolved_clone.resolution_csa, pre)
         return None
     if is_historical:
-        return {d: service.resolve(inst, d, ctx.csa_term) for d in ctx.date_range}
-    return service.resolve(inst, ctx.pricing_date, ctx.csa_term)
+        return {d: service.resolve(inst, d, ctx.csa_term, scen) for d in ctx.date_range}
+    return service.resolve(inst, ctx.pricing_date, ctx.csa_term, scen)
 
 
-def _resolve_portfolio_one_date(service: PricingService, portfolio: Portfolio, d: _date, csa: Optional[str]) -> Portfolio:
+def _resolve_portfolio_one_date(service: PricingService, portfolio: Portfolio, d: _date, csa: Optional[str], scen: tuple = ()) -> Portfolio:
     children = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            children.append(_resolve_portfolio_one_date(service, child, d, csa))
+            children.append(_resolve_portfolio_one_date(service, child, d, csa, scen))
         else:
-            children.append(service.resolve(child, d, csa))
+            children.append(service.resolve(child, d, csa, scen))
     return Portfolio(children, name=portfolio.name)
 
 
-def _resolve_portfolio(service: PricingService, portfolio: Portfolio, in_place: bool, ctx: PricingContext, is_historical: bool):
+def _resolve_portfolio(service: PricingService, portfolio: Portfolio, in_place: bool, ctx: PricingContext, is_historical: bool, scen: tuple = ()):
     if in_place:
         for child in portfolio.priceables:
             if isinstance(child, Portfolio):
-                _resolve_portfolio(service, child, True, ctx, is_historical)
+                _resolve_portfolio(service, child, True, ctx, is_historical, scen)
             else:
-                _resolve_instrument(service, child, True, ctx, is_historical)
+                _resolve_instrument(service, child, True, ctx, is_historical, scen)
         return None
     if is_historical:
-        return {d: _resolve_portfolio_one_date(service, portfolio, d, ctx.csa_term) for d in ctx.date_range}
-    return _resolve_portfolio_one_date(service, portfolio, ctx.pricing_date, ctx.csa_term)
+        return {d: _resolve_portfolio_one_date(service, portfolio, d, ctx.csa_term, scen) for d in ctx.date_range}
+    return _resolve_portfolio_one_date(service, portfolio, ctx.pricing_date, ctx.csa_term, scen)
 
 
 def engine_resolve(priceable, in_place: bool):
     service = _current_service()
     ctx = PricingContext.current
     is_historical = isinstance(ctx, HistoricalPricingContext)
+    resolve = _resolve_portfolio if isinstance(priceable, Portfolio) else _resolve_instrument
 
-    if isinstance(priceable, Portfolio):
-        result = _resolve_portfolio(service, priceable, in_place, ctx, is_historical)
+    specs = scenario_specs()
+    if specs[0][0] is None:
+        result = resolve(service, priceable, in_place, ctx, is_historical, specs[0][1])
+    elif in_place:
+        raise RuntimeError("Cannot resolve in place under a MultiScenario Context")
     else:
-        result = _resolve_instrument(service, priceable, in_place, ctx, is_historical)
+        # gs: resolve() is calc(ResolvedInstrumentValues), so under a MultiScenario it is keyed by member
+        result = MultipleScenarioResult(priceable, ((member, resolve(service, priceable, False, ctx, is_historical, leaves)) for member, leaves in specs))
 
     if in_place:
         return PricingFuture(None) if (ctx.is_entered or ctx.is_async) else None

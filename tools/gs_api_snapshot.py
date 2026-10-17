@@ -102,6 +102,7 @@ import gs_quant.backtests.core
 import gs_quant.instrument
 import gs_quant.target.instrument
 import gs_quant.risk
+import gs_quant.risk.scenarios
 import gs_quant.common
 import gs_quant.markets
 import gs_quant.markets.portfolio
@@ -155,6 +156,15 @@ RISK_FUNCTION_AND_CLASS_NAMES = [
     "aggregate_risk", "aggregate_results", "subtract_risk", "sort_risk", "combine_risk_key",
     "PnlExplain", "PnlExplainClose", "PnlExplainLive", "PnlPredictLive",
 ]
+# docs/v2/SCENARIOS.md: the scenario classes gs_quant.risk exports, the two gs_quant.risk.scenarios
+# adds (with its mapping constructor / from_dataframe), and the gs_quant.common-only ones.
+SCENARIO_RISK_NAMES = [
+    "MarketDataShockBasedScenario", "LiborFallbackScenario", "CarryScenario", "CompositeScenario",
+    "CurveScenario", "IndexCurveShift", "MarketDataPattern", "MarketDataScenario", "MarketDataShock",
+    "MarketDataShockType", "RollFwd", "CurveOverlay", "MultiScenario",
+]
+SCENARIO_MODULE_NAMES = ["MarketDataVolShockScenario", "MarketDataVolSlice", "MarketDataPatternAndShock"]
+SCENARIO_COMMON_NAMES = ["MeasureScenario"]
 
 
 def _default_repr(default) -> str:
@@ -257,6 +267,12 @@ def build_api_snapshot() -> dict:
             symbols[f"gs_quant.risk.{name}"] = _describe(obj)
     for name in RISK_FUNCTION_AND_CLASS_NAMES:
         symbols[f"gs_quant.risk.{name}"] = _describe(getattr(gs_quant.risk, name))
+    for name in SCENARIO_RISK_NAMES:
+        symbols[f"gs_quant.risk.{name}"] = _describe(getattr(gs_quant.risk, name))
+    for name in SCENARIO_MODULE_NAMES:
+        symbols[f"gs_quant.risk.scenarios.{name}"] = _describe(getattr(gs_quant.risk.scenarios, name))
+    for name in SCENARIO_COMMON_NAMES:
+        symbols[f"gs_quant.common.{name}"] = _describe(getattr(gs_quant.common, name))
 
     for name, obj in inspect.getmembers(gs_quant.common):
         if name.startswith("_"):

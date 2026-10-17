@@ -1481,3 +1481,33 @@ Decisions the phase agents took and the orchestrator verified; each has a test a
 - **The holding-cash jump rule nets out the step's market move** (IRDelta and IRGammaParallel times the yield move,
   plus Theta), so a large yield move next to a coupon drop does not FAIL a correct config.
 
+
+## 2026-10-17 — v2-scenarios: gs scenario contexts as config transforms
+
+Implements R11 §5.6's R-C2/R-C3 recommendation ([`SCENARIOS.md`](SCENARIOS.md), DEV-S1..S8), with these calls:
+
+- **The active scenarios are their own key slot**, a tuple of leaf scenarios (composites flattened, outermost first)
+  next to the csa and the `CloseMarket` date, not a widened csa: every existing signature, cache key and test kept
+  its shape (`group_key[2]` is still the date and `group_key[-1]` the params; the scenario slot sits before the
+  params).
+- **Transforms are a config section keyed by `scenario_type`**, with a `scope: trade` form for trade-dependent
+  scenarios (`MeasureScenario`). Each trade then has its own market, so a bucketed portfolio function under one is
+  evaluated one trade per group.
+- **An active scenario type an asset does not map raises.** A pattern the market does not hold is the
+  transform's to ignore; pricebt never prices a book unshocked because one asset lacks an entry.
+- **The roll rule lives in the scenario class** (`Scenario._roll_target`), not in a table in the pricing layer, so a
+  user subclass can roll too, and every asset of a book rolls to the same date (computed once by pricebt, never
+  per config). `CarryScenario.time_shift` raises: its unit is GS server-defined.
+- **Resolution follows gs**: an unresolved instrument resolves under the scenario (gs RollFwd notebook c2). This is
+  the opposite of DEV-M1's "resolve ignores the override", deliberately: gs documents it for scenarios.
+- **MultiScenario is priced per member in pricebt**, mixed types allowed; one at a time. `aggregate()` returns a
+  `MultipleScenarioResult` (gs: a plain dict, ungrouped), which is what a payoff grid needs.
+- **`run_backtest` and `measure_series` refuse an active scenario** rather than half-apply it (the engine's
+  availability checks read markets directly). A stress backtest is later work.
+- **The toy library learned two things**: a `shape` add-on and a `path_start` on `ToyCurve` (both no-ops by
+  default). The second makes a physically settled toy swaption decide an expiry inside a scenario path on the
+  scenario curve. Without it, a roll-to-expiry payoff grid comes out flat, which a real library must also get right
+  (SCENARIOS.md §4).
+- **The parity snapshot gained the 17 scenario symbols** by merging them into the existing
+  `tests/data/gs_api_1_5_4.json` (a full regeneration also re-dated two unrelated date-defaulted entries; those were
+  left as they were).

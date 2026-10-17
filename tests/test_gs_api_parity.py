@@ -42,6 +42,7 @@ import pricebt.instrument as pb_instrument
 import pricebt.markets as pb_markets
 import pricebt.markets.portfolio as pb_portfolio
 import pricebt.risk as pb_risk
+import pricebt.risk.scenarios as pb_risk_scenarios
 import pricebt.session as pb_session
 
 pytestmark = pytest.mark.core
@@ -270,7 +271,11 @@ def resolve(gs_key: str) -> Any:
     if root == "instrument":
         return getattr(pb_instrument, parts[2], None)
     if root == "risk":
+        if parts[2] == "scenarios":  # gs_quant.risk.scenarios (docs/v2/SCENARIOS.md)
+            return getattr(pb_risk_scenarios, parts[3], None)
         return getattr(pb_risk, parts[2], None)
+    if root == "common":  # the non-enum gs_quant.common symbols in scope (MeasureScenario)
+        return getattr(pb_common, parts[2], None)
     if root == "markets":
         if parts[2] == "portfolio":
             return getattr(pb_portfolio, parts[3], None)
@@ -366,7 +371,8 @@ def diff_symbol(gs_key: str) -> List[str]:
 # ============================================================================ parametrized symbol lists
 
 _SCOPE_PREFIXES = ("gs_quant.backtests.", "gs_quant.instrument.", "gs_quant.risk.", "gs_quant.markets.", "gs_quant.session.")
-GS_DRIVEN_KEYS = sorted(k for k in SYMBOLS if k.startswith(_SCOPE_PREFIXES))
+# plus the gs_quant.common symbols that are not enums (the enums are pricebt-driven, below)
+GS_DRIVEN_KEYS = sorted(k for k in SYMBOLS if k.startswith(_SCOPE_PREFIXES) or (k.startswith("gs_quant.common.") and SYMBOLS[k]["kind"] != "enum"))
 
 # The 2.1.17-only risk measures: absent from the 1.5.4 snapshot by construction (gs_api_snapshot.py
 # puts them in requested_not_found, not symbols). DESIGN.md section 12.3: these are EXTRA pricebt

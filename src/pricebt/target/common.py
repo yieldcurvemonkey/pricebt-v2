@@ -8,3 +8,4 @@ from __future__ import annotations
 from pricebt.common import *  # noqa: F401,F403
 from pricebt.common import ParameterisedRiskMeasure, RiskMeasure  # noqa: F401 (module __getattr__, not always in *)
 from pricebt.risk import CurrencyParameter, FiniteDifferenceParameter  # noqa: F401
+from pricebt.risk.scenarios import *  # noqa: F401,F403 (gs_quant.target.common holds the scenario dataclasses)

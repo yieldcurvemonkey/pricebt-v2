@@ -87,6 +87,18 @@ A runnable tour on the toy assets:
 [`notebooks/ir_pricing_and_risk_toy.ipynb`](notebooks/ir_pricing_and_risk_toy.ipynb) (source
 [`notebooks/src/ir_pricing_and_risk_toy.py`](notebooks/src/ir_pricing_and_risk_toy.py)).
 
+## Scenarios
+
+gs scenario contexts run unchanged: `with RollFwd(date='1m'):`,
+`with MarketDataShockBasedScenario({MarketDataPattern('IR', 'USD'): MarketDataShock('Absolute', 1e-4)}):`,
+`CurveScenario` steepeners, `CurveOverlay`, `MeasureScenario`, composites, and `MultiScenario`
+grids that return gs's `MultipleScenarioResult`. Your library does the shocking: each asset
+config's optional `scenarios:` section maps a scenario type to a market transform
+([`docs/v2/SCENARIOS.md`](docs/v2/SCENARIOS.md)). One use is the terminal payoff of a swaption
+straddle or fly: roll to expiry, then a MultiScenario of rate shocks. Tour:
+[`notebooks/scenarios_toy.ipynb`](notebooks/scenarios_toy.ipynb). Skill:
+[`skills/pricebt-scenarios`](skills/pricebt-scenarios/SKILL.md).
+
 ## More
 
 - [`docs/v2/README.md`](docs/v2/README.md) — reading order for the full design and research notes.

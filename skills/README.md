@@ -16,6 +16,7 @@ Skills for AI agents (and people) who work with pricebt. The library assumes you
 | [`pricebt-asset-config-cookbook`](pricebt-asset-config-cookbook/SKILL.md) | find patterns by library shape, the measure recipes (own-rate delta, chain-rule gamma, vol measures, translated-curve theta, ladders and cubes, `Cashflows`, bump parameters; for bonds accrued, clean/dirty, yield, duration and convexity, settlement, repo financing, forward price, carry and roll-down), unit and sign conversions, and the error catalogue |
 | [`pricebt-enterprise-integration`](pricebt-enterprise-integration/SKILL.md) | handle remote platforms: secrets, point-in-time data, record/replay (`record_replay.py`), and safety envelopes |
 | [`pricebt-port-gs-notebook`](pricebt-port-gs-notebook/SKILL.md) | port existing gs_quant code: backtest, swaption, portfolio and pricing-and-risk notebooks (a status table per notebook) |
+| [`pricebt-scenarios`](pricebt-scenarios/SKILL.md) | price under gs scenario contexts (`RollFwd`, shocks, curve shapes, overlays, `MeasureScenario`, `MultiScenario`) by wiring your library's market transforms into a config's `scenarios:` section; terminal-payoff and stress grids, and transform checks (`scenario_grid.py`) |
 
 ## Journey B: idea → reviewed tearsheet
 

@@ -1,9 +1,10 @@
 """RiskKey, FloatWithInfo, StringWithInfo, DictWithInfo, SeriesWithInfo, DataFrameWithInfo,
-ErrorValue, UnsupportedValue, MultipleRiskMeasureResult, PricingFuture, LazyFuture, PortfolioPath,
-PortfolioRiskResult.
+ErrorValue, UnsupportedValue, MultipleRiskMeasureResult, MultipleScenarioResult, PricingFuture,
+LazyFuture, PortfolioPath, PortfolioRiskResult.
 
 Ported from gs_quant.risk.core (the value classes) and gs_quant.risk.results (Apache-2.0; see
-NOTICE): 1.5.4 signatures, 2.1.17 behaviour, research note R10 section 2. No scenarios. It
+NOTICE): 1.5.4 signatures, 2.1.17 behaviour, research note R10 section 2. A MultiScenario result
+nests as gs's: measure, then scenario (docs/v2/SCENARIOS.md). It
 dispatches on `pricebt.base.Priceable` and duck typing, so it never imports `pricebt.instrument` or
 `pricebt.markets.portfolio` (Import DAG, DESIGN.md section 3.2): a "portfolio" here is anything
 exposing `.priceables` (direct children, in order) and `.all_instruments` (leaves), plus `+` when
@@ -22,7 +23,7 @@ from typing import Any, Iterable, Optional
 import pandas as pd
 
 import pricebt.config
-from pricebt.base import Priceable
+from pricebt.base import Priceable, Scenario
 from pricebt.errors import NotSupportedError
 
 RiskKey = namedtuple("RiskKey", ["provider", "date", "market", "params", "scenario", "risk_measure"])
@@ -362,6 +363,19 @@ def _is_dates(item) -> bool:
     return isinstance(item, dt.date) or (isinstance(item, (list, tuple)) and len(item) > 0 and all(isinstance(i, dt.date) for i in item))
 
 
+def _is_scenarios(item) -> bool:
+    return isinstance(item, Scenario) or (isinstance(item, (list, tuple)) and len(item) > 0 and all(isinstance(i, Scenario) for i in item))
+
+
+def _scenario_items(item) -> tuple:
+    return tuple(item) if isinstance(item, (list, tuple)) else (item,)
+
+
+def _filter_scenarios(result: "MultipleScenarioResult", items: tuple) -> "MultipleScenarioResult":
+    """gs `_value_for_measure_or_scen` on a scenario result: a copy keeping only `items`."""
+    return MultipleScenarioResult(result.instrument, ((s, dict.__getitem__(result, s)) for s in result if s in items))
+
+
 def _show_na(display_options) -> bool:
     """gs `_to_records` of an empty frame or an `UnsupportedValue`: a `DisplayOptions` or None (the
     module default `pricebt.config.display_options`, read at call time)."""
@@ -373,7 +387,7 @@ def _show_na(display_options) -> bool:
 def _value_dates(value) -> set:
     """The dates a historical value spans (gs `dates`): a PRR/MRMR's own, a historical table's
     `date` column, a Series'/frame's index when every entry is a date; empty for a single-date value."""
-    if isinstance(value, (PortfolioRiskResult, MultipleRiskMeasureResult)):
+    if isinstance(value, (PortfolioRiskResult, MultipleRiskMeasureResult, MultipleScenarioResult)):
         return set(value.dates)
     if _is_table(value):
         return set(value["date"]) if value.pricebt_dates is not None else set()
@@ -494,6 +508,8 @@ def _records_of(value, extra: dict, display_options=None, drop_tables: bool = Fa
     a frame (a date index becomes `dates`), per measure of an MRMR (plus `risk_measure`)."""
     if isinstance(value, MultipleRiskMeasureResult):
         return [dict(r, risk_measure=rm) for rm in value for r in _records_of(dict.__getitem__(value, rm), extra, display_options, drop_tables)]
+    if isinstance(value, MultipleScenarioResult):
+        return [dict(r, scenario=s) for s in value for r in _records_of(dict.__getitem__(value, s), extra, display_options, drop_tables)]
     if isinstance(value, pd.DataFrame):
         if drop_tables and _is_table(value):
             return []
@@ -553,14 +569,24 @@ class MultipleRiskMeasureResult(dict):
 
     def __getitem__(self, item):
         if _is_dates(item):
+            if all(isinstance(v, MultipleScenarioResult) for v in self.values()):
+                return MultipleRiskMeasureResult(self._instrument, ((k, v[item]) for k, v in self.items()))
             if not all(isinstance(v, (pd.DataFrame, pd.Series)) for v in self.values()):
                 raise ValueError("Can only index by date on historical results")
             return MultipleRiskMeasureResult(self._instrument, ((k, _value_for_date(v, item)) for k, v in self.items()))
+        if _is_scenarios(item):
+            if not all(isinstance(v, MultipleScenarioResult) for v in self.values()):
+                raise ValueError("Can only index by scenario on multiple scenario results")
+            return MultipleRiskMeasureResult(self._instrument, ((k, _filter_scenarios(v, _scenario_items(item))) for k, v in self.items()))
         return super().__getitem__(item)
 
     @property
     def dates(self) -> tuple:
         return tuple(sorted(set().union(*(_value_dates(v) for v in self.values()))))
+
+    @property
+    def _multi_scen_key(self) -> tuple:
+        return next((tuple(v.scenarios) for v in self.values() if isinstance(v, MultipleScenarioResult)), ())
 
     def _map(self, fn) -> "MultipleRiskMeasureResult":
         return MultipleRiskMeasureResult(self._instrument, ((k, _map_value(v, fn)) for k, v in self.items()))
@@ -607,7 +633,59 @@ class MultipleRiskMeasureResult(dict):
         if values == "default" and index == "default" and columns == "default":
             if "mkt_type" in df.columns:
                 return df.set_index("risk_measure")
-            values, columns, index = "value", "risk_measure", ("dates" if "dates" in df.columns else None)
+            columns = ["risk_measure", "scenario"] if "scenario" in df.columns else "risk_measure"
+            values, index = "value", ("dates" if "dates" in df.columns else None)
+        else:
+            values = "value" if values in ("default", ["value"]) else values
+            index = None if index == "default" else index
+            columns = None if columns == "default" else columns
+        return _pivot_to_frame(df, values, index, columns, aggfunc)
+
+
+# ============================================================================= MultipleScenarioResult
+
+
+class MultipleScenarioResult(dict):
+    """A `{scenario: value}` result for one instrument under a `MultiScenario` (or, from
+    `PortfolioRiskResult.aggregate()`, for the portfolio), gs constructor `(instrument,
+    dict_values)`. Keys are the MultiScenario's members, in its order."""
+
+    def __init__(self, instrument, dict_values: Iterable):
+        super().__init__(dict_values)
+        self._instrument = instrument
+
+    @property
+    def instrument(self):
+        return self._instrument
+
+    @property
+    def scenarios(self):
+        return self.keys()
+
+    def __getitem__(self, item):
+        if _is_dates(item):
+            if not all(isinstance(v, (pd.DataFrame, pd.Series, MultipleRiskMeasureResult)) for v in self.values()):
+                raise ValueError("Can only index by date on historical results")
+            return MultipleScenarioResult(self._instrument, ((k, v[item] if isinstance(v, MultipleRiskMeasureResult) else _value_for_date(v, item)) for k, v in self.items()))
+        return super().__getitem__(item)
+
+    @property
+    def dates(self) -> tuple:
+        return tuple(sorted(set().union(*(_value_dates(v) for v in self.values()))))
+
+    def _to_records(self, extra_dict: dict, display_options=None) -> list:
+        return _records_of(self, extra_dict, display_options)
+
+    def to_frame(self, values="default", index="default", columns="default", aggfunc="sum", display_options=None):
+        """gs `to_frame`: by default `value` pivoted with one column per scenario (and a `dates`
+        index for a historical result); a bucketed result is its rows indexed by scenario."""
+        df = pd.DataFrame.from_records(self._to_records({}, display_options))
+        if values is None and index is None and columns is None:
+            return df
+        if values == "default" and index == "default" and columns == "default":
+            if "mkt_type" in df.columns:
+                return df.set_index("scenario")
+            values, columns, index = "value", "scenario", ("dates" if "dates" in df.columns else None)
         else:
             values = "value" if values in ("default", ["value"]) else values
             index = None if index == "default" else index
@@ -692,6 +770,65 @@ class _MultiMeasureFuture(PricingFuture):
         return self._measure_futures.get(measure)
 
 
+class _MultiScenarioFuture(PricingFuture):
+    """gs `MultipleScenarioFuture`: one future per MultiScenario member for one instrument, merged
+    into a `MultipleScenarioResult` on `.result()` only, so a bucketed member's LazyFuture slices
+    back out ungrouped (`future_for`) and `PortfolioRiskResult.aggregate()` still groups it."""
+
+    def __init__(self, scenario_futures: dict, instrument=None):
+        super().__init__()
+        self._scenario_futures = scenario_futures
+        self.instrument = instrument
+        self._evaluated = False
+
+    def result(self):
+        if not self._evaluated:
+            try:
+                self._result = MultipleScenarioResult(self.instrument, ((s, f.result()) for s, f in self._scenario_futures.items()))
+            except Exception as exc:  # noqa: BLE001 - memoised like any other future
+                self._exception = exc
+            self._evaluated = True
+        return super().result()
+
+    def future_for(self, scenario):
+        return self._scenario_futures.get(scenario)
+
+
+def _future_scenarios(future) -> tuple:
+    """The MultiScenario members a leaf future was priced under, () for none; a lazy leaf is never
+    evaluated."""
+    if isinstance(future, _MultiScenarioFuture):
+        return tuple(future._scenario_futures)
+    if isinstance(future, _MultiMeasureFuture):
+        return next((s for f in future._measure_futures.values() if (s := _future_scenarios(f))), ())
+    if isinstance(future, LazyFuture):
+        return ()
+    res = future.result()
+    if isinstance(res, MultipleScenarioResult):
+        return tuple(res)
+    if isinstance(res, MultipleRiskMeasureResult):
+        return res._multi_scen_key
+    return ()
+
+
+def _scenario_future(future, items: tuple, keep: bool) -> PricingFuture:
+    """One leaf future restricted to the scenarios `items`, lazily: `keep` keeps the scenario level
+    (gs slicing: a one-member `MultipleScenarioResult`); otherwise `items` is one scenario and its
+    own value is returned (the plain per-scenario result `aggregate()` sums)."""
+    if isinstance(future, _MultiScenarioFuture):
+        if keep:
+            return _MultiScenarioFuture({s: f for s, f in future._scenario_futures.items() if s in items}, future.instrument)
+        return future.future_for(items[0])
+    if isinstance(future, _MultiMeasureFuture):
+        return _MultiMeasureFuture({m: _scenario_future(f, items, keep) for m, f in future._measure_futures.items()}, future.instrument)
+    res = future.result()
+    if isinstance(res, MultipleScenarioResult):
+        return PricingFuture(_filter_scenarios(res, items) if keep else res[items[0]])
+    if isinstance(res, MultipleRiskMeasureResult) and res._multi_scen_key:
+        return PricingFuture(MultipleRiskMeasureResult(res.instrument, ((m, _filter_scenarios(v, items) if keep else v[items[0]]) for m, v in res.items())))
+    return future
+
+
 def _as_future(value) -> PricingFuture:
     return value if hasattr(value, "result") and hasattr(value, "done") else PricingFuture(value)
 
@@ -725,6 +862,8 @@ def _future_dates(future) -> set:
         return set()
     if isinstance(future, _MultiMeasureFuture):
         return set().union(*(_future_dates(f) for f in future._measure_futures.values()))
+    if isinstance(future, _MultiScenarioFuture):
+        return set().union(*(_future_dates(f) for f in future._scenario_futures.values()))
     return _value_dates(future.result())
 
 
@@ -735,9 +874,13 @@ def _future_date(future):
         return future.group_key[2] if future.group_key else None
     if isinstance(future, _MultiMeasureFuture):
         return _future_date(next(iter(future._measure_futures.values()))) if future._measure_futures else None
+    if isinstance(future, _MultiScenarioFuture):
+        return _future_date(next(iter(future._scenario_futures.values()))) if future._scenario_futures else None
     res = future.result()
-    if isinstance(res, MultipleRiskMeasureResult):
+    if isinstance(res, (MultipleRiskMeasureResult, MultipleScenarioResult)):
         res = next(iter(res.values()), None)
+        if isinstance(res, MultipleScenarioResult):
+            res = next(iter(res.values()), None)
     return _date_of(res)
 
 
@@ -914,10 +1057,17 @@ class PortfolioRiskResult:
         except TypeError:
             return tuple()
 
+    @property
+    def _multi_scen_key(self) -> tuple:
+        """The MultiScenario members this result was priced under (gs), () for none."""
+        return next((s for f in self._leaf_futures() if (s := _future_scenarios(f))), ())
+
     # -- indexing -----------------------------------------------------------------------------
     def __getitem__(self, item):
         if _is_measures(item):
             return self._by_measures(item)
+        if _is_scenarios(item):
+            return self._by_scenarios(_scenario_items(item))
         if _is_dates(item):
             return self._by_date(item)
         if isinstance(item, PortfolioPath):
@@ -962,13 +1112,27 @@ class PortfolioRiskResult:
             return present[items[0]]
         return _MultiMeasureFuture(present, instrument)
 
+    def _by_scenarios(self, items: tuple, keep: bool = True) -> "PortfolioRiskResult":
+        """gs scenario slicing: every leaf keeps only `items` (a `MultipleScenarioResult` per leaf,
+        or per measure). An item the result was not priced under raises gs's ValueError. With
+        `keep=False` (one item) each leaf is that scenario's own value."""
+        keys = self._multi_scen_key
+        missing = [i for i in items if i not in keys]
+        if missing:
+            raise ValueError(f"{missing if len(items) > 1 else missing[0]} not computed")
+        futures = []
+        for f in self.futures:
+            sub = _sub_prr(f)
+            futures.append(PricingFuture(sub._by_scenarios(items, keep)) if sub is not None else _scenario_future(f, items, keep))
+        return PortfolioRiskResult(self.portfolio, self.risk_measures, futures)
+
     def _by_date(self, item) -> "PortfolioRiskResult":
         # gs has no up-front `dates` check: each child raises for itself, so a result whose ladders
         # are all empty (no dates) still slices by a date it was priced on
         futures = []
         for f in self.futures:
             res = f.result()
-            if isinstance(res, (MultipleRiskMeasureResult, PortfolioRiskResult)):
+            if isinstance(res, (MultipleRiskMeasureResult, PortfolioRiskResult, MultipleScenarioResult)):
                 futures.append(PricingFuture(res[item]))
             elif isinstance(res, (pd.Series, pd.DataFrame)):
                 futures.append(PricingFuture(_value_for_date(res, item)))
@@ -1115,6 +1279,15 @@ class PortfolioRiskResult:
         if len(self.risk_measures) > 1:
             return MultipleRiskMeasureResult(self.portfolio, ((r, self[r].aggregate()) for r in self.risk_measures))
 
+        scenarios = self._multi_scen_key
+        if scenarios:
+            # pricebt DEV-S3: one aggregate per MultiScenario member (gs sums the leaves'
+            # MultipleScenarioResults as dicts, ungrouped); each member's lazy leaves still group
+            return MultipleScenarioResult(
+                self.portfolio,
+                ((s, self._by_scenarios((s,), keep=False).aggregate(allow_mismatch_risk_keys, allow_heterogeneous_types)) for s in scenarios),
+            )
+
         paths = self._all_paths()
         leaves = [p(self.futures) for p in paths]
         if leaves and all(isinstance(f, LazyFuture) and f.group_key is not None for f in leaves):
@@ -1178,7 +1351,8 @@ class PortfolioRiskResult:
         ori_df[cols_except_value] = ori_df[cols_except_value].fillna("N/A")  # shallower leaves, scalar rows next to bucket rows
 
         has_dt = "dates" in df_cols
-        other_cols = sorted(c for c in df_cols if "portfolio" in c) + ["instrument_name", "risk_measure"] + (["dates"] if has_dt else [])
+        has_scen = "scenario" in df_cols
+        other_cols = sorted(c for c in df_cols if "portfolio" in c) + ["instrument_name", "risk_measure"] + (["scenario"] if has_scen else []) + (["dates"] if has_dt else [])
         val_cols = [c for c in df_cols if c not in other_cols]
         if "value" in val_cols:
             val_cols = [c for c in val_cols if c != "value"] + ["value"]
@@ -1192,7 +1366,13 @@ class PortfolioRiskResult:
             portfolio_names = [c for c in df_cols if "portfolio_name_" in c]
             names = portfolio_names + ["instrument_name"]
             multi = len(self.risk_measures) > 1
-            if has_dt:
+            if has_scen:
+                # gs get_default_pivots' four multi_scen rules
+                if has_dt:
+                    values, index, columns = "value", "dates", names + (["risk_measure"] if multi else []) + ["scenario"]
+                else:
+                    values, index, columns = "value", names, (["risk_measure", "scenario"] if multi else "scenario")
+            elif has_dt:
                 values, index, columns = "value", "dates", names + (["risk_measure"] if multi else [])
             elif not multi and max(len(p) for p in self._all_paths()) > 1:
                 values, index, columns = "value", portfolio_names, "instrument_name"

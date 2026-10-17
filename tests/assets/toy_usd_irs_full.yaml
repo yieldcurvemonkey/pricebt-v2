@@ -19,6 +19,7 @@ defaults:
 imports: |
   import toylib.rates as tr
   import toylib.irrisk as tri
+  import toylib.scenarios as tsc
 market:
   expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'
   key: toy_usd_ois_full
@@ -102,3 +103,14 @@ risk_measures:
   LocalAnnuityInCents: local_annuity
   CompoundedFixedRate: compounded_rate
   CRIFIRCurve: crif_ir_curve
+scenarios:   # docs/v2/SCENARIOS.md: each gs scenario type -> the toy library's market transform
+  MarketDataShockBasedScenario: 'tsc.apply_shocks(market, scenario)'   # 'IR' moves the curve; a swap holds no vol
+  CurveScenario: 'tsc.curve_scenario(market, scenario)'
+  IndexCurveShift: 'tsc.index_curve_shift(market, scenario)'
+  CurveOverlay: 'tsc.curve_overlay(market, scenario)'
+  RollFwd: 'tsc.roll(market, scenario, pricebt_from_date, pricebt_date)'
+  CarryScenario: 'tsc.roll(market, scenario, pricebt_from_date, pricebt_date)'
+  LiborFallbackScenario: 'tsc.libor_fallback(market, scenario)'
+  MeasureScenario:   # per trade: its own par rate (bp) is set to the scenario value
+    expr: 'tsc.override_measure(market, scenario, lambda m: tr._par_rate(m, resolved["effective_date"], resolved["termination_date"]) * 1e4)'
+    scope: trade

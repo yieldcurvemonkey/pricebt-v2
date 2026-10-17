@@ -348,7 +348,7 @@ Commit after A, B, C+E, D, F+G, with the session's attribution lines. Push `v2-i
 
 ## 12. Later work (not built here)
 
-- **Scenarios** (`RollFwd`, `CurveScenario`, `IndexCurveShift`, `MarketDataShockBasedScenario`, `CurveOverlay`, `CarryScenario`): an optional config section mapping a gs scenario class to a market-transform expression; replace the csa slot of every cache key with an opaque `(csa, location, market date, active scenarios)` value; `RollFwd` also moves the valuation date (R11§4).
+- **Scenarios** (`RollFwd`, `CurveScenario`, `IndexCurveShift`, `MarketDataShockBasedScenario`, `CurveOverlay`, `CarryScenario`): an optional config section mapping a gs scenario class to a market-transform expression; replace the csa slot of every cache key with an opaque `(csa, location, market date, active scenarios)` value; `RollFwd` also moves the valuation date (R11§4). **Done** (branch `v2-scenarios`): [`SCENARIOS.md`](SCENARIOS.md), with the active scenarios as their own key slot next to the csa and market date, `MeasureScenario` and `MultiScenario` included (DEV-S1..S8).
 - Engine coupon booking from `Cashflows` (opt-in, a deviation; decision 0.10).
 - `IRBondFuture`, `IRBondOption`, `IRCap`, `IRFloor`, `IRCapFloor` generated classes and contracts; inflation and cross-currency contracts.
 - Cross-trade strike references (`'=solvefor([name]...)'`, gs 030010).

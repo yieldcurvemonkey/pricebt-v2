@@ -9,6 +9,7 @@ pricebt's own.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import field
 
@@ -64,6 +65,80 @@ def exclude_none(o) -> bool:
     """Ported: `gs_quant.base.exclude_none`. True when a field should be dropped from a dict/JSON
     view because it is unset."""
     return o is None
+
+
+class DataContract:
+    """The gs `Base` object contract a ported dataclass keeps (as the instruments do, DESIGN.md
+    section 5.1): `as_dict`, `to_dict`, `clone`. gs's JSON/schema plumbing is not ported (no wire
+    format): `to_dict` is `as_dict`, snake_case keys and native values."""
+
+    def as_dict(self, as_camel_case: bool = False) -> dict:
+        out = {f.name: getattr(self, f.name) for f in dataclasses.fields(self) if getattr(self, f.name) is not None}
+        if as_camel_case:
+            out = {k.split("_")[0] + "".join(p.title() for p in k.split("_")[1:]): v for k, v in out.items()}
+        return out
+
+    def to_dict(self, encode_json: bool = False) -> dict:
+        return self.as_dict()
+
+    def clone(self, **kwargs):
+        return dataclasses.replace(self, **kwargs)
+
+
+_SCENARIO_STACK: list = []  # entered scenarios, outermost first
+
+
+class _ScenarioMeta(type):
+    @property
+    def path(cls) -> tuple:
+        """The entered scenarios, innermost first (gs `ContextBase.path`)."""
+        return tuple(reversed(_SCENARIO_STACK))
+
+    @property
+    def current(cls):
+        """The innermost entered scenario, else None (gs raises `MqUninitialisedError`)."""
+        return _SCENARIO_STACK[-1] if _SCENARIO_STACK else None
+
+
+class Scenario(DataContract, metaclass=_ScenarioMeta):
+    """Base of the gs scenario classes (`gs_quant.base.Scenario`; the classes live in
+    `pricebt.risk.scenarios`). A scenario is a context manager: `with scenario:` pushes it onto
+    `Scenario.path`, and every `calc` inside prices under the stack, outermost first (gs
+    `CompositeScenario(reversed(path))`). pricebt prices nothing itself: each asset config's
+    `scenarios:` section maps a `scenario_type` to a market transform (docs/v2/SCENARIOS.md)."""
+
+    @property
+    def is_entered(self) -> bool:
+        return any(s is self for s in _SCENARIO_STACK)
+
+    def __enter__(self):
+        _SCENARIO_STACK.append(self)
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        for i in range(len(_SCENARIO_STACK) - 1, -1, -1):
+            if _SCENARIO_STACK[i] is self:
+                del _SCENARIO_STACK[i]
+                break
+        return False
+
+    def __repr__(self) -> str:
+        name = getattr(self, "name", None)
+        if name:
+            return name
+        params = {k: v for k, v in vars(self).items() if v is not None and k not in ("name", "scenario_type")}
+        body = ", ".join(f"{k}:{params[k]!r}" for k in sorted(params, key=str.lower))
+        return f"{self.scenario_type}({body})"
+
+    def __lt__(self, other) -> bool:
+        # pricebt DEV-S6: total order on the repr (gs compares `name`s, so two unnamed scenarios
+        # raise TypeError and `to_frame` cannot pivot on them)
+        return repr(self) < repr(other)
+
+    def _roll_target(self, current):
+        """The valuation date this scenario moves `current` to, or None when it does not move it
+        (pricebt DEV-S2: only `RollFwd` and `CarryScenario` roll; a custom subclass may override)."""
+        return None
 
 
 def get_enum_value(enum_type: type, value):

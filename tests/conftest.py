@@ -10,6 +10,8 @@
   module-global auto-naming counter, also never reset by gs -- research/02 section 2.1). Phase B
   adds the `PricingContext.current = ...` default (IR_RISK_DESIGN R2-30) and
   `pricebt.config.display_options` (the object and its `show_na`, both settable as in gs).
+  docs/v2/SCENARIOS.md adds the entered-scenario stack (a test that fails inside `with scenario:`
+  must not leave it entered for the next).
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import pytest
 
 import toylib.rates as _toylib_rates
 import pricebt.backtests.actions as _actions
+import pricebt.base as _base
 import pricebt.config as _config
 import pricebt.markets as _markets
 from pricebt.backtests.backtest_utils import clear_final_date_cache
@@ -49,7 +52,9 @@ def isolation():
     prev_pricing_context = _markets._DEFAULT
     prev_display_options = _config.display_options
     prev_show_na = prev_display_options.show_na
+    prev_scenarios = list(_base._SCENARIO_STACK)
     yield
+    _base._SCENARIO_STACK[:] = prev_scenarios
     _toylib_rates.reset_recorders()
     clear_final_date_cache()
     PricebtSession.current = prev_pricebt_session
