@@ -16,6 +16,7 @@ from ..datetime.relative_date import RelativeDateSchedule
 from ..errors import ConfigError, NotSupportedError, PricebtError
 from ..risk import RiskMeasure
 from ..risk.results import LazyFuture
+from ..risk.scenarios import require_no_scenario
 
 __all__ = ["DataContext", "DataFrequency", "Dataset", "measure_series"]
 
@@ -173,6 +174,7 @@ def measure_series(
     """
     if fill != "ffill" and fill is not None:
         raise ValueError(f"measure_series: fill must be 'ffill' or None, got {fill!r}")
+    require_no_scenario("measure_series")  # pricebt DEV-S7
     if start is None:
         start = DataContext.current.start_date
     if end is None:

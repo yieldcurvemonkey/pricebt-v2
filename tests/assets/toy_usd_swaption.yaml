@@ -20,6 +20,7 @@ defaults:
   notional_amount: 1.0e6
 imports: |
   import toylib.swaption as ts
+  import toylib.scenarios as tsc
 market:
   expr: 'ts.market(pricebt_date, "USD", pricebt_csa)'
   key: toy_usd_swaption_vol
@@ -102,3 +103,14 @@ risk_measures:
   CompoundedFixedRate: compounded_rate
   CRIFIRCurve: crif_ir_curve
   ProbabilityOfExercise: prob_exercise
+scenarios:   # docs/v2/SCENARIOS.md: each gs scenario type -> the toy library's market transform
+  MarketDataShockBasedScenario: 'tsc.apply_shocks(market, scenario)'   # 'IR' moves the curve, 'IR Vol' the normal vol
+  CurveScenario: 'tsc.curve_scenario(market, scenario)'
+  IndexCurveShift: 'tsc.index_curve_shift(market, scenario)'
+  CurveOverlay: 'tsc.curve_overlay(market, scenario)'
+  RollFwd: 'tsc.roll(market, scenario, pricebt_from_date, pricebt_date)'
+  CarryScenario: 'tsc.roll(market, scenario, pricebt_from_date, pricebt_date)'
+  LiborFallbackScenario: 'tsc.libor_fallback(market, scenario)'
+  MeasureScenario:   # per trade: its own forward (bp) or vol (bp) is set to the scenario value
+    expr: 'tsc.override_measure(market, scenario, lambda m: ts.fwd_rate(m, resolved))'
+    scope: trade

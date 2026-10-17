@@ -19,6 +19,7 @@ import pandas as pd
 from .. import instrument as _instrument_pkg
 from ..errors import ConfigError
 from ..risk import contracts
+from ..risk.scenarios import scenario_types
 from . import yamlio
 
 # ------------------------------------------------------------------------------------ schema constants
@@ -35,8 +36,10 @@ _ISO_CODE_RE = re.compile(r"^[A-Za-z]{3}$")
 _TOP_KEYS = {
     "schema_version", "asset", "description", "instrument", "match", "currency", "defaults",
     "imports", "code", "market", "resolve", "trade", "functions", "portfolio_functions",
-    "attributes", "size_attribute", "risk_measures", "unsupported_measures",
+    "attributes", "size_attribute", "risk_measures", "unsupported_measures", "scenarios",
 }
+_SCENARIO_KEYS = {"expr", "scope"}
+SCENARIO_SCOPES = {"market", "trade"}  # docs/v2/SCENARIOS.md: one transform per asset market, or per trade
 _MARKET_KEYS = {"expr", "key", "provider"}
 _RESOLVE_KEYS = {"expr"}
 _TRADE_KEYS = {"expr", "build_on"}
@@ -78,6 +81,15 @@ class RiskMapping:
 
 
 @dataclass(frozen=True)
+class ScenarioSpec:
+    """One `scenarios:` entry: the market transform for a scenario type, applied once per asset
+    market (`scope: market`) or once per trade, with the trade's `resolved` terms (`scope: trade`)."""
+
+    expr: str
+    scope: str = "market"
+
+
+@dataclass(frozen=True)
 class AssetConfig:
     """One loaded, validated, fully-compiled asset config. Immutable and self-contained: every
     expression string it holds has already been compiled, but none has been executed."""
@@ -114,10 +126,12 @@ class AssetConfig:
     code_code: Any = field(repr=False)
     _compiled: Dict[str, Tuple[Any, str]] = field(repr=False)
     market_provider: Optional[str] = None
+    # scenario_type -> transform (docs/v2/SCENARIOS.md); compiled under "scenarios.<type>"
+    scenarios: Dict[str, ScenarioSpec] = field(default_factory=dict)
 
     def code(self, key: str) -> Any:
         """The compiled (`"eval"` mode) code object for `key` -- a function/portfolio-function/
-        attribute name, or `"market"`/`"resolve"`/`"trade"`."""
+        attribute name, `"market"`/`"resolve"`/`"trade"`, or `"scenarios.<type>"`."""
         return self._compiled[key][0]
 
     def expr_src(self, key: str) -> str:
@@ -241,6 +255,31 @@ def _parse_unsupported(raw: Any, name: str) -> Dict[str, Dict[str, str]]:
             out[measure] = {form: _require_reason(reason, name, f"{key}.{form}") for form, reason in value.items()}
         else:
             out[measure] = {"*": _require_reason(value, name, key)}
+    return out
+
+
+def _parse_scenarios(raw: Any, name: str) -> Dict[str, ScenarioSpec]:
+    """`scenarios:` -> `{scenario_type: ScenarioSpec}`. A value is a transform expression, or a
+    `{expr, scope}` mapping. A key must be a leaf scenario type (`pricebt.risk.scenarios`, or a
+    `Scenario` subclass defined before the config loads); composites need no entry."""
+    d = _require_mapping(raw, name, "scenarios")
+    known = scenario_types()
+    out: Dict[str, ScenarioSpec] = {}
+    for stype, spec in d.items():
+        key = f"scenarios.{stype}"
+        if stype in ("CompositeScenario", "MultiScenario"):
+            _fail(name, key, f"{stype} needs no entry: pricebt applies its members one by one")
+        if stype not in known:
+            _fail(name, key, f"unknown scenario type {stype!r} (one of {', '.join(known)}, or a Scenario subclass defined before this config loads)", candidates=known, bad=str(stype))
+        if isinstance(spec, str):
+            expr, scope = spec, "market"
+        else:
+            m = _require_mapping(spec, name, key)
+            _check_unknown_keys(m, _SCENARIO_KEYS, name, key)
+            expr, scope = m.get("expr"), m.get("scope", "market")
+            if scope not in SCENARIO_SCOPES:
+                _fail(name, f"{key}.scope", f"scope {scope!r} is not one of {sorted(SCENARIO_SCOPES)}")
+        out[stype] = ScenarioSpec(expr=_require_str(expr, name, f"{key}.expr" if not isinstance(spec, str) else key), scope=scope)
     return out
 
 
@@ -460,6 +499,9 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
         compiled[fname] = (_compile_expr(fspec.expr, name, fname, "eval"), fspec.expr)
     for aname, aexpr in attributes.items():
         compiled[aname] = (_compile_expr(aexpr, name, aname, "eval"), aexpr)
+    scenarios = _parse_scenarios(raw.get("scenarios", {}), name)
+    for stype, sspec in scenarios.items():
+        compiled[f"scenarios.{stype}"] = (_compile_expr(sspec.expr, name, f"scenarios.{stype}", "eval"), sspec.expr)
 
     return AssetConfig(
         name=name,
@@ -487,6 +529,7 @@ def load_asset(source: Union[str, Path, Mapping[str, Any]]) -> AssetConfig:
         imports_code=imports_code,
         code_code=code_code,
         _compiled=compiled,
+        scenarios=scenarios,
     )
 
 

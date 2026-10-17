@@ -42,6 +42,7 @@ from ..markets.portfolio import Portfolio
 from ..progress import ProgressBar
 from ..risk import Cashflows, FinancingToDate, Price
 from ..risk.results import PortfolioRiskResult
+from ..risk.scenarios import require_no_scenario
 from ..session import PricebtSession
 from .action_handler import ActionHandler, ActionHandlerBaseFactory
 from .actions import (
@@ -315,6 +316,10 @@ class GenericEngine(BacktestBaseEngine):
 
         """
         logger.info(f"Starting Backtest: Building Date Schedule - {dt.datetime.now()}")
+        # pricebt DEV-S7: gs sends an ambient scenario with every server request of the run; the
+        # engine here also reads markets directly (availability, missing-market rolls), which a
+        # scenario would not reach, so a run under one is refused rather than half-applied
+        require_no_scenario("run_backtest")
 
         # pricebt DEV-T16: run_backtest's own holiday_calendar, normalised to a tuple here (a list
         # is unhashable and crashes get_final_date's cache key).

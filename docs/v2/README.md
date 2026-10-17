@@ -10,6 +10,7 @@ pricebt v2 is a gs_quant-compatible, event-driven backtester with **no pricing o
 4. The interest-rate pricing and risk extension (branch `v2-ir-risk`): `IR_RISK_DESIGN.md` (§00 first), then `ASSET_CONFIG_GUIDE.md` "Measure contracts". Merging the concurrent swap P&L-explain branch: `MERGE_NOTES_pnl_explain.md`.
 5. Strict contracts (branch `v2-ir-required`): `IR_STRICT_CONTRACT.md`. Cash bonds and repo financing (branch `v2-bonds`, revision 4): `BOND_DESIGN.md`.
 6. Market providers and the gs market-data contexts (branch `v2-market-context`): `MARKET_CONTEXT_DESIGN.md`, then `ASSET_CONFIG_GUIDE.md` "Market providers" and `configs/markets/README.md`. Moving an existing config onto providers: `MARKET_PROVIDER_REFACTOR_PROMPT.md` (a hand-off prompt for a swap), `SWAPTION_PROVIDER_REFACTOR_PROMPT.md` (for a swaption: strike aliases, sizing by vega or gamma) and `tools/parity_check.py`.
+7. Scenario contexts (branch `v2-scenarios`: `RollFwd`, shocks, curve shapes, `MeasureScenario`, `MultiScenario`, the `scenarios:` config section): `SCENARIOS.md`.
 
 ## Research notes (evidence; cite by section, e.g. R02§4)
 

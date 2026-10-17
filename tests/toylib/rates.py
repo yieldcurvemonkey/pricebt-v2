@@ -58,6 +58,19 @@ def _zero_rate(d: date, ccy: str) -> float:
     return base + amp * math.sin(2 * math.pi * n / period)
 
 
+def shape_value(shape: tuple, t: float) -> float:
+    """A piecewise-linear zero-rate add-on at tenor `t` (years): `shape` is ((years, dz), ...)
+    sorted by years, flat outside its first and last pillar; () is 0."""
+    if not shape:
+        return 0.0
+    if t <= shape[0][0]:
+        return shape[0][1]
+    for (t0, v0), (t1, v1) in zip(shape, shape[1:]):
+        if t <= t1:
+            return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return shape[-1][1]
+
+
 @dataclass(frozen=True)
 class ToyCurve:
     ref_date: date
@@ -65,10 +78,15 @@ class ToyCurve:
     zero_rate: float
     csa: Optional[str] = None
     slope: float = 0.0  # PNL_EXPLAIN_PLAN.md 3.1: sloped-world tests only; 0.0 default is a no-op.
+    # toylib.scenarios only (both no-ops by default): a reshaping add-on to the zero rate in tenor
+    # space (`shape_value`), and the date a scenario path starts on -- on [path_start, ref_date]
+    # the scenario world is this curve re-anchored, so an expiry inside the path is decided here
+    shape: tuple = ()
+    path_start: Optional[date] = None
 
     def discount_factor(self, d: date) -> float:
         t = (d - self.ref_date).days / 365.0
-        return math.exp(-(self.zero_rate + self.slope * t) * t)
+        return math.exp(-(self.zero_rate + self.slope * t + shape_value(self.shape, t)) * t)
 
 
 def market(d: date, ccy: str, csa: Optional[str] = None) -> Optional[ToyCurve]:

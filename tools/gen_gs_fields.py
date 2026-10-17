@@ -50,6 +50,7 @@ PRICEBT_ENUM_NAMES = [
     "AssetClass", "AssetType", "CurrencyName", "PositionType",
     "Currency",
     "FiniteDifferenceMethod",  # IR_RISK_DESIGN.md section 1.4 (no instrument field uses it)
+    "MarketDataShockType", "FallbackType", "ScenarioType",  # docs/v2/SCENARIOS.md (scenario fields only)
 ]
 
 _OPTIONAL_RE = re.compile(r"^typing\.Optional\[([\w.]+)\]$")

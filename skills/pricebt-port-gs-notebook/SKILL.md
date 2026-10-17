@@ -179,7 +179,8 @@ Fix these while porting (from `docs/v2/research/05-notebook-coverage.md` §8 and
   configs.
 - **Server markets** (`LiveMarket`, `OverlayMarket`, `RelativeMarket`) do not exist in pricebt, and
   any market object other than a `CloseMarket` raises in `PricingContext(market=...)`. Scenarios
-  (`RollFwd`, `CurveScenario`, `MarketDataShockBasedScenario`) are later work.
+  (`RollFwd`, `CurveScenario`, `MarketDataShockBasedScenario`, `MultiScenario`, ...) port
+  unchanged once each asset config maps them: [`pricebt-scenarios`](../pricebt-scenarios/SKILL.md).
 
 ## Worked examples in this repository
 

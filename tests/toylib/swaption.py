@@ -20,6 +20,7 @@ market's own date (`curve.ref_date`).
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from datetime import date
 from types import SimpleNamespace
@@ -127,8 +128,14 @@ def _fwd(curve, trade, fwd=None) -> float:
 
 def _expiry_fwd(curve, trade) -> float:
     """F at expiration_date in the deterministic toy world -- never the pricing market's, so the
-    exercise decision is fixed once made (physical settlement)."""
+    exercise decision is fixed once made (physical settlement). An expiry inside a scenario path
+    (toylib.scenarios: on or after the curve's `path_start`) is decided in the scenario world, on
+    the scenario curve re-anchored at expiry: a RollFwd to expiry under a rate shock exercises on
+    the shocked forward."""
     exp = trade["expiration_date"]
+    path_start = getattr(curve, "path_start", None)
+    if path_start is not None and exp >= path_start:
+        return _fwd(dataclasses.replace(curve, ref_date=exp), trade)
     return _fwd(tr.ToyCurve(exp, curve.ccy, tr._zero_rate(exp, curve.ccy)), trade)
 
 

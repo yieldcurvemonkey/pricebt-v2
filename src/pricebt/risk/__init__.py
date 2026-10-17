@@ -570,3 +570,50 @@ PRICEBT_MEASURES = (
 # of the base measure serve them (IR_RISK_DESIGN.md section 1.3).
 object.__setattr__(IRGammaParallelLocalCcy, "base_name", "IRGammaParallel")
 object.__setattr__(IRDiscountDeltaParallelLocalCcy, "base_name", "IRDiscountDeltaParallel")
+
+# --------------------------------------------------------------------------------- scenarios
+# gs_quant.risk exports the scenario classes (gs_quant.risk.__init__); they live in
+# pricebt.risk.scenarios, with the helpers the pricing layer applies them with
+from pricebt.risk.scenarios import (  # noqa: E402,F401
+    CarryScenario,
+    CompositeScenario,
+    CurveOverlay,
+    CurveScenario,
+    IndexCurveShift,
+    LiborFallbackScenario,
+    MarketDataPattern,
+    MarketDataPatternAndShock,
+    MarketDataScenario,
+    MarketDataShock,
+    MarketDataShockBasedScenario,
+    MarketDataShockType,
+    MarketDataVolShockScenario,
+    MarketDataVolSlice,
+    MeasureScenario,
+    MultiScenario,
+    RollFwd,
+    Scenario,
+)
+from pricebt.risk.results import MultipleScenarioResult  # noqa: E402,F401
+
+__all__ += [
+    "Scenario",
+    "MarketDataShockBasedScenario",
+    "LiborFallbackScenario",
+    "CarryScenario",
+    "CompositeScenario",
+    "CurveScenario",
+    "IndexCurveShift",
+    "MarketDataPattern",
+    "MarketDataPatternAndShock",
+    "MarketDataScenario",
+    "MarketDataShock",
+    "MarketDataShockType",
+    "MarketDataVolShockScenario",
+    "MarketDataVolSlice",
+    "MeasureScenario",
+    "RollFwd",
+    "CurveOverlay",
+    "MultiScenario",
+    "MultipleScenarioResult",
+]
