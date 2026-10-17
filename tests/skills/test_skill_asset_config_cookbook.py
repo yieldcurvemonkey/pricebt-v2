@@ -77,7 +77,22 @@ def _load_warnings(cfg) -> str:
 
 _FRAME = {"expr": "[]", "unit": "ccy", "returns": "frame", "scale_columns": ["payment_amount"]}
 
+def _provider_cfg(market) -> dict:
+    return {"schema_version": 1, "asset": "a", "instrument": "ConfigInstrument", "currency": "USD", "market": market,
+            "functions": {"npv": {"expr": "0.0", "unit": "ccy"}}, "risk_measures": {"Price": "npv"}}
+
+
+def _session_error(**kwargs) -> str:
+    with pytest.raises(PricebtError) as exc:
+        PricebtSession.use(**kwargs)
+    return str(exc.value)
+
+
 LOAD = {
+    "is not a registered market provider": lambda: _session_error(assets=[_provider_cfg({"provider": "usd_ois"})]),
+    "cannot be combined with an inline market.expr / market.key": lambda: _load_error(_provider_cfg({"provider": "usd_ois", "expr": "1"})),
+    "give market.expr (an inline market expression) or market.provider": lambda: _load_error(_provider_cfg({})),
+    "a circular requires: can never load": lambda: _session_error(markets=[{"schema_version": 1, "market": "vol", "requires": ["usd_ois"], "expr": "1"}]),
     "measure-contract problem(s) for instrument": lambda: _load_error(_bond_cfg()),
     "level must be intensive (set scale_with_quantity: false)": lambda: _load_error(_bond_cfg(
         {"t": {"expr": "1.0", "unit": "number"}}, {"ExpiryInYears": "t"})),

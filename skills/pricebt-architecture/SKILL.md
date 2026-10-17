@@ -16,7 +16,7 @@ pricebt is an event-driven backtester whose public API is a near 1:1 port of the
 
 ```
 your notebook / script  (gs_quant-style code: Strategy, triggers, actions, GenericEngine)
-        │  PricebtSession.use(assets=["configs/assets/<asset>.yaml"], fx=...)
+        │  PricebtSession.use(assets=["configs/assets/<asset>.yaml"], markets=["configs/markets"], fx=...)
         ▼
 src/pricebt/backtests/*      ← port of gs_quant 2.1.17 backtests (engine, triggers, actions, results)
         ▼  talks only to gs-shaped local objects
@@ -24,6 +24,7 @@ src/pricebt/markets, instrument, risk   (PricingContext, CloseMarket, Portfolio,
         ▼  every value request goes to ONE place
 src/pricebt/assets/pricing.py: PricingService  (caches, FX, measure → function mapping, units, parameters, frames)
         ▼  eval() of the strings in the asset config  (loaded by assets/config.py, checked against risk/contracts.py)
+        │  and in the market provider configs it names  (assets/market.py: one dated market object, shared by assets)
 YOUR LIBRARY (Citi-DP-style, Athena-style, in-house, QuantLib...)  ← reached ONLY via the config's imports/code
 ```
 
@@ -71,14 +72,16 @@ Details: [`pricebt-risk-measures`](../pricebt-risk-measures/SKILL.md) and [`pric
 | Path | What |
 |---|---|
 | `src/pricebt/backtests/` | engine, triggers, actions, `BackTest` results (the gs port) |
-| `src/pricebt/assets/` | asset-config loader, namespace, `PricingService`, FX |
+| `src/pricebt/assets/` | asset-config loader, namespace, `PricingService`, FX; `market.py`: market provider configs and `MarketRegistry` |
 | `src/pricebt/instrument/` | gs instrument classes (`IRSwap`, `IRSwaption`, `Bond`, …) with real gs signatures, generated from `_gs_fields.py` |
 | `src/pricebt/risk/` | the measure catalogue (`Price`, `IRDelta`, `IRDeltaParallel`, …), `PnlExplain`, result objects (`results.py`), helpers (`core.py`) |
 | `src/pricebt/risk/contracts.py` | the per-instrument measure contracts checked at load |
-| `src/pricebt/markets/` | `PricingContext`, `HistoricalPricingContext`, `CloseMarket`; `portfolio.py`: `Portfolio`, `Grid` |
+| `src/pricebt/markets/` | `PricingContext`, `HistoricalPricingContext` (gs signatures and properties; `market_data_location` reaches configs as `pricebt_location`), `CloseMarket`; `portfolio.py`: `Portfolio`, `Grid` |
+| `src/pricebt/data/` | `DataContext` (the gs date-window context), `measure_series` |
 | `src/pricebt/backtests/backtest_objects.py` | `BackTest` views, `PnlDefinition`, `ir_pnl_definition`, `pnl_explain_table` |
 | `configs/assets/` | real asset configs (one per asset) |
-| `tests/assets/`, `tests/toylib/` | deterministic toy assets for tests and learning |
+| `configs/markets/` | market provider configs (one per market; [`README`](../../configs/markets/README.md)) |
+| `tests/assets/`, `tests/markets/`, `tests/toylib/` | deterministic toy assets and market providers for tests and learning |
 | [`docs/v2/DESIGN.md`](../../docs/v2/DESIGN.md) | the full contract; §4 is the asset config, §8 risk/results, §11 deviations |
 | [`docs/v2/IR_RISK_DESIGN.md`](../../docs/v2/IR_RISK_DESIGN.md) | IR measures, contracts, portfolio parity, P&L decomposition (§00 overrides the rest) |
 | [`docs/v2/BOND_DESIGN.md`](../../docs/v2/BOND_DESIGN.md) | the strict Bond contract, the financing contract and holding cash (DEV-E22) |

@@ -9,7 +9,8 @@
   module-global that otherwise leaks across tests). P3.3 adds actions.action_count (gs's own
   module-global auto-naming counter, also never reset by gs -- research/02 section 2.1). Phase B
   adds the `PricingContext.current = ...` default (IR_RISK_DESIGN R2-30) and
-  `pricebt.config.display_options` (the object and its `show_na`, both settable as in gs).
+  `pricebt.config.display_options` (the object and its `show_na`, both settable as in gs). The
+market-context work adds the `DataContext.current = ...` default (MARKET_CONTEXT_DESIGN section 6).
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import pytest
 import toylib.rates as _toylib_rates
 import pricebt.backtests.actions as _actions
 import pricebt.config as _config
+import pricebt.data as _data
 import pricebt.markets as _markets
 from pricebt.backtests.backtest_utils import clear_final_date_cache
 from pricebt.session import GsSession, PricebtSession
@@ -47,6 +49,7 @@ def isolation():
     prev_gs_session = GsSession.current
     prev_action_count = _actions.action_count
     prev_pricing_context = _markets._DEFAULT
+    prev_data_context = _data._DATA_DEFAULT
     prev_display_options = _config.display_options
     prev_show_na = prev_display_options.show_na
     yield
@@ -56,5 +59,6 @@ def isolation():
     GsSession.current = prev_gs_session
     _actions.action_count = prev_action_count
     _markets._DEFAULT = prev_pricing_context
+    _data._DATA_DEFAULT = prev_data_context
     _config.display_options = prev_display_options
     prev_display_options.show_na = prev_show_na

@@ -76,6 +76,7 @@ helper instead of repeating it.
 | 30 | **Bond analytics**: accrued, clean and dirty price, yield, duration, convexity, settlement | AI to standard settlement; Clean = Dirty − 100·AI/face; Dirty = 100·Price/face; `IRFwdRate` = YTM; duration and convexity by yield bumps; `DaysToSettlement` `unit: number`, `scale_with_quantity: false` |
 | 31 | **Repo financing**: `RepoRate`, `RepoHaircut`, `FinancingToDate` | the rate in force (GC − special, or the term rate pinned at resolve); principal (1 − haircut)·Price(trade date) pinned at resolve; simple interest per calendar day |
 | 32 | **`ForwardPrice`, `Carry`, `RollDown`** (Bond) | forward to H = settlement + 1 month at `RepoRate`; Carry = clean now − clean forward; RollDown = clean at H on the rolled-down curve − clean now |
+| 34 | **One market for several assets**, or a market **built on another** (a vol surface on a curve) | a standalone market provider config (`market: {provider: name}` in the asset, `requires:` between providers): one object per date, no shared-`imports` rule |
 | 33 | The bond's other strict rows (`FairPremium`, `PremiumCents`, `LocalAnnuityInCents`, `CompoundedFixedRate`, `CRIFIRCurve`, `PnlExplain`, `LightningDV01`, `LightningOAS`, `ParSpread`) | Price; Price/\|face\| in pct; Annuity/\|face\|; (1 + c/f)^f − 1; the ladder as CRIF; IR + CREDIT rows; the yield DV01; the Z-spread |
 
 ## Unit and sign conversion table (the most common source of wrong P&L)

@@ -112,6 +112,10 @@ def test_close_market_date_rolls_until_the_close_is_in(monkeypatch):
     _fix_now(monkeypatch, datetime(2026, 9, 29, 21, 0, tzinfo=ny))
     assert close_market_date(date=d) == d == CloseMarket(date=d).date  # London's D close is in
     assert close_market_date("NYC", d) == date(2026, 9, 28) == CloseMarket(date=d, location="NYC").date  # New York's is not
+    with PricingContext(market_data_location="NYC"):  # gs: a market with no location rolls in the context's
+        assert CloseMarket(date=d).date == date(2026, 9, 28)
+    with PricingContext(market_data_location="MY_SNAP"):  # no timezone known for it: London's
+        assert CloseMarket(date=d).date == d
     assert CloseMarket(date=date(2026, 9, 30), check=False).date == date(2026, 9, 30)
     assert close_market_date(date=F) == F == CloseMarket(date=F).date
     with PricingContext(pricing_date=F):

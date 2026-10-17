@@ -15,8 +15,10 @@ from typing import Any, ClassVar, Dict, Mapping, Optional, Sequence, Tuple, Unio
 
 from .assets.config import AssetConfig
 from .assets.fx import FxConfig, load_fx
+from .assets.market import MarketConfig, MarketRegistry, MarketSource
 from .assets.registry import AssetRegistry, AssetSource
 from .base import EnumBase
+from .markets import DEFAULT_MARKET_DATA_LOCATION, PricingContext
 
 __all__ = ["Environment", "GsSession", "PricebtSession"]
 
@@ -33,8 +35,9 @@ class Environment(EnumBase, Enum):
 
 
 class PricebtSession:
-    """pricebt's session: an asset registry, an optional FX config, and the pricing settings a
-    backtest run reads (DESIGN.md section 6.1)."""
+    """pricebt's session: a market provider registry, an asset registry (whose assets may name
+    those providers), an optional FX config, and the pricing settings a backtest run reads
+    (DESIGN.md section 6.1; docs/v2/MARKET_CONTEXT_DESIGN.md)."""
 
     current: ClassVar[Optional["PricebtSession"]] = None
 
@@ -43,12 +46,17 @@ class PricebtSession:
         assets: Sequence[AssetSource] = (),
         fx: Optional[FxSource] = None,
         *,
+        markets: Sequence[MarketSource] = (),
         tz: str = "America/New_York",
         eod_time: str = "17:00",
         missing_market: str = "drop",
         reporting_currency: Optional[str] = None,
     ):
-        self.registry = AssetRegistry()
+        # market providers first: an asset's `market.provider` is checked when the asset registers
+        self.markets = MarketRegistry()
+        for source in markets:
+            self.markets.add(source)
+        self.registry = AssetRegistry(self.markets)
         for source in assets:
             self.registry.add(source)
         self.fx: Optional[FxConfig] = fx if fx is None or isinstance(fx, FxConfig) else load_fx(fx)
@@ -63,7 +71,21 @@ class PricebtSession:
         # since `pricing.PricingService` does not exist yet) until P2.2 lands.
         from pricebt.assets import pricing as _pricing_mod
 
-        self.pricing = _pricing_mod.PricingService(self.registry, self.fx, tz=self.tz, eod_time=self.eod_time)
+        self._pricing = _pricing_mod.PricingService(self.registry, self.fx, tz=self.tz, eod_time=self.eod_time)
+        self._pricing_by_location: Dict[str, Any] = {}
+
+    @property
+    def pricing(self):
+        """The `PricingService` of the current `PricingContext`'s market data location: one
+        service, with its own caches, per location (MARKET_CONTEXT_DESIGN section 5), so a value
+        priced on the NYC close is never served for the LDN close."""
+        location = PricingContext.current.market_data_location
+        if location == DEFAULT_MARKET_DATA_LOCATION:
+            return self._pricing
+        service = self._pricing_by_location.get(location)
+        if service is None:
+            service = self._pricing_by_location[location] = self._pricing.for_location(location)
+        return service
 
     @classmethod
     def use(cls, assets: Sequence[AssetSource] = (), fx: Optional[FxSource] = None, **kwargs: Any) -> "PricebtSession":
@@ -74,8 +96,12 @@ class PricebtSession:
     def add_asset(self, source: AssetSource) -> AssetConfig:
         return self.registry.add_one(source)
 
+    def add_market(self, source: MarketSource) -> MarketConfig:
+        return self.markets.add_one(source)
+
     def reset_caches(self) -> None:
-        self.pricing.reset()
+        for service in (self._pricing, *self._pricing_by_location.values()):
+            service.reset()
 
     def __enter__(self) -> "PricebtSession":
         self._prev_current = PricebtSession.current

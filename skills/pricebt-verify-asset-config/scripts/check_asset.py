@@ -298,9 +298,10 @@ def check_functions(ctx: _Ctx) -> List[CheckResult]:
         except Exception as exc:
             out.append(CheckResult(f"functions_finite[{fname}]", FAIL, f"{type(exc).__name__}: {exc}"))
             continue
-        values = list(v.values()) if isinstance(v, dict) else [v]
+        rows = isinstance(v, list)  # a ladder on several curves returns row dicts, not {point: value}
+        values = list(v.values()) if isinstance(v, dict) else [r["value"] for r in v] if rows else [v]
         status = PASS if all(_finite(x) for x in values) else WARN
-        shown = {k: _fmt(x) for k, x in v.items()} if isinstance(v, dict) else _fmt(v)
+        shown = {k: _fmt(x) for k, x in v.items()} if isinstance(v, dict) else [_fmt(x) for x in values] if rows else _fmt(v)
         out.append(CheckResult(f"functions_finite[{fname}]", status, f"{shown} {spec.unit}"))
     return out
 
@@ -786,6 +787,7 @@ def run_checks(
     config,
     *,
     fx=None,
+    markets: Sequence[Any] = (),
     dates: Sequence[date] = (),
     start: Optional[date] = None,
     end: Optional[date] = None,
@@ -793,16 +795,20 @@ def run_checks(
     sys_path: Sequence[str] = (),
     backtest: bool = True,
     pack: Optional[str] = "auto",
+    location: Optional[str] = None,
 ) -> List[CheckResult]:
     """Run every applicable check on one asset config (a path or a mapping). Never raises for a
-    config problem: each failure becomes a FAIL row. `pack`: auto | none | IRSwap | IRSwaption |
-    Bond (check_asset_ir.select_pack)."""
+    config problem: each failure becomes a FAIL row. `markets`: the market provider configs (paths,
+    directories or mappings) an asset with `market: {provider: ...}` needs. `pack`: auto | none |
+    IRSwap | IRSwaption | Bond (check_asset_ir.select_pack). `location`: the market_data_location
+    every check prices under (None = the default, LDN)."""
     for p in reversed(list(sys_path)):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 
     from pricebt.assets import load_asset
     from pricebt.errors import AssetEvaluationError
+    from pricebt.markets import PricingContext
     from pricebt.session import PricebtSession
 
     results: List[CheckResult] = []
@@ -813,7 +819,11 @@ def run_checks(
     results.append(CheckResult("config_loads", PASS, f"asset {cfg.name}: instrument {cfg.instrument}, {len(cfg.functions)} functions, measures {sorted(cfg.risk_measures)}"))
 
     d1, d2, start, end = _default_dates(dates, start, end)
-    with PricebtSession(assets=[cfg], fx=fx) as session:
+    try:
+        checked_session = PricebtSession(assets=[cfg], fx=fx, markets=list(markets))
+    except Exception as exc:  # e.g. market.provider names a provider that --markets did not supply
+        return results + [CheckResult("config_loads", FAIL, f"{type(exc).__name__}: {exc}")]
+    with PricingContext(market_data_location=location), checked_session as session:
         service = session.pricing
         asset = session.registry[cfg.name]
         try:
@@ -884,6 +894,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Check one pricebt asset config end to end.")
     ap.add_argument("config", help="asset config YAML")
     ap.add_argument("--fx", help="FX config YAML (enables fx_round_trip for a non-USD asset)")
+    ap.add_argument("--markets", action="append", default=[], help="market provider config YAML or directory (repeatable): needed when the asset's market: names a provider")
+    ap.add_argument("--location", help="market_data_location to price under (default LDN): the one a location-strict market provider answers to")
     ap.add_argument("--date", action="append", default=[], type=date.fromisoformat, help="sample business date; give twice for d1 and d2")
     ap.add_argument("--start", type=date.fromisoformat, help="smoke backtest start (default d1)")
     ap.add_argument("--end", type=date.fromisoformat, help="smoke backtest end (default start + 3 months)")
@@ -893,7 +905,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--json", help="also write the results as JSON to this file")
     ap.add_argument("--pack", default="auto", choices=["auto", "none", "IRSwap", "IRSwaption", "Bond"], help="contract + check pack: auto uses the config's instrument; name one for a ConfigInstrument asset")
     a = ap.parse_args(argv)
-    results = run_checks(a.config, fx=a.fx, dates=a.date, start=a.start, end=a.end, kwargs=json.loads(a.kwargs), sys_path=a.sys_path, backtest=not a.no_backtest, pack=a.pack)
+    results = run_checks(a.config, fx=a.fx, markets=a.markets, dates=a.date, start=a.start, end=a.end, kwargs=json.loads(a.kwargs), sys_path=a.sys_path, backtest=not a.no_backtest, pack=a.pack, location=a.location)
     print(to_markdown(results))
     if a.json:
         Path(a.json).write_text(json.dumps([asdict(r) for r in results], indent=2), encoding="utf-8")

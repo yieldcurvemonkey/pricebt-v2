@@ -297,6 +297,8 @@ code: |
 market:
   expr: 'lib_market(pricebt_date)'     # TODO: lib_market(pricebt_date, pricebt_csa) if the CSA picks the discount curve
   key: TODO_market_key                 # share one market between configs only if imports/code/expr are identical
+  # or, instead of expr/key, a market shared by several assets: market: {provider: <name>} and a market
+  # provider config (configs/markets/README.md; cookbook pattern 34)
 resolve:
   expr: 'resolve_swap(market, kwargs)'
 trade:

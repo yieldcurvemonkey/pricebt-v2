@@ -27,8 +27,9 @@ from pricebt.common import AggregationLevel
 from pricebt.errors import ConfigError, MarketDataUnavailable, NotSupportedError, PricebtError, UnsupportedMeasureError
 from pricebt.instrument import Instrument, instrument_identity
 from pricebt.instrument import _freeze  # noqa: F401 -- reuse the one freeze rule (DESIGN.md 5.1 item 3)
-from pricebt.markets import HistoricalPricingContext, PricingContext
+from pricebt.markets import DEFAULT_MARKET_DATA_LOCATION, HistoricalPricingContext, PricingContext
 from pricebt.markets.portfolio import Portfolio
+from pricebt.progress import ProgressBar
 from pricebt.risk import MarketParameter, Price, RiskMeasureWithCurrencyParameter, RiskMeasureWithFiniteDifferenceParameter, contracts
 from pricebt.risk.results import (
     DataFrameWithInfo,
@@ -122,8 +123,14 @@ class PricingService:
         self.eod_time = eod_time
         self._fx_config = fx
         self._fx_evaluator: Optional[FxEvaluator] = FxEvaluator(fx) if fx is not None else None
+        # the market data location every market of this service is the market of (gs
+        # `PricingContext.market_data_location`), injected as `pricebt_location`. One service per
+        # location (`for_location`), so no cache below needs it in its key.
+        self.location: str = DEFAULT_MARKET_DATA_LOCATION
         self._namespaces: Dict[str, AssetNamespace] = {}  # persists across reset() (section 4.4: once per process)
+        self._market_namespaces: Dict[str, AssetNamespace] = {}  # market providers: their own names, their own namespaces
         self._market_cache: Dict[tuple, Any] = {}
+        self._provider_market_cache: Dict[tuple, Any] = {}
         self._resolve_cache: Dict[tuple, dict] = {}
         self._trade_cache: Dict[tuple, Any] = {}
         self._unit_value_cache: Dict[tuple, Any] = {}
@@ -136,6 +143,7 @@ class PricingService:
         # dicts (a test, e.g.) sees it emptied too.
         for cache in (
             self._market_cache,
+            self._provider_market_cache,
             self._resolve_cache,
             self._trade_cache,
             self._unit_value_cache,
@@ -144,6 +152,16 @@ class PricingService:
             self._fx_cache,
         ):
             cache.clear()
+
+    def for_location(self, location: str) -> "PricingService":
+        """A service pricing on the markets of another market data location: the same registry,
+        FX config and (once-per-process) namespaces, its own caches (MARKET_CONTEXT_DESIGN section 5)."""
+        other = type(self)(self.registry, self._fx_config, tz=self.tz, eod_time=self.eod_time)
+        other.location = location
+        other._namespaces = self._namespaces
+        other._market_namespaces = self._market_namespaces
+        other._fx_evaluator = self._fx_evaluator
+        return other
 
     # ------------------------------------------------------------------------------ namespaces / injected vars
 
@@ -161,6 +179,7 @@ class PricingService:
             "pricebt_timestamp": pd.Timestamp(naive, tz=self.tz),
             "pricebt_datetime": naive,
             "pricebt_csa": csa,
+            "pricebt_location": self.location,
         }
 
     # ------------------------------------------------------------------------------ matching (section 5.3)
@@ -181,7 +200,30 @@ class PricingService:
 
     # ------------------------------------------------------------------------------ market (section 6.2/6.3)
 
+    def _provider_market(self, name: str, d: _date, csa: Optional[str]) -> Any:
+        """The market object of a registered market provider (MARKET_CONTEXT_DESIGN section 3),
+        evaluated once per (provider, date, csa) in the provider's own namespace, whichever assets
+        ask for it. `markets` holds the objects of the providers it `requires:`; a required market
+        that is unavailable makes this one unavailable without evaluating it."""
+        key = (name, d, csa)
+        if key in self._provider_market_cache:
+            return self._provider_market_cache[key]
+        cfg = self.registry.markets[name]
+        required = {r: self._provider_market(r, d, csa) for r in cfg.requires}
+        if any(m is _NO_MARKET for m in required.values()):
+            stored = _NO_MARKET
+        else:
+            ns = self._market_namespaces.get(name)
+            if ns is None:
+                ns = self._market_namespaces[name] = AssetNamespace(cfg)
+            value = ns.eval("market", **self._base_injected(d, csa), markets=required)
+            stored = value if value is not None else _NO_MARKET
+        self._provider_market_cache[key] = stored
+        return stored
+
     def _get_market_raw(self, asset, d: _date, csa: Optional[str]) -> Any:
+        if asset.market_provider is not None:
+            return self._provider_market(asset.market_provider, d, csa)
         key = (asset.market_key, d, csa)
         if key in self._market_cache:
             return self._market_cache[key]
@@ -734,12 +776,41 @@ def _date_indexed(by_date: dict, rep):
     return SeriesWithInfo(pd.Series(by_date), unit=getattr(rep, "unit", None), risk_key=_historical_key(getattr(rep, "risk_key", None)))
 
 
-def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str]):
+def _progress(ctx: PricingContext) -> Optional[ProgressBar]:
+    """gs `show_progress`: the one bar of the context's `active_context` (the outermost entered
+    context), opened by the first calculation under it and closed when it exits; None when the
+    context does not ask for one, or nothing is entered (there is no exit to close a bar on).
+    pricebt computes inside the block, so the bar advances there (gs: on exit)."""
+    if not ctx.show_progress:
+        return None
+    owner = ctx.active_context
+    if not owner.is_entered:
+        return None
+    if owner._bar is None:
+        owner._bar = ProgressBar(0, desc="PRICING...", unit="calc").__enter__()
+    return owner._bar
+
+
+def _ticked(dates, bar: Optional[ProgressBar]):
+    """`dates`, ticking the progress bar once per date priced or resolved."""
+    if bar is None:
+        return dates
+    bar.add_total(len(dates))
+
+    def gen():
+        for d in dates:
+            yield d
+            bar.update()
+
+    return gen()
+
+
+def _historical_instrument_value(service: PricingService, inst: Instrument, measures: Tuple[Any, ...], dates, csa: Optional[str], bar: Optional[ProgressBar] = None):
     # pricebt: historical per-instrument values are materialised eagerly (unlike the single-date
     # path, where a bucketed measure stays a LazyFuture for group aggregation) -- a date-indexed
     # SeriesWithInfo has no per-date grouping partner to defer to, and the engine's own daily loop
     # drives single-date PricingContexts, where laziness actually matters (DESIGN.md section 8.2).
-    per_date = {d: _instrument_calc_value(service, inst, measures, d, csa) for d in dates}
+    per_date = {d: _instrument_calc_value(service, inst, measures, d, csa) for d in _ticked(dates, bar)}
     # pre-existing bug fix (out of P3.5's own scope, but confirmed blocking -- found wiring
     # GenericEngine's HedgeActionImpl, whose `p.results[d][p.risk]` reads a historical
     # per-instrument result's `.unit` after indexing by date): a bare `pd.Series({date: FloatWithInfo,
@@ -761,13 +832,13 @@ def _historical_instrument_value(service: PricingService, inst: Instrument, meas
     return result
 
 
-def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str], fn=None) -> PortfolioRiskResult:
+def _historical_portfolio_result(service: PricingService, portfolio: Portfolio, measures: Tuple[Any, ...], dates, csa: Optional[str], fn=None, bar: Optional[ProgressBar] = None) -> PortfolioRiskResult:
     futures = []
     for child in portfolio.priceables:
         if isinstance(child, Portfolio):
-            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa, fn)))
+            futures.append(PricingFuture(_historical_portfolio_result(service, child, measures, dates, csa, fn, bar)))
         else:
-            futures.append(_with_fn(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa)), fn))
+            futures.append(_with_fn(PricingFuture(_historical_instrument_value(service, child, measures, dates, csa, bar)), fn))
     return PortfolioRiskResult(portfolio.clone(), measures, futures)
 
 
@@ -793,15 +864,19 @@ def engine_calc(priceable, measures, fn=None):
     service = _current_service()
     ctx = PricingContext.current
     measures_t = tuple(measures) if isinstance(measures, (list, tuple)) else (measures,)
+    bar = _progress(ctx)
 
     if isinstance(ctx, HistoricalPricingContext):
         dates, csa = ctx.date_range, ctx.csa_term
         if isinstance(priceable, Portfolio):
-            return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn)
-        return _instrument_result(ctx, PricingFuture(_historical_instrument_value(service, priceable, measures_t, dates, csa)), fn)
+            return _historical_portfolio_result(service, priceable, measures_t, dates, csa, fn, bar)
+        return _instrument_result(ctx, PricingFuture(_historical_instrument_value(service, priceable, measures_t, dates, csa, bar)), fn)
 
     d, csa = ctx.pricing_date, ctx.csa_term
     mdate = _market_date(ctx, d)
+    if bar is not None:  # a single-date calculation is one tick
+        bar.add_total(1)
+        bar.update()
     if isinstance(priceable, Portfolio):
         return _calc_portfolio_one_date(service, priceable, measures_t, d, csa, fn, mdate)
     return _instrument_result(ctx, _instrument_future(service, priceable, measures_t, d, csa, mdate), fn)
@@ -818,7 +893,7 @@ def _resolve_instrument(service: PricingService, inst: Instrument, in_place: boo
         inst._set_resolution(resolved_clone.resolved_terms, resolved_clone.resolution_key, resolved_clone.resolution_csa, pre)
         return None
     if is_historical:
-        return {d: service.resolve(inst, d, ctx.csa_term) for d in ctx.date_range}
+        return {d: service.resolve(inst, d, ctx.csa_term) for d in _ticked(ctx.date_range, _progress(ctx))}
     return service.resolve(inst, ctx.pricing_date, ctx.csa_term)
 
 

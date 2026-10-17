@@ -1,10 +1,12 @@
 # Writing an asset config
 
-An **asset config** is one self-contained YAML file. It is the only place pricebt talks to a
-pricing or market-data library: it names which gs instrument class it prices, holds the import
-lines and helper code that reach that library, and maps gs risk measures onto Python expressions
-evaluated against that code. Full contract: [`DESIGN.md`](DESIGN.md) §4. This guide is a
-practical walkthrough of the same material.
+An **asset config** is one self-contained YAML file. It is where pricebt talks to a pricing
+library: it names which gs instrument class it prices, holds the import lines and helper code that
+reach that library, and maps gs risk measures onto Python expressions evaluated against that code.
+The **market** it prices on is either an expression in the same file or, once a market is shared
+or worth naming, a standalone **market provider** config the asset references ("Market providers"
+below). Full contract: [`DESIGN.md`](DESIGN.md) §4. This guide is a practical walkthrough of the
+same material.
 
 ## Schema
 
@@ -23,9 +25,10 @@ imports: |                            # optional Python source, exec'd once (laz
   import os
 code: |                               # optional Python source, exec'd once after imports, same namespace
   def helper(m): ...
-market:
-  expr: 'load_market(pricebt_date)'   # required: evaluated once per (market key, date, csa); None = unavailable
-  key: my_market                      # optional sharing key (default: the asset name)
+market:                               # required: an inline market (expr, key) OR a market provider, never both
+  expr: 'load_market(pricebt_date)'   # inline: evaluated once per (market key, date, csa); None = unavailable
+  key: my_market                      # inline only: optional sharing key (default: the asset name)
+  # provider: my_curve                # instead of expr/key: a registered market provider ("Market providers")
 resolve:
   expr: 'resolve_swap(market, kwargs)'  # optional: (market at the TRADE date, kwargs) -> dict of plain terms
 trade:
@@ -64,9 +67,11 @@ The only names pricebt puts into an evaluation (DESIGN §4.3):
 | `pricebt_timestamp` | tz-aware `Timestamp` | all | `pricebt_date` at the session's EOD time |
 | `pricebt_datetime` | naive `datetime` | all | `pricebt_timestamp` without tz |
 | `pricebt_csa` | `str` or `None` | all | the CSA in force (opaque to pricebt) |
+| `pricebt_location` | `str` | all | the market data location of the pricing context (`PricingContext(market_data_location=...)`): `'LDN'` unless set; a config with one close ignores it (DEV-M3) |
 | `pricebt_asset` | `str` | all except `market.expr` | the asset name |
 | `pricebt_currency` | `str` | all except `market.expr` | the asset currency |
-| `market` | whatever `market.expr` returned | resolve, trade, functions, portfolio_functions, attributes | the market object |
+| `market` | whatever `market.expr` (or the asset's market provider) returned | resolve, trade, functions, portfolio_functions, attributes | the market object |
+| `markets` | `dict` | a market provider's `expr` only | the market objects of the providers it `requires:`, by name |
 | `kwargs` | `dict` (fresh copy) | resolve (and trade/functions if `resolve` is absent) | the instrument's kwargs after `defaults` |
 | `resolved` | `dict` (fresh copy) | trade, functions, attributes | `resolve`'s output |
 | `trade` | whatever `trade.expr` returned | functions | the library trade object, for ONE unit |
@@ -81,8 +86,9 @@ Injected names **shadow** config names of the same spelling — do not define a 
 nested scopes of an expression too (a generator, comprehension or lambda:
 `'sum(lib.pv(market, t) * w for t, w in zip(trades, weights))'` works), but not inside a `code:`
 helper, which sees only its asset's namespace: pass what it needs as arguments. `market.expr` itself only ever
-sees `pricebt_date`/`pricebt_timestamp`/`pricebt_datetime`/`pricebt_csa`: no asset name or currency,
-because a shared market (see below) has no single owning asset.
+sees `pricebt_date`/`pricebt_timestamp`/`pricebt_datetime`/`pricebt_csa`/`pricebt_location`: no asset name or
+currency, because a shared market (see below) has no single owning asset. A market provider's `expr` sees the
+same names plus `markets`.
 
 ## Units: extensive vs. intensive
 
@@ -485,8 +491,78 @@ to stay that of the pricing date.
 computed once per (key, date, csa), in the namespace of whichever asset registered that key first.
 This only works if their `imports`, `code` and `market.expr` are byte-identical — pricebt checks
 this at registration and raises `ConfigError` otherwise. A later asset that wants the *same curve*
-under different pricing logic (e.g. a swaption sharing a swap's discount curve) gives its market
-its **own** key instead, and builds on the shared curve from within its own `code`.
+under different pricing logic (e.g. a swaption sharing a swap's discount curve) cannot share an
+inline market: make the curve a **market provider** and let both assets build on it (next section).
+
+## Market providers
+
+A market provider is a standalone config that says how to obtain the dated market object of one
+market. An asset names it instead of carrying `market.expr` (design:
+[`MARKET_CONTEXT_DESIGN.md`](MARKET_CONTEXT_DESIGN.md); how-to with a real-library shape:
+[`configs/markets/README.md`](../../configs/markets/README.md)).
+
+```yaml
+# tests/markets/toy_usd_ois.yaml                      # tests/markets/toy_usd_swaption_vol.yaml
+schema_version: 1                                     schema_version: 1
+market: toy_usd_ois                                   market: toy_usd_swaption_vol
+imports: |                                            requires: [toy_usd_ois]
+  import toylib.rates as tr                           imports: |
+expr: 'tr.market(pricebt_date, "USD", pricebt_csa)'     import toylib.swaption as ts
+                                                      expr: 'ts.market_on(markets["toy_usd_ois"])'
+```
+
+```yaml
+market: {provider: toy_usd_ois}      # in the swap asset config, instead of market: {expr: ..., key: ...}
+```
+
+```python
+PricebtSession.use(markets=["tests/markets"], assets=[swap_config, swaption_config])
+```
+
+- **One object, shared.** A provider is evaluated once per (provider, date, csa, location), in
+  its own namespace, whichever assets ask. Assets on one provider need **not** share `imports` or
+  `code`: the byte-identical rule above is for inline markets only.
+- **`requires:`** hands a provider the objects of the providers it builds on, as
+  `markets[<name>]`. The swap on `toy_usd_ois` and the swaption on `toy_usd_swaption_vol` price on
+  one curve object per date. If a required market has no object for a date, neither has the
+  derived one, and its `expr` is not evaluated.
+- **Order and errors.** Providers register before assets (`PricebtSession(markets=...)`, or
+  `session.add_market(...)` then `session.add_asset(...)`); a required provider before the one
+  that requires it (a directory is sorted for you). An unknown name fails at registration with
+  the registered names and a did-you-mean. `provider` together with `expr` or `key` is a load
+  error.
+- **Same rules as an asset config.** `imports`/`code` run lazily, once per process; `None` means
+  "no market for this date"; an exception is an error (`AssetEvaluationError`, naming the
+  provider); the file is trusted code.
+- **Numbers do not change.** A provider-backed asset prices exactly like the same market inline
+  (`tests/test_market_provider.py`). Moving a market out of an asset config is cut and paste: the
+  expression, and the part of `imports`/`code` it uses.
+
+## Pricing contexts, locations and time series
+
+The contexts are gs's (`pricebt.markets`), with gs's signatures and properties:
+
+```python
+with PricingContext(pricing_date=d, market_data_location="NYC"):      # one date; the NYC market
+    price = swap.price()
+with HistoricalPricingContext(start, end, show_progress=True):        # every business day of a range
+    greeks = swaption.calc((IRDeltaParallel, IRVega(aggregation_level="Type")))   # .result(): one Series per measure
+with DataContext(start, end):                                         # pricebt.data: the window of a block of series
+    dv01 = measure_series(IRSwap("Pay", "10y", "USD"), IRDelta(aggregation_level="Type"))
+```
+
+- **`market_data_location`** (`'LDN'` by default, inherited by nested contexts, or set once with
+  `PricingContext.current = PricingContext(market_data_location="NYC")`) reaches every expression
+  as `pricebt_location`. pricebt keeps one set of caches per location, so the NYC and LDN values
+  of one trade never mix (DEV-M3). Any string your configs understand is accepted.
+- **A resolved instrument** under a `HistoricalPricingContext` is one fixed trade through time; an
+  **unresolved** one is resolved again on each date (a rolling par swap). `measure_series` always
+  re-resolves, and fills or drops the dates with no market; a `HistoricalPricingContext` prices
+  exactly the dates it is given and raises `MarketDataUnavailable` on one with no market.
+- **`show_progress=True`** draws one bar for the outermost context.
+- The gs manual backtest (resolve under a `HistoricalPricingContext`, price each trade
+  historically, unwind a lagged hedge under per-date contexts) runs unchanged:
+  [`MARKET_CONTEXT_DESIGN.md`](MARKET_CONTEXT_DESIGN.md) §7.
 
 ## FX configs
 
@@ -553,7 +629,9 @@ a new config — the CI toy swaption
    `market.expr` is `'ts.market(pricebt_date, "USD", pricebt_csa)'`, where `ts.market` returns
    `SimpleNamespace(curve=ToyCurve, sigma=float)`, under its **own** `market.key`
    (`toy_usd_swaption_vol`), distinct from a swap asset's key even though both curves come from the
-   same underlying rates world.
+   same underlying rates world. The same market as two **market providers** (the vol provider
+   `requires:` the curve provider, so swap and swaption price on one curve object) is in
+   `tests/markets/`; see "Market providers" above.
 3. **`resolve` pins `expiration_date`, `termination_date` and the strike**, and — because pricebt
    never reads `buy_sell` itself — folds `buy_sell` × `sign(notional_amount)` into one signed
    resolved notional (`toylib.swaption.resolve_swaption`); it also rejects a `pay_or_receive` it

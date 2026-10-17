@@ -1,5 +1,6 @@
 """AssetRegistry: name -> config, instrument -> config matching, market-key sharing rules
-(DESIGN.md sections 4.4 'Market sharing' and 5.3).
+(DESIGN.md sections 4.4 'Market sharing' and 5.3), and the check that an asset's `market.provider`
+names a registered market provider (`assets.market.MarketRegistry`).
 
 Loading and compiling one config is `assets.config.load_asset`'s job; this module only tracks
 already-loaded `AssetConfig` objects and enforces the two registration-time rules: no duplicate
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Mapping, Optional, Union
 
 from ..errors import ConfigError
 from .config import AssetConfig, load_asset
+from .market import MarketRegistry
 
 # A source `AssetRegistry.add` accepts: a yaml path, a directory of *.yaml, an in-memory mapping,
 # or an already-loaded AssetConfig.
@@ -27,7 +29,9 @@ _SHARED_MARKET_FIELDS = (
 
 
 class AssetRegistry:
-    def __init__(self) -> None:
+    def __init__(self, markets: Optional[MarketRegistry] = None) -> None:
+        # the market providers an asset's `market.provider` may name (MARKET_CONTEXT_DESIGN section 3)
+        self.markets = markets if markets is not None else MarketRegistry()
         self._by_name: Dict[str, AssetConfig] = {}
         # market_key -> the first-registered AssetConfig with that key (its namespace is the one a
         # shared market is evaluated in, per DESIGN.md section 4.4).
@@ -74,6 +78,12 @@ class AssetRegistry:
     def _register(self, cfg: AssetConfig) -> None:
         if cfg.name in self._by_name:
             raise ConfigError(f"duplicate asset name {cfg.name!r}", asset=cfg.name)
+        if cfg.market_provider is not None:
+            # a provider has its own namespace: nothing to share with (or compare against) an asset
+            if cfg.market_provider not in self.markets:
+                raise ConfigError(f"market.provider {self.markets.unknown(cfg.market_provider)}; register it before the asset (PricebtSession(markets=[...]))", asset=cfg.name, key="market.provider")
+            self._by_name[cfg.name] = cfg
+            return
         first = self._market_keys.get(cfg.market_key)
         if first is None:
             self._market_keys[cfg.market_key] = cfg

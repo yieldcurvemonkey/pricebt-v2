@@ -107,9 +107,10 @@ def test_exception_inside_the_block_still_pops_the_stack():
     assert PricingContext.current.pricing_date == date.today()
 
 
-def test_market_data_location_and_other_unused_params_are_accepted_and_ignored():
-    # signature parity only (DESIGN.md section 6.5); must not raise
-    PricingContext(market_data_location="NYC", is_batch=True, use_cache=True, timeout=30, provider=object)
+def test_market_data_location_and_the_server_side_params_are_kept_and_read_back():
+    # gs properties (MARKET_CONTEXT_DESIGN section 5; tests/test_market_context.py has the semantics)
+    ctx = PricingContext(market_data_location="NYC", is_batch=True, use_cache=True, timeout=30, provider=object)
+    assert (ctx.market_data_location, ctx.is_batch, ctx.use_cache, ctx.timeout, ctx.provider) == ("NYC", True, True, 30, object)
 
 
 # ---------------------------------------------------------------------------- HistoricalPricingContext

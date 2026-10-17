@@ -543,3 +543,25 @@ def test_every_archetype_is_deterministic_and_keeps_the_invariants(name):
     assert len(bt1.trade_ledger()) > 0
     pd.testing.assert_frame_equal(bt1.result_summary, bt2.result_summary)
     pd.testing.assert_frame_equal(bt1.trade_ledger(), bt2.trade_ledger())
+
+
+# --------------------------------------------------------------------------------- market providers
+
+
+def test_a_spec_names_the_market_providers_its_assets_need(tmp_path):
+    """`markets:` in a spec reaches the session; the backtest equals the one on the inline config."""
+    import yaml
+
+    from pricebt.assets import yamlio
+
+    raw = dict(yamlio.load_file(recipes.specmod.REPO_ROOT / "tests" / "assets" / "toy_usd_irs.yaml"))
+    raw["market"] = {"provider": "toy_usd_ois"}
+    asset = tmp_path / "toy_usd_irs_on_provider.yaml"
+    asset.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf8")
+
+    inline, _ = recipes.run(spec("periodic_roll"))
+    provider, _ = recipes.run(spec("periodic_roll", assets=[str(asset)], markets=["tests/markets"]))
+    pd.testing.assert_frame_equal(provider.result_summary, inline.result_summary)
+
+    errors = recipes.specmod.validate_spec(recipes.specmod.apply_defaults(spec("periodic_roll", markets=["tests/no_such_dir"]))[0])
+    assert any("markets: tests/no_such_dir does not exist" in e for e in errors)

@@ -47,6 +47,13 @@ def market(d: date, ccy: str, csa: Optional[str] = None):
     return SimpleNamespace(curve=tr.ToyCurve(d, ccy, tr._zero_rate(d, ccy), csa), sigma=_sigma(d, ccy))
 
 
+def market_on(curve: tr.ToyCurve):
+    """The market `market` returns, built on an already-loaded curve instead of loading it again:
+    what a derived market provider does with the object of the provider it requires."""
+    tr.EVAL_COUNTS["vol_market"] += 1
+    return SimpleNamespace(curve=curve, sigma=_sigma(curve.ref_date, curve.ccy))
+
+
 def _notional_sign(buy_sell, notional_amount) -> float:
     bs = str(getattr(buy_sell, "value", buy_sell)).strip().lower()
     if bs not in ("buy", "sell"):
