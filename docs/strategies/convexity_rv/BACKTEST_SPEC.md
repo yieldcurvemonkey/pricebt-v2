@@ -1,6 +1,6 @@
 # Forward Curve vs Straddle — Systematic Backtest Spec
 
-v0.3 · 2026-10-20 · derived from the `screener.py` prototype · v0.2: trades are two-sided (side +1 / −1) · v0.3: framed as an indicative math guide
+v0.4 · 2026-10-23 · derived from the `screener.py` prototype · v0.2: trades are two-sided (side +1 / −1) · v0.3: framed as an indicative math guide · v0.4: carry definition, carry horizon, horizon-matched vol, premium vs gamma sizing
 
 > **Read this first: an indicative guide to the math, not an implementation spec.**
 >
@@ -144,6 +144,25 @@ z_x     = z_{L_static}(x)
 θ       = √(D_s / D_l)                       long gamma iff σ_l/σ_s > θ
 ```
 
+**What "carry" means here.** Read this before implementing, because the research literature uses the word loosely.
+
+- `c` is the **spot-unchanged roll-down** of the DV01-neutral pair. It is the P&L per year if today's curve stays exactly where it is while each leg's start date shortens with time.
+- A forward-starting swap accrues no coupon before it starts, so for these legs all of `c` is roll-down; there is no coupon carry. JPM (2017) calls this whole quantity "carry" ("the ex-ante difference between spot and forward"). JPM (2018) splits coupon carry from slide. Both describe the same number for forward swaps.
+- It is **not** carry under a "forwards realised" assumption, which is zero by construction for any forward.
+- It contains the term premium as well as the convexity bias, so σ_BE is not pure convexity (§18, item 10).
+
+**Carry horizon (`carry_horizon`, default `instant`).**
+
+```
+instant:  c   = r_l − r_s                                          the derivative above, bp/yr (screener)
+h years:  c_h = 100 · [ (f_l(T_l) − f_l(T_l − h)) − (f_s(T_s) − f_s(T_s − h)) ] / h     bp/yr, annualised
+              f(T − h) is today's strip interpolated at the shortened start, using roll_interp
+```
+
+- `c_h` is the average roll rate over a holding period of `h`. It tends to `c` as h → 0.
+- The gap between `c_h` and `c` is about ½·f″·h per leg, from the strip's curvature. It is negligible on the straight long-end strip and noticeable near the 10y hump.
+- When `carry_horizon` = h, use `c_h` everywhere `c` appears: v, σ_BE, E and X.
+
 ### 5.2 Forecasts [ext: method is configurable; the screener uses a 63-day rolling window]
 
 For any bp series `u`, daily changes `Δu`:
@@ -188,6 +207,34 @@ side*  = sign(S)                                    the side the score favours
 S_side = side · S                                   score of a given side; side −1 expects −X
 k_opt  = 10⁻⁴·ΔD·σ_imp·√τ₀ / φ(0)                   straddle underlying DV01 per curve DV01 (gamma match)
 ```
+
+**Which σ_imp, and comparing like with like.**
+
+- **Horizon consistency.** The vol in E must cover the same window as the carry:
+  - `carry_horizon: instant` uses σ_imp of the traded option (τ₀, m), as the screener does.
+  - `carry_horizon: h` uses σ_imp(h, m), the vol at expiry h on the traded tail, interpolated in total variance as in §7.3. The implied vol for expiry h is the market's price of variance over that same window, which is why expiry matching is right.
+- **Compare rates, never carry against premium.** E compares the curve's carry per year with the straddle's theta per year, both at matched gamma. Never compare the carry over h with the **premium** of an h-expiry straddle:
+
+```
+gamma-matched straddle premium   = k_opt · 2σ_imp√τ₀·φ(0) = 2 · 10⁻⁴·ΔD·σ_imp²·τ₀
+theta at entry over the horizon  =                          1 · 10⁻⁴·ΔD·σ_imp²·τ₀
+```
+
+- The premium is **twice** the horizon theta, because an ATM straddle's gamma grows as 1/√τ while it ages. Comparing carry with premium makes σ_BE look √2 too high relative to σ_imp.
+- Example: 10y10y/20y10y on 17-Oct-2026 has ΔD ≈ 9.9, σ_BE ≈ 92 and σ_imp ≈ 91. Over 6m the curve costs about 4.2bp per DV01 and the matched straddle decays about 4.1bp, so the package is fair. The straddle's premium, though, is about 8.2bp. Set against that, the curve looks as if it implies about 130 vol.
+
+**Option sizing (`option_sizing`, default `gamma`).**
+
+```
+gamma:    k = k_opt                                                  Γ_opt = Γ_c at entry (this spec's trade)
+premium:  k = |c|·τ₀ / (2·σ_imp·√τ₀·φ(0))                            premium at entry = |carry over τ₀|  (JPM 2017 backtest)
+          k_premium / k_opt = σ_BE² / (2·σ_imp²)        when c < 0
+```
+
+- `premium` reproduces the sizing in JPM's 2017 backtest: "sized such that the initial premium intake is equal to the carry over the same 1-year horizon".
+- That package is **carry-neutral, not gamma-neutral.** At fair value the straddle carries only about half the curve's gamma at entry, so the package starts net long gamma (side +1) and holds a net vol position. E, B and R then do not describe its P&L. It is an ablation (§13.3), judged on P&L and attribution only.
+- In `premium` mode, gamma re-matching (§7.4) is off. Delta hedging stays as in §7.
+- JPM also held both legs unhedged to the horizon. This spec does not replicate that, because its thesis is delta-hedged gamma.
 
 - **Why one score covers both sides.** Every term flips sign with the side: side −1 earns the curve carry the flattener pays, pays the theta the short straddle earns, and is short the realised-variance basis. Hence side −1's expected P&L is exactly −X, and risk R is unchanged.
 - **Sign of M.** When the spread is far below its mean (unusually inverted), `x − μ_x < 0`, so M is negative: an expected steepening hurts side +1 and helps side −1. This is where the "carry looks free but the level is extreme" tension (e.g. 15y5y/30y5y) is formally tested. M is off by default and turned on only as an ablation (§13.3).
@@ -315,7 +362,7 @@ The "ticket" model below describes the economics precisely. It is not a required
   - Γ = 2φ(d)/(σ√τ)
   - vega = 2√τ·φ(d)
   - θ = −σφ(d)/√τ
-- **Entry size:** option underlying DV01 = k_opt × curve DV01 (§5.3), which matches Γ_opt to Γ_c at entry.
+- **Entry size:** option underlying DV01 = k × curve DV01, with k from `option_sizing` (§5.3). The default, k_opt, matches Γ_opt to Γ_c at entry.
 
 ### 7.4 Option hedging and gamma re-match
 - **Delta hedge:** trade an `m`-year spot swap. Trigger when |F − F_last_hedge| ≥ `opt_hedge_threshold_bp`. The default is `same_as_curve`, so both legs sample realised variance on the same grid; different grids add basis the signal doesn't see.
@@ -397,7 +444,7 @@ All costs are charged at execution and multiplied by `cost_mult`.
 
 ## 10. Sizing
 
-- **Unit:** 1 curve DV01. Option underlying DV01 = k_opt × curve DV01.
+- **Unit:** 1 curve DV01. Option underlying DV01 = k × curve DV01 (k_opt by default; §5.3 `option_sizing`).
 - **`sizing: inverse_risk` (default):** curve DV01 = `target_vol_usd` / R_entry, capped at `max_dv01`. Defaults are $250k/yr per position and a $50k cap. For example, R = 12.5bp/yr gives DV01 ≈ $20k.
 - **`sizing: fixed`:** curve DV01 = `unit_dv01` ($10k) for every position.
 - **`sizing: signal`:** inverse_risk × min(|S|/s_in, `signal_cap`) (cap 2).
@@ -486,6 +533,8 @@ Run Stage A first. Stage B (§13) runs only for signals that pass it.
 - `disl_metric` = `both_legs`
 - `w_M` = 1 (slope overlay on)
 - `w_B` = 0 (no basis term)
+- `carry_horizon` ∈ {0.5, 1.0}, with σ_imp at the matching expiry
+- `option_sizing` = `premium` (JPM 2017 construction)
 - `option_select` = `best` (any tail)
 - `option_select` = `fixed` at 1Y on the matched tail. `matched` takes the maximum S over four expiries, which slightly inflates S; the expected result is no difference
 - `opt_hedge_threshold_bp` = daily
@@ -563,6 +612,8 @@ These are stated as properties the implementation must satisfy, whatever form it
 | T8 | Date permutation of the signal | Sharpe ≈ 0 (\|SR\| < 2 standard errors) |
 | T9 | Attribution residual on a real 1-year run | ≤ 10% of gross |
 | T10 | Side symmetry: same cell, same dates, side +1 vs side −1, costs off | Daily P&L of side −1 = −(side +1) to 1e-9, every bucket. Hedge triggers depend on \|Δ\| only, so both sides hedge on the same days. A failure means a sign is hard-coded somewhere |
+| T11 | Premium vs theta | Gamma-matched straddle premium = 2·10⁻⁴·ΔD·σ²·τ₀ within 0.1%. In `premium` mode, k/k_opt = σ_BE²/(2σ_imp²) within 0.1% |
+| T12 | Carry horizon | Flat strip: c_h = 0 for every h. Quadratic strip: c_h equals the analytic finite difference to 1e-9. As h → 0 (1e-4), c_h tends to c within 1e-6 bp/yr |
 
 ---
 
@@ -618,6 +669,8 @@ T = tuned in §13.2 · F = fixed (ablation only)
 | `allowed_expiries` | [1M, 3M, 6M, 1Y] | + 2Y… | F | 4 |
 | `option_select` | matched | {matched, best, fixed} | F* | 5.6 |
 | `roll_interp` | quad3 | {quad3, linear} | F | 5.1 |
+| `carry_horizon` | instant | {instant, 0.5, 1.0} | F | 5.1 |
+| `option_sizing` | gamma | {gamma, premium} | F | 5.3 |
 | `L_static` | 252 | {126, 252, 504} | F | 5.1 |
 | `rv_method` | ewma | {rolling, ewma, blend} | F | 5.2 |
 | `W` | 63 | {42, 63, 126} | F | 5.2 |
@@ -699,6 +752,8 @@ universe:
   option_select: matched
 signal:
   roll_interp: quad3
+  carry_horizon: instant
+  option_sizing: gamma
   L_static: 252
   forecast:  {rv_method: ewma, W: 63, rv_halflife: 21, rv_shrink: 0.0, L_long: 756}
   package:   {w_B: 1.0, w_M: 0.0, kappa_min: 0.05, kappa_max: 4.0}
